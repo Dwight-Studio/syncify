@@ -12,7 +12,8 @@ categories = ["filesystem", "gui", "command-line-interface"]
 publish = false
 
 [dependencies]
-iroh = "0.33.0"
+iroh = { version = "0.33.0", features = ["discovery-local-network"] }
 iroh-gossip = "0.33.0"
 iroh-blobs = "0.33.0"
 iroh-docs = "0.33.0"
+anyhow = "1.0.97"
