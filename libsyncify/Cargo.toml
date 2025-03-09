@@ -13,3 +13,6 @@ publish = false
 
 [dependencies]
 iroh = "0.33.0"
+iroh-gossip = "0.33.0"
+iroh-blobs = "0.33.0"
+iroh-docs = "0.33.0"
