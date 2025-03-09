@@ -1,0 +1,15 @@
+[package]
+name = "libsyncify"
+version = "0.1.0"
+authors = ["Alexandre Leconte (Deleranax)", "Maxime Savary (GamerMine)"]
+edition = "2024"
+description = "A simple peer-to-peer, cross-platform file synchronization client"
+readme = "../README.md"
+repository = "https://github.com/Dwight-Studio/syncify"
+license = "GPL-3"
+keywords = ["p2p", "peer-to-peer", "cross-platform", "file", "sync"]
+categories = ["filesystem", "gui", "command-line-interface"]
+publish = false
+
+[dependencies]
+iroh = "0.33.0"
