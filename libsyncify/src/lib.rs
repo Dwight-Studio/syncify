@@ -9,6 +9,7 @@ mod config;
 
 pub struct Syncify {
     router: Router,
+    config: SyncifyConfig,
 }
 
 impl Syncify {
@@ -51,6 +52,7 @@ impl Syncify {
                 .accept(DOCS_ALPN, docs)
                 .spawn()
                 .await?,
+            config: SyncifyConfig::new()?
         })
     }
 }

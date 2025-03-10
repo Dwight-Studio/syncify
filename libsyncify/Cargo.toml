@@ -21,3 +21,5 @@ directories = "6.0.0"
 toml = "0.8.20"
 serde = "1.0.219"
 rand = "0.8.5"
+log = "0.4.26"
+keyring = { version = "3.6.2", features = ["apple-native", "windows-native", "linux-native-async-persistent", "tokio", "crypto-rust"] }

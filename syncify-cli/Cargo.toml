@@ -14,3 +14,4 @@ publish = false
 [dependencies]
 libsyncify = { path= "../libsyncify" }
 tokio = "1.44.0"
+log = "0.4.26"
