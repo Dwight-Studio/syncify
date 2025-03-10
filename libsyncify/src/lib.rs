@@ -1,19 +1,34 @@
-use iroh::Endpoint;
+use crate::config::SyncifyConfig;
 use iroh::protocol::Router;
-use iroh_blobs::{ALPN as BLOBS_ALPN, net_protocol::Blobs};
-use iroh_docs::{ALPN as DOCS_ALPN, protocol::Docs};
-use iroh_gossip::{ALPN as GOSSIP_ALPN, net::Gossip};
+use iroh::Endpoint;
+use iroh_blobs::{net_protocol::Blobs, ALPN as BLOBS_ALPN};
+use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
+use iroh_gossip::{net::Gossip, ALPN as GOSSIP_ALPN};
+
+mod config;
 
 pub struct Syncify {
     router: Router,
 }
 
 impl Syncify {
-    async fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<Self> {
+        let config = SyncifyConfig::new()?;
+
+        println!("{}", config);
+
         let endpoint = Endpoint::builder()
+            .secret_key(config.secret_key)
+            .alpns(vec![
+                BLOBS_ALPN.to_vec(),
+                GOSSIP_ALPN.to_vec(),
+                DOCS_ALPN.to_vec(),
+            ])
             .discovery_n0()
             .discovery_local_network()
-            .bind().await?;
+            .user_data_for_discovery(config.user_data)
+            .bind()
+            .await?;
 
         // create a router builder, we will add the
         // protocols to this builder and then spawn

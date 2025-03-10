@@ -13,3 +13,4 @@ publish = false
 
 [dependencies]
 libsyncify = { path= "../libsyncify" }
+tokio = "1.44.0"
