@@ -13,13 +13,17 @@ publish = false
 
 [dependencies]
 iroh = { version = "0.33.0", features = ["discovery-local-network"] }
-iroh-gossip = "0.33.0"
-iroh-blobs = "0.33.0"
-iroh-docs = "0.33.0"
+iroh-gossip = { version = "0.33.0", features = ["rpc"] }
+iroh-blobs = { version = "0.33.0", features = ["rpc"] }
+iroh-docs = { version = "0.33.0", features = ["rpc"] }
 anyhow = "1.0.97"
 directories = "6.0.0"
 toml = "0.8.20"
 serde = { version = "1.0.219", features = ["std"] }
 log = "0.4.26"
-keyring = { version = "3.6.2", features = ["apple-native", "windows-native", "linux-native-async-persistent", "tokio", "crypto-rust"] }
+tokio = "1.44.0"
+thiserror = "2.0.12"
 rand = "0.8.5"
+quic-rpc = "0.18.2"
+uuid = "1.15.1"
+keyring = "3.6.2"

@@ -1,22 +1,23 @@
-mod keyring;
-
+use crate::config::keyring::{Keys, SyncifyKeyring};
+use crate::get_app_dir;
+use iroh::discovery::UserData;
+use iroh::SecretKey;
+use log::{debug, info};
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use iroh::SecretKey;
-use iroh::discovery::UserData;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use log::{debug, info};
-use serde::{Deserialize, Serialize};
-use crate::config::keyring::{Keys, SyncifyKeyring};
+
+mod keyring;
 
 const CONFIG_FILENAME: &str = "config.toml";
 
 #[derive(Serialize)]
 #[derive(Deserialize)]
 pub struct SyncifyFolder {
-    pub name: String,
+    pub uuid: String,
     pub path: String
 }
 
@@ -39,18 +40,14 @@ impl Display for SyncifyConfig {
 }
 
 impl SyncifyConfig {
-    pub fn new() -> Result<Self, io::Error> {
-        // Set the path where the configs file will be/is stored
-        let config_dir: PathBuf = {
-            if cfg!(debug_assertions) {
-                PathBuf::from("./target/debug")
-            } else {
-                let project_dir =
-                    directories::ProjectDirs::from("fr", "Dwight Studio", "Syncify").unwrap();
-                project_dir.config_local_dir().to_path_buf()
-            }
-        };
-        let config_file = config_dir.join(CONFIG_FILENAME);
+    pub async fn new() -> Result<Self, io::Error> {
+
+        // Create app dir (and parents)
+        if !get_app_dir().exists() {
+            tokio::fs::create_dir_all(&get_app_dir()).await?;
+        }
+
+        let config_file = super::get_app_dir().join(CONFIG_FILENAME);
 
         // Create config file if it does not exist
         // Load the config file if it exists
@@ -60,7 +57,7 @@ impl SyncifyConfig {
                 let mut w_file = File::create(config_file.as_path())?;
                 let syncify_config_data = SyncifyConfigData {paths: vec![]};
 
-                w_file.write(toml::to_string(&syncify_config_data).unwrap().as_bytes())?;
+                w_file.write_all(toml::to_string(&syncify_config_data).unwrap().as_bytes())?;
 
                 syncify_config_data
             } else {

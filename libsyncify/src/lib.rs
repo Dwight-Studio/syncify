@@ -1,60 +1,64 @@
-use crate::config::SyncifyConfig;
-use iroh::protocol::Router;
-use iroh::Endpoint;
-use iroh_blobs::{net_protocol::Blobs, ALPN as BLOBS_ALPN};
-use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
-use iroh_gossip::{net::Gossip, ALPN as GOSSIP_ALPN};
+use crate::config::{SyncifyConfig, SyncifyFolder};
+use std::path::PathBuf;
+use thiserror::Error;
+use crate::engine::Engine;
 
 mod config;
+mod engine;
+
+// Set the path where the configs file will be/is stored
+fn get_app_dir() -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from("./target/debug")
+    } else {
+    let project_dir =
+        directories::ProjectDirs::from("fr", "Dwight Studio", "Syncify").unwrap();
+        project_dir.config_local_dir().to_path_buf()
+    }
+}
 
 const APP_NAME: &str = "Syncify";
 
 pub struct Syncify {
-    router: Router,
-    config: SyncifyConfig,
+    pub(crate) config: SyncifyConfig,
+    pub(crate) engine: Option<Engine>
 }
 
 impl Syncify {
-    pub async fn new() -> anyhow::Result<Self> {
-        let config = SyncifyConfig::new()?;
+    pub async fn new() -> Result<Self, SyncifyError> {
+        let config = SyncifyConfig::new()
+            .await
+            .map_err(|e| SyncifyError::Config(e))?;
 
         //println!("{}", config);
 
-        let endpoint = Endpoint::builder()
-            .secret_key(config.secret_key.clone())
-            .alpns(vec![
-                BLOBS_ALPN.to_vec(),
-                GOSSIP_ALPN.to_vec(),
-                DOCS_ALPN.to_vec(),
-            ])
-            .discovery_n0()
-            .discovery_local_network()
-            .user_data_for_discovery(config.user_data.clone())
-            .bind()
-            .await?;
-
-        // create a router builder, we will add the
-        // protocols to this builder and then spawn
-        // the router
-        let builder = Router::builder(endpoint);
-
-        // build the blobs protocol
-        let blobs = Blobs::memory().build(builder.endpoint());
-
-        // build the gossip protocol
-        let gossip = Gossip::builder().spawn(builder.endpoint().clone()).await?;
-
-        // build the docs protocol
-        let docs = Docs::memory().spawn(&blobs, &gossip).await?;
-
-        Ok(Self {
-            router: builder
-                .accept(BLOBS_ALPN, blobs)
-                .accept(GOSSIP_ALPN, gossip)
-                .accept(DOCS_ALPN, docs)
-                .spawn()
-                .await?,
-            config
-        })
+        Ok(Self {config, engine: None })
     }
+
+    pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
+        self.engine = Some(Engine::new(&self.config)
+            .await
+            .map_err(|e| SyncifyError::Engine(e))?);
+        Ok(())
+    }
+
+    pub async fn stop_sync(&mut self) {
+        if let Some(engine) = self.engine.as_mut() {
+            engine.destroy().await;
+        }
+    }
+
+    pub async fn create_shared_directory(&mut self, path: PathBuf) {
+        let uuid = uuid::Uuid::new_v4();
+        self.config.config_data.paths.push(SyncifyFolder { uuid: uuid.to_string(), path: path.to_string_lossy().to_string() });
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum SyncifyError {
+    #[error("Config error: {0}")]
+    Config(std::io::Error),
+
+    #[error("Engine {0}")]
+    Engine(engine::EngineError)
 }

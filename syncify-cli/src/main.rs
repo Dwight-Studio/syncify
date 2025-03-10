@@ -5,7 +5,8 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    let _syncify = Syncify::new().await;
+    let mut syncify = Syncify::new().await.unwrap();
+    let _ = syncify.start_sync().await;
 
     match arg_refs.as_slice() {
         ["send", file] => {
