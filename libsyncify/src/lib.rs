@@ -7,6 +7,8 @@ use iroh_gossip::{net::Gossip, ALPN as GOSSIP_ALPN};
 
 mod config;
 
+const APP_NAME: &str = "Syncify";
+
 pub struct Syncify {
     router: Router,
     config: SyncifyConfig,
@@ -16,10 +18,10 @@ impl Syncify {
     pub async fn new() -> anyhow::Result<Self> {
         let config = SyncifyConfig::new()?;
 
-        println!("{}", config);
+        //println!("{}", config);
 
         let endpoint = Endpoint::builder()
-            .secret_key(config.secret_key)
+            .secret_key(config.secret_key.clone())
             .alpns(vec![
                 BLOBS_ALPN.to_vec(),
                 GOSSIP_ALPN.to_vec(),
@@ -27,7 +29,7 @@ impl Syncify {
             ])
             .discovery_n0()
             .discovery_local_network()
-            .user_data_for_discovery(config.user_data)
+            .user_data_for_discovery(config.user_data.clone())
             .bind()
             .await?;
 
@@ -52,7 +54,7 @@ impl Syncify {
                 .accept(DOCS_ALPN, docs)
                 .spawn()
                 .await?,
-            config: SyncifyConfig::new()?
+            config
         })
     }
 }

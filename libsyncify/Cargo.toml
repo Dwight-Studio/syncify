@@ -22,3 +22,4 @@ toml = "0.8.20"
 serde = { version = "1.0.219", features = ["std"] }
 log = "0.4.26"
 keyring = { version = "3.6.2", features = ["apple-native", "windows-native", "linux-native-async-persistent", "tokio", "crypto-rust"] }
+rand = "0.8.5"

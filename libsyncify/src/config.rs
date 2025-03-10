@@ -7,10 +7,9 @@ use iroh::discovery::UserData;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use log::info;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde::de::{Error, MapAccess, SeqAccess, Visitor};
-use serde::ser::SerializeStruct;
+use log::{debug, info};
+use serde::{Deserialize, Serialize};
+use crate::config::keyring::{Keys, SyncifyKeyring};
 
 const CONFIG_FILENAME: &str = "config.toml";
 
@@ -73,6 +72,22 @@ impl SyncifyConfig {
             }
         };
 
-        Ok(SyncifyConfig{secret_key: "ferkhfejzkfezfezfbhtrfezf".parse().unwrap(), user_data: "Philippe".parse().unwrap(), config_data: syncify_config_data}) // TODO: WRONG
+        let syncify_keyring = SyncifyKeyring::new();
+        let secret_key = {
+            if !syncify_keyring.key_exists(Keys::SecretKey) {
+                debug!("Generating new secret key...");
+                let mut rng = rand::rngs::OsRng;
+                let key = SecretKey::generate(&mut rng);
+
+                syncify_keyring.set_key(Keys::SecretKey, key.to_string().as_str()).unwrap();
+
+                key
+            } else {
+                debug!("Key already exists");
+                syncify_keyring.get_key(Keys::SecretKey).unwrap().parse().unwrap()
+            }
+        };
+
+        Ok(SyncifyConfig{secret_key, user_data: "Philippe".parse().unwrap(), config_data: syncify_config_data})
     }
 }
