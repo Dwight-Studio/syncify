@@ -19,7 +19,6 @@ iroh-docs = "0.33.0"
 anyhow = "1.0.97"
 directories = "6.0.0"
 toml = "0.8.20"
-serde = "1.0.219"
-rand = "0.8.5"
+serde = { version = "1.0.219", features = ["std"] }
 log = "0.4.26"
 keyring = { version = "3.6.2", features = ["apple-native", "windows-native", "linux-native-async-persistent", "tokio", "crypto-rust"] }
