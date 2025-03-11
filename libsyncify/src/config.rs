@@ -1,22 +1,21 @@
 use crate::config::keyring::{Keys, SyncifyKeyring};
 use crate::get_app_dir;
-use iroh::discovery::UserData;
 use iroh::SecretKey;
-use log::{info};
+use iroh::discovery::UserData;
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
-use std::path::{Path};
+use std::path::Path;
 use uuid::{Bytes, Uuid};
 
 mod keyring;
 
 const CONFIG_FILENAME: &str = "config.toml";
 
-#[derive(Serialize)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SyncifyFolder {
     #[serde(with = "UuidDef")]
     pub uuid: Uuid,
@@ -24,27 +23,29 @@ pub struct SyncifyFolder {
     pub path: String,
 }
 
-#[derive(Serialize)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SyncifyConfigData {
-    pub folders: Vec<SyncifyFolder>
+    pub folders: Vec<SyncifyFolder>,
 }
 
 pub struct SyncifyConfig {
     pub secret_key: SecretKey,
     pub user_data: UserData,
-    pub config_data: SyncifyConfigData
+    pub config_data: SyncifyConfigData,
 }
 
 impl Display for SyncifyConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(secret_key: {}, user_data: {})", self.secret_key, self.user_data)
+        write!(
+            f,
+            "(secret_key: {}, user_data: {})",
+            self.secret_key, self.user_data
+        )
     }
 }
 
 impl SyncifyConfig {
     pub async fn new() -> Result<Self, io::Error> {
-
         // Create app dir (and parents)
         if !get_app_dir().exists() {
             tokio::fs::create_dir_all(&get_app_dir()).await?;
@@ -58,7 +59,7 @@ impl SyncifyConfig {
             if !Path::exists(config_file.as_path()) {
                 info!("Config file does not exists, creating a new one...");
                 let mut w_file = File::create(config_file.as_path())?;
-                let syncify_config_data = SyncifyConfigData { folders: vec![]};
+                let syncify_config_data = SyncifyConfigData { folders: vec![] };
 
                 w_file.write_all(toml::to_string(&syncify_config_data).unwrap().as_bytes())?;
 
@@ -79,25 +80,32 @@ impl SyncifyConfig {
                 let mut rng = rand::rngs::OsRng;
                 let key = SecretKey::generate(&mut rng);
 
-                syncify_keyring.set_key(Keys::SecretKey, key.to_string().as_str()).unwrap();
+                syncify_keyring
+                    .set_key(Keys::SecretKey, key.to_string().as_str())
+                    .unwrap();
 
                 key
             } else {
                 info!("Key already exists");
-                syncify_keyring.get_key(Keys::SecretKey).unwrap().parse().unwrap()
+                syncify_keyring
+                    .get_key(Keys::SecretKey)
+                    .unwrap()
+                    .parse()
+                    .unwrap()
             }
         };
 
-        Ok(SyncifyConfig{secret_key, user_data: "Philippe".parse().unwrap(), config_data: syncify_config_data})
+        Ok(SyncifyConfig {
+            secret_key,
+            user_data: "Philippe".parse().unwrap(),
+            config_data: syncify_config_data,
+        })
     }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "Uuid")]
-pub struct UuidDef(
-    #[serde(getter = "Uuid::as_bytes")]
-    Bytes
-);
+pub struct UuidDef(#[serde(getter = "Uuid::as_bytes")] Bytes);
 
 impl From<UuidDef> for Uuid {
     fn from(uuid: UuidDef) -> Self {

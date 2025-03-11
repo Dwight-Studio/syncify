@@ -1,14 +1,16 @@
 mod logger;
 
-use libsyncify::Syncify;
 use crate::logger::SyncifyLogger;
+use libsyncify::Syncify;
+use log::{debug, error, info};
+use spdlog::{Level};
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    SyncifyLogger::init();
+   SyncifyLogger::new();
 
     let mut syncify = Syncify::new().await.unwrap();
 
@@ -17,11 +19,11 @@ async fn main() {
             syncify.start_sync().await.unwrap();
         }
         ["send", file] => {
-            println!("SEND {}", file);
+            debug!("SEND {}", file);
         }
-        ["receive", ticket, file] => println!("RECEIVE from {} {}", ticket, file),
-        _ => println!("WTF"),
+        ["receive", ticket, file] => debug!("RECEIVE from {} {}", ticket, file),
+        _ => debug!("WTF"),
     }
-    
+
     syncify.stop_sync().await;
 }

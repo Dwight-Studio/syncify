@@ -61,6 +61,11 @@ impl SyncifyKeyring {
 
     fn get_credential(&self, key: Keys) -> Box<Credential> {
         self.credential_builder
-            .build(None, (crate::APP_NAME.to_owned() + "-" + key.key_id()).as_str(), crate::APP_NAME).unwrap()
+            .build(
+                None,
+                (crate::APP_NAME.to_owned() + "-" + key.key_id()).as_str(),
+                crate::APP_NAME,
+            )
+            .unwrap()
     }
 }
