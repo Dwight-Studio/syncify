@@ -63,19 +63,17 @@ impl SyncifyConfig {
                 } else {
                     warn!("Invalid config file: {}", config_file.display());
                     let mut i =0;
-                    while std::fs::exists(config_file.join(format!(".backup{}", &i)).as_path())? {
+                    while std::fs::exists(get_app_dir().join(format!("{CONFIG_FILENAME}.backup{i}")).as_path())? {
                         i += 1;
-                        if (i >= MAX_RENAME_ATTEMPS) {
+                        if i >= MAX_RENAME_ATTEMPS {
                             break;
                         }
                     }
                     if i < MAX_RENAME_ATTEMPS {
-                        std::fs::rename(config_file.as_path(), config_file.join(format!(".backup{}", &i)).as_path())?;
+                        std::fs::rename(config_file.as_path(), get_app_dir().join(format!("{CONFIG_FILENAME}.backup{i}")).as_path())?;
                     } else {
                         warn!("Unable backup config!");
                     }
-                    
-                    std::fs::remove_file(config_file.as_path())?;
                 }
             }
             
