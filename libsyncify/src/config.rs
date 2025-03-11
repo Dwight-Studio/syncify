@@ -13,7 +13,7 @@ use uuid::{Bytes, Uuid};
 
 mod keyring;
 
-const MAX_RENAME_ATTEMPS: u16 = 256;
+const MAX_RENAME_ATTEMPTS: u16 = 256;
 const CONFIG_FILENAME: &str = "config.toml";
 
 #[derive(Serialize, Deserialize)]
@@ -65,14 +65,15 @@ impl SyncifyConfig {
                     let mut i =0;
                     while std::fs::exists(get_app_dir().join(format!("{CONFIG_FILENAME}.backup{i}")).as_path())? {
                         i += 1;
-                        if i >= MAX_RENAME_ATTEMPS {
+                        if i >= MAX_RENAME_ATTEMPTS {
                             break;
                         }
                     }
-                    if i < MAX_RENAME_ATTEMPS {
-                        std::fs::rename(config_file.as_path(), get_app_dir().join(format!("{CONFIG_FILENAME}.backup{i}")).as_path())?;
+                    if i < MAX_RENAME_ATTEMPTS {
+                        std::fs::rename(config_file.as_path(), config_file.join(format!(".backup{}", &i)).as_path())?;
                     } else {
                         warn!("Unable backup config!");
+                        return Err(io::ErrorKind::AlreadyExists.into());
                     }
                 }
             }

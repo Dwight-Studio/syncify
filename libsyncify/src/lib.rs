@@ -50,7 +50,7 @@ impl Syncify {
     /// Stop syncing destroy current engine.
     pub async fn stop_sync(mut self) -> Self { 
         let old_engine = self.engine.take();
-        
+
         if let Some(engine) = old_engine {
             engine.shutdown().await;
         }

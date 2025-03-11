@@ -1,14 +1,12 @@
 use std::sync::mpsc;
 use std::{io, thread};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use iroh::Endpoint;
 use iroh::protocol::Router;
 use iroh_blobs::net_protocol::Blobs;
-use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
-use iroh_gossip::rpc::proto::{Request, Response};
 use notify::Watcher;
-use quic_rpc::transport::flume::FlumeConnector;
 use thiserror::Error;
 use crate::{get_app_dir, SharedDirectory};
 use crate::config::{SyncifyConfig};
@@ -19,9 +17,6 @@ const FILESYSTEM_EVENT_BUF_SIZE: usize = 1024;
 
 pub struct Engine {
     router: Router,
-    blobs_client: iroh_blobs::rpc::client::blobs::MemClient,
-    gossip_client: iroh_gossip::rpc::client::Client<FlumeConnector<Response, Request>>,
-    docs_client: iroh_docs::rpc::client::docs::MemClient,
     watcher: notify::RecommendedWatcher,
     event_handler: EventHandler,
 }
@@ -35,7 +30,6 @@ impl Engine {
             .alpns(vec![
                 iroh_blobs::ALPN.to_vec(),
                 iroh_gossip::ALPN.to_vec(),
-                iroh_docs::ALPN.to_vec()
             ])
             .discovery_n0()
             .discovery_local_network()
@@ -60,27 +54,12 @@ impl Engine {
             .await
             .map_err(EngineError::BlobsInit)?
             .build(builder.endpoint());
-        let blobs_client = blobs.client().to_owned();
 
         // Gossip protocol
         let gossip = Gossip::builder()
             .spawn(builder.endpoint().clone())
             .await
             .map_err(EngineError::GossipInit)?;
-        let gossip_client = gossip.client().to_owned();
-
-        // Docs protocol
-        let database_dir = get_app_dir().join(DATABASE_DIRNAME);
-
-        if !database_dir.exists() {
-            tokio::fs::create_dir_all(&database_dir)
-                .await
-                .map_err(EngineError::MakeDir)?;
-        }
-        let docs = Docs::persistent(database_dir).spawn(&blobs, &gossip)
-            .await
-            .map_err(EngineError::DocsInit)?;
-        let docs_client = docs.client().to_owned();
 
         let (events_tx, events_rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let watcher = notify::recommended_watcher(events_tx).map_err(EngineError::WatcherInit)?;
@@ -91,13 +70,9 @@ impl Engine {
             router: builder
                 .accept(iroh_blobs::ALPN, blobs)
                 .accept(iroh_gossip::ALPN, gossip)
-                .accept(iroh_docs::ALPN, docs)
                 .spawn()
                 .await
                 .map_err(EngineError::RouterInit)?,
-            blobs_client,
-            gossip_client,
-            docs_client,
             watcher,
             event_handler
         };
