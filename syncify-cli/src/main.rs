@@ -15,4 +15,6 @@ async fn main() {
         ["receive", ticket, file] => println!("RECEIVE from {} {}", ticket, file),
         _ => println!("WTF"),
     }
+    
+    syncify.stop_sync().await;
 }

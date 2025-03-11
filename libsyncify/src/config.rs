@@ -3,12 +3,13 @@ use crate::get_app_dir;
 use iroh::discovery::UserData;
 use iroh::SecretKey;
 use log::{debug, info};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use uuid::{Bytes, Uuid};
 
 mod keyring;
 
@@ -17,14 +18,16 @@ const CONFIG_FILENAME: &str = "config.toml";
 #[derive(Serialize)]
 #[derive(Deserialize)]
 pub struct SyncifyFolder {
-    pub uuid: String,
-    pub path: String
+    #[serde(with = "UuidDef")]
+    pub uuid: Uuid,
+    
+    pub path: String,
 }
 
 #[derive(Serialize)]
 #[derive(Deserialize)]
 pub struct SyncifyConfigData {
-    pub paths: Vec<SyncifyFolder>
+    pub folders: Vec<SyncifyFolder>
 }
 
 pub struct SyncifyConfig {
@@ -47,7 +50,7 @@ impl SyncifyConfig {
             tokio::fs::create_dir_all(&get_app_dir()).await?;
         }
 
-        let config_file = super::get_app_dir().join(CONFIG_FILENAME);
+        let config_file = get_app_dir().join(CONFIG_FILENAME);
 
         // Create config file if it does not exist
         // Load the config file if it exists
@@ -55,7 +58,7 @@ impl SyncifyConfig {
             if !Path::exists(config_file.as_path()) {
                 info!("Config file does not exists, creating a new one...");
                 let mut w_file = File::create(config_file.as_path())?;
-                let syncify_config_data = SyncifyConfigData {paths: vec![]};
+                let syncify_config_data = SyncifyConfigData { folders: vec![]};
 
                 w_file.write_all(toml::to_string(&syncify_config_data).unwrap().as_bytes())?;
 
@@ -86,5 +89,18 @@ impl SyncifyConfig {
         };
 
         Ok(SyncifyConfig{secret_key, user_data: "Philippe".parse().unwrap(), config_data: syncify_config_data})
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Uuid")]
+pub struct UuidDef(
+    #[serde(getter = "Uuid::as_bytes")]
+    Bytes
+);
+
+impl From<UuidDef> for Uuid {
+    fn from(uuid: UuidDef) -> Self {
+        Uuid::from_bytes(uuid.0)
     }
 }

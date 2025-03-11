@@ -1,23 +1,30 @@
-use std::io;
+use std::sync::mpsc;
+use std::{io, thread};
+use std::path::PathBuf;
 use iroh::Endpoint;
 use iroh::protocol::Router;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::rpc::proto::{Request, Response};
+use notify::Watcher;
 use quic_rpc::transport::flume::FlumeConnector;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use crate::get_app_dir;
-use crate::config::SyncifyConfig;
+use crate::config::{SyncifyConfig, SyncifyFolder};
 
 const DOWNLOAD_DIRNAME: &str = "download";
 const DATABASE_DIRNAME: &str = "database";
+const FILESYSTEM_EVENT_BUF_SIZE: usize = 1024;
 
 pub struct Engine {
     router: Router,
     blobs_client: iroh_blobs::rpc::client::blobs::MemClient,
     gossip_client: iroh_gossip::rpc::client::Client<FlumeConnector<Response, Request>>,
     docs_client: iroh_docs::rpc::client::docs::MemClient,
+    watcher: notify::RecommendedWatcher,
+    event_handler: thread::JoinHandle<()>,
 }
 
 impl Engine {
@@ -34,7 +41,7 @@ impl Engine {
             .user_data_for_discovery(config.user_data.clone())
             .bind()
             .await
-            .map_err(|e| EngineError::Endpoint(e))?;
+            .map_err(EngineError::EndpointInit)?;
 
         // Router
         let builder = Router::builder(endpoint);
@@ -45,12 +52,12 @@ impl Engine {
         if !download_dir.exists() {
             tokio::fs::create_dir_all(&download_dir)
                 .await
-                .map_err(|e| EngineError::MakeDir(e))?
+                .map_err(EngineError::MakeDir)?
         }
 
         let blobs = Blobs::persistent(download_dir)
             .await
-            .map_err(|e| EngineError::Blobs(e))?
+            .map_err(EngineError::BlobsInit)?
             .build(builder.endpoint());
         let blobs_client = blobs.client().to_owned();
 
@@ -58,7 +65,7 @@ impl Engine {
         let gossip = Gossip::builder()
             .spawn(builder.endpoint().clone())
             .await
-            .map_err(|e| EngineError::Gossip(e))?;
+            .map_err(EngineError::GossipInit)?;
         let gossip_client = gossip.client().to_owned();
 
         // Docs protocol
@@ -67,29 +74,60 @@ impl Engine {
         if !database_dir.exists() {
             tokio::fs::create_dir_all(&database_dir)
                 .await
-                .map_err(|e| EngineError::MakeDir(e))?;
+                .map_err(EngineError::MakeDir)?;
         }
         let docs = Docs::persistent(database_dir).spawn(&blobs, &gossip)
             .await
-            .map_err(|e| EngineError::Docs(e))?;
+            .map_err(EngineError::DocsInit)?;
         let docs_client = docs.client().to_owned();
 
-        Ok(Self {
+        let (events_tx, events_rx) = mpsc::channel::<notify::Result<notify::Event>>();
+        let mut watcher = notify::recommended_watcher(events_tx).map_err(EngineError::WatcherInit)?;
+        
+        let event_handler = thread::spawn(move || handle_events(events_rx));
+
+        let mut engine = Self {
             router: builder
-                .accept(iroh_blobs::ALPN.to_vec(), blobs)
+                .accept(iroh_blobs::ALPN, blobs)
                 .accept(iroh_gossip::ALPN, gossip)
                 .accept(iroh_docs::ALPN, docs)
                 .spawn()
                 .await
-                .map_err(|e| EngineError::Router(e))?,
+                .map_err(EngineError::RouterInit)?,
             blobs_client,
             gossip_client,
-            docs_client
-        })
+            docs_client,
+            watcher,
+            event_handler
+        };
+
+        for folder in &config.config_data.folders {
+            engine.add_watched_directory(folder)
+                .await?
+        }
+
+        Ok(engine)
     }
 
-    pub async fn destroy(&self) {
+    pub async fn destroy(mut self) {
         let _ = self.router.shutdown().await;
+        drop(self.watcher);
+        self.event_handler.join().unwrap();
+    }
+
+    pub async fn add_watched_directory(&mut self, folder: &SyncifyFolder) -> Result<(), EngineError> {
+        self.watcher.watch(&PathBuf::from(folder.path.clone()), notify::RecursiveMode::Recursive)
+            .map_err(EngineError::CannotWatch)?;
+        Ok(())
+    }
+}
+
+fn handle_events(events_rx: mpsc::Receiver<notify::Result<notify::Event>>) {
+    for res in events_rx {
+        match res {
+            Ok(event) => println!("event: {:?}", event),
+            Err(e) => println!("watch error: {:?}", e),
+        }
     }
 }
 
@@ -99,17 +137,23 @@ pub enum EngineError {
     MakeDir(io::Error),
 
     #[error("Endpoint error: {0}")]
-    Endpoint(anyhow::Error),
+    EndpointInit(anyhow::Error),
 
     #[error("Blobs error: {0}")]
-    Blobs(anyhow::Error),
+    BlobsInit(anyhow::Error),
     
     #[error("Gossip error: {0}")]
-    Gossip(iroh_gossip::net::Error),
+    GossipInit(iroh_gossip::net::Error),
 
     #[error("Docs error: {0}")]
-    Docs(anyhow::Error),
+    DocsInit(anyhow::Error),
 
     #[error("Router error: {0}")]
-    Router(anyhow::Error),
+    RouterInit(anyhow::Error),
+
+    #[error("Filesystem Watcher error: {0}")]
+    WatcherInit(notify::Error),
+
+    #[error("Filesystem Watcher error: {0}")]
+    CannotWatch(notify::Error)
 }
