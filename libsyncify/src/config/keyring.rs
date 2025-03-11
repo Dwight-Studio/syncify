@@ -1,8 +1,6 @@
 use keyring::{Credential, CredentialBuilder};
 use std::thread;
 
-const KEY_IDENTIFIER: &str = "Syncify Keys";
-
 pub enum Keys {
     SecretKey,
 }
@@ -10,7 +8,7 @@ pub enum Keys {
 impl Keys {
     pub fn key_id<'a>(&self) -> &'a str {
         match self {
-            Keys::SecretKey => "secret_key",
+            Keys::SecretKey => "SecretKey",
         }
     }
 }
@@ -63,6 +61,6 @@ impl SyncifyKeyring {
 
     fn get_credential(&self, key: Keys) -> Box<Credential> {
         self.credential_builder
-            .build(None, (crate::APP_NAME.to_owned() + key.key_id()).as_str(), KEY_IDENTIFIER).unwrap()
+            .build(None, (crate::APP_NAME.to_owned() + "-" + key.key_id()).as_str(), crate::APP_NAME).unwrap()
     }
 }

@@ -1,5 +1,5 @@
 use crate::config::{SyncifyConfig, SyncifyFolder};
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 use crate::engine::{Engine, EngineError};
@@ -11,7 +11,7 @@ mod engine;
 // Set the path where the configs file will be/is stored
 fn get_app_dir() -> PathBuf {
     if cfg!(debug_assertions) {
-        PathBuf::from("./cache")
+        PathBuf::from("target/debug/cache")
     } else {
     let project_dir =
         directories::ProjectDirs::from("fr", "Dwight Studio", "Syncify").unwrap();

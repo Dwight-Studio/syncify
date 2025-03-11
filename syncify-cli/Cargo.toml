@@ -15,3 +15,4 @@ publish = false
 libsyncify = { path= "../libsyncify" }
 tokio = "1.44.0"
 log = "0.4.26"
+spdlog-rs = { version = "0.4.1", features = ["log"] }

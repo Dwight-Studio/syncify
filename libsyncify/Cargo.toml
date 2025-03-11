@@ -26,5 +26,5 @@ thiserror = "2.0.12"
 rand = "0.8.5"
 quic-rpc = "0.18.2"
 uuid = "1.15.1"
-keyring = "3.6.2"
+keyring = { version = "3.6.2", features = ["linux-native-async-persistent", "apple-native", "windows-native", "crypto-rust", "tokio"] }
 notify = "8.0.0"

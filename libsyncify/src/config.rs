@@ -2,13 +2,13 @@ use crate::config::keyring::{Keys, SyncifyKeyring};
 use crate::get_app_dir;
 use iroh::discovery::UserData;
 use iroh::SecretKey;
-use log::{debug, info};
-use serde::{Deserialize, Serialize, Serializer};
+use log::{info};
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use uuid::{Bytes, Uuid};
 
 mod keyring;
@@ -20,7 +20,7 @@ const CONFIG_FILENAME: &str = "config.toml";
 pub struct SyncifyFolder {
     #[serde(with = "UuidDef")]
     pub uuid: Uuid,
-    
+
     pub path: String,
 }
 
@@ -75,7 +75,7 @@ impl SyncifyConfig {
         let syncify_keyring = SyncifyKeyring::new();
         let secret_key = {
             if !syncify_keyring.key_exists(Keys::SecretKey) {
-                debug!("Generating new secret key...");
+                info!("Generating new secret key...");
                 let mut rng = rand::rngs::OsRng;
                 let key = SecretKey::generate(&mut rng);
 
@@ -83,7 +83,7 @@ impl SyncifyConfig {
 
                 key
             } else {
-                debug!("Key already exists");
+                info!("Key already exists");
                 syncify_keyring.get_key(Keys::SecretKey).unwrap().parse().unwrap()
             }
         };

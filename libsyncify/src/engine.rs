@@ -10,7 +10,6 @@ use iroh_gossip::rpc::proto::{Request, Response};
 use notify::Watcher;
 use quic_rpc::transport::flume::FlumeConnector;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
 use crate::get_app_dir;
 use crate::config::{SyncifyConfig, SyncifyFolder};
 
@@ -82,7 +81,7 @@ impl Engine {
         let docs_client = docs.client().to_owned();
 
         let (events_tx, events_rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = notify::recommended_watcher(events_tx).map_err(EngineError::WatcherInit)?;
+        let watcher = notify::recommended_watcher(events_tx).map_err(EngineError::WatcherInit)?;
         
         let event_handler = thread::spawn(move || handle_events(events_rx));
 
@@ -109,8 +108,8 @@ impl Engine {
         Ok(engine)
     }
 
-    pub async fn destroy(mut self) {
-        let _ = self.router.shutdown().await;
+    pub async fn destroy(self) {
+        self.router.shutdown().await.unwrap();
         drop(self.watcher);
         self.event_handler.join().unwrap();
     }
