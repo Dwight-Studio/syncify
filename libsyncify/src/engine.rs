@@ -10,8 +10,8 @@ use iroh_gossip::rpc::proto::{Request, Response};
 use notify::Watcher;
 use quic_rpc::transport::flume::FlumeConnector;
 use thiserror::Error;
-use crate::get_app_dir;
-use crate::config::{SyncifyConfig, SyncifyFolder};
+use crate::{get_app_dir, SharedDirectory};
+use crate::config::{SyncifyConfig};
 
 const DOWNLOAD_DIRNAME: &str = "download";
 const DATABASE_DIRNAME: &str = "database";
@@ -23,10 +23,12 @@ pub struct Engine {
     gossip_client: iroh_gossip::rpc::client::Client<FlumeConnector<Response, Request>>,
     docs_client: iroh_docs::rpc::client::docs::MemClient,
     watcher: notify::RecommendedWatcher,
-    event_handler: thread::JoinHandle<()>,
+    event_handler: EventHandler,
 }
 
+/// Synchronization engine.
 impl Engine {
+    /// Construct new instance.
     pub async fn new(config: &SyncifyConfig) -> Result<Self, EngineError> {
         let endpoint = Endpoint::builder()
             .secret_key(config.secret_key.clone())
@@ -83,7 +85,7 @@ impl Engine {
         let (events_tx, events_rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let watcher = notify::recommended_watcher(events_tx).map_err(EngineError::WatcherInit)?;
         
-        let event_handler = thread::spawn(move || handle_events(events_rx));
+        let event_handler = EventHandler(Some(thread::spawn(move || handle_events(events_rx))));
 
         let mut engine = Self {
             router: builder
@@ -100,7 +102,7 @@ impl Engine {
             event_handler
         };
 
-        for folder in &config.config_data.folders {
+        for folder in &config.data.dirs {
             engine.add_watched_directory(folder)
                 .await?
         }
@@ -108,16 +110,28 @@ impl Engine {
         Ok(engine)
     }
 
-    pub async fn destroy(self) {
+    /// Gracefully shutdown.
+    pub async fn shutdown(self) {
         self.router.shutdown().await.unwrap();
-        drop(self.watcher);
-        self.event_handler.join().unwrap();
+        drop(self);
     }
 
-    pub async fn add_watched_directory(&mut self, folder: &SyncifyFolder) -> Result<(), EngineError> {
-        self.watcher.watch(&PathBuf::from(folder.path.clone()), notify::RecursiveMode::Recursive)
+    pub async fn add_watched_directory(&mut self, dir: &SharedDirectory) -> Result<(), EngineError> {
+        self.watcher.watch(&PathBuf::from(dir.path.clone()), notify::RecursiveMode::Recursive)
             .map_err(EngineError::CannotWatch)?;
         Ok(())
+    }
+
+    pub async fn remove_watched_directory(&mut self, dir: &SharedDirectory) -> Result<(), EngineError> {
+        self.watcher.unwatch(&PathBuf::from(dir.path.clone())).map_err(EngineError::CannotWatch)
+    }
+}
+
+struct EventHandler(Option<thread::JoinHandle<()>>);
+
+impl Drop for EventHandler {
+    fn drop(&mut self) {
+        self.0.take().unwrap().join().unwrap();
     }
 }
 
@@ -153,6 +167,9 @@ pub enum EngineError {
     #[error("Filesystem Watcher error: {0}")]
     WatcherInit(notify::Error),
 
-    #[error("Filesystem Watcher error: {0}")]
-    CannotWatch(notify::Error)
+    #[error("Unable to watch directory (is it a network filesystem?): {0}")]
+    CannotWatch(notify::Error),
+
+    #[error("Unable to unwatch directory: {0}")]
+    CannotUnwatch(notify::Error)
 }

@@ -1,9 +1,11 @@
-use crate::config::{SyncifyConfig, SyncifyFolder};
+use std::fmt::Display;
+use crate::config::SyncifyConfig;
 use std::path::{PathBuf};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use crate::engine::{Engine, EngineError};
-use crate::SyncifyError::InvalidPath;
+use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
 
 mod config;
 mod engine;
@@ -28,7 +30,7 @@ pub struct Syncify {
 }
 
 impl Syncify {
-    /// Create new instance.
+    /// Construct new instance.
     pub async fn new() -> Result<Self, SyncifyError> {
         let config = SyncifyConfig::new()
             .await
@@ -47,43 +49,81 @@ impl Syncify {
 
     /// Stop syncing destroy current engine.
     pub async fn stop_sync(mut self) -> Self { 
-        let old_engine = self.engine;
-        self.engine = None;
+        let old_engine = self.engine.take();
         
         if let Some(engine) = old_engine {
-            engine.destroy().await;
+            engine.shutdown().await;
         }
         
         self
     }
     
     /// Create shared directory.
-    pub async fn create_shared_directory(&mut self, path: PathBuf) -> Result<Uuid, SyncifyError> {
-        if !path.exists() {
-            return Err(InvalidPath(path))
-        }
-        
-        // TODO: Check if the shared directory already exists
-        
-        if let Some(engine) = &mut self.engine {
-            let uuid = Uuid::new_v4();
-            
-            let folder = SyncifyFolder {
-                uuid: uuid.clone(),
-                path: path.to_string_lossy().to_string()
-            };
+    pub async fn create_shared_directory(&mut self, path: PathBuf) -> Result<SharedDirectory, SyncifyError> {
+        let canonical_path = std::fs::canonicalize(&path).map_err(|_| InvalidPath(path))?;
 
-            engine.add_watched_directory(&folder)
+        // Check if the directory is already shared
+        for folder in &self.config.data.dirs {
+            if PathBuf::from(&folder.path).eq(&canonical_path) {
+                return Err(AlreadyShared(canonical_path));
+            }
+        }
+
+        // Add the directory to the config
+        let uuid = Uuid::new_v4();
+
+        let dir = SharedDirectory {
+            uuid,
+            path: canonical_path.to_string_lossy().to_string()
+        };
+
+        self.config.data.dirs.push(dir.clone());
+
+        // If the engine is available, add the directory to watched directory
+        if let Some(engine) = &mut self.engine {
+            engine.add_watched_directory(&dir)
                 .await
                 .map_err(SyncifyError::CannotWatch)?;
-            
-            self.config.config_data.folders.push(folder);
-            
-            Ok(uuid)
+        }
+
+        Ok(dir)
+    }
+
+    /// Remove shared directory.
+    ///
+    /// No files are actually deleted, but the directory will no longer be synchronized.
+    pub async fn remove_shared_directory(&mut self, dir: SharedDirectory) -> Result<(), SyncifyError> {
+        if self.config.data.dirs.contains(&dir) {
+            self.config.data.dirs.retain(|shared_directory| !dir.uuid.eq(&shared_directory.uuid));
+
+            // If the engine is available, add the directory to watched directory
+            if let Some(engine) = &mut self.engine {
+                engine.remove_watched_directory(&dir)
+                    .await
+                    .map_err(SyncifyError::CannotWatch)?;
+            }
+
+            Ok(())
         } else {
-            Err(SyncifyError::EngineNotInit())
+            Err(NotShared(dir))
         }
     }
+
+    /// Get an existing shared directory.
+    pub fn get_shared_directory(&self, uuid: &Uuid) -> Option<SharedDirectory> {
+        self.config.data.dirs
+            .iter()
+            .find(|folder| folder.uuid == *uuid)
+            .cloned()
+    }
+}
+
+/// Shared directory.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SharedDirectory {
+    #[serde(with = "config::UuidDef")]
+    pub(crate) uuid: Uuid,
+    pub(crate) path: String,
 }
 
 #[derive(Error, Debug)]
@@ -92,13 +132,19 @@ pub enum SyncifyError {
     Config(std::io::Error),
 
     #[error("Engine {0}")]
-    Engine(engine::EngineError),
+    Engine(EngineError),
     
     #[error("Engine not initialized")]
     EngineNotInit(),
     
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),
+
+    #[error("Folder is already shared: {0}")]
+    AlreadyShared(PathBuf),
+
+    #[error("Folder is not shared")]
+    NotShared(SharedDirectory),
 
     #[error("{0}")]
     CannotWatch(EngineError)
