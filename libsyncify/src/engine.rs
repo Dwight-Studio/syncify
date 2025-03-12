@@ -1,39 +1,41 @@
-use std::sync::mpsc;
-use std::{io, thread};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use iroh::Endpoint;
+mod fs;
+
+use std::error::Error;
+use crate::store::StoreManager;
+use crate::{get_app_dir, SharedDirectoryData};
 use iroh::protocol::Router;
+use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
-use notify::Watcher;
+use notify::{Event, EventHandler, Watcher};
+use std::path::PathBuf;
+use std::io;
+use std::sync::Arc;
 use thiserror::Error;
-use crate::{get_app_dir, SharedDirectory};
-use crate::config::{SyncifyConfig};
+use tokio::sync::{Mutex, RwLock};
+use crate::engine::fs::{EventProcessor, EventProcessorHandle};
 
 const DOWNLOAD_DIRNAME: &str = "download";
 const DATABASE_DIRNAME: &str = "database";
-const FILESYSTEM_EVENT_BUF_SIZE: usize = 1024;
 
 pub struct Engine {
     router: Router,
     watcher: notify::RecommendedWatcher,
-    event_handler: EventHandler,
+    processor: EventProcessor,
 }
 
 /// Synchronization engine.
 impl Engine {
     /// Construct new instance.
-    pub async fn new(config: &SyncifyConfig) -> Result<Self, EngineError> {
+    pub async fn new(config: Arc<RwLock<StoreManager>>) -> Result<Self, EngineError> {
         let endpoint = Endpoint::builder()
-            .secret_key(config.secret_key.clone())
+            .secret_key(config.read().await.secret_key.clone())
             .alpns(vec![
                 iroh_blobs::ALPN.to_vec(),
                 iroh_gossip::ALPN.to_vec(),
             ])
             .discovery_n0()
             .discovery_local_network()
-            .user_data_for_discovery(config.user_data.clone())
             .bind()
             .await
             .map_err(EngineError::EndpointInit)?;
@@ -61,10 +63,10 @@ impl Engine {
             .await
             .map_err(EngineError::GossipInit)?;
 
-        let (events_tx, events_rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let watcher = notify::recommended_watcher(events_tx).map_err(EngineError::WatcherInit)?;
-        
-        let event_handler = EventHandler(Some(thread::spawn(move || handle_events(events_rx))));
+
+        // File watcher
+        let processor = EventProcessor::new(config.clone());
+        let watcher = notify::recommended_watcher(processor.clone()).map_err(EngineError::CannotWatch)?;
 
         let mut engine = Self {
             router: builder
@@ -74,10 +76,10 @@ impl Engine {
                 .await
                 .map_err(EngineError::RouterInit)?,
             watcher,
-            event_handler
+            processor
         };
 
-        for folder in &config.data.dirs {
+        for folder in &config.read().await.data.shared_directories {
             engine.add_watched_directory(folder)
                 .await?
         }
@@ -91,31 +93,14 @@ impl Engine {
         drop(self);
     }
 
-    pub async fn add_watched_directory(&mut self, dir: &SharedDirectory) -> Result<(), EngineError> {
+    pub async fn add_watched_directory(&mut self, dir: &SharedDirectoryData) -> Result<(), EngineError> {
         self.watcher.watch(&PathBuf::from(dir.path.clone()), notify::RecursiveMode::Recursive)
             .map_err(EngineError::CannotWatch)?;
         Ok(())
     }
 
-    pub async fn remove_watched_directory(&mut self, dir: &SharedDirectory) -> Result<(), EngineError> {
+    pub async fn remove_watched_directory(&mut self, dir: &SharedDirectoryData) -> Result<(), EngineError> {
         self.watcher.unwatch(&PathBuf::from(dir.path.clone())).map_err(EngineError::CannotWatch)
-    }
-}
-
-struct EventHandler(Option<thread::JoinHandle<()>>);
-
-impl Drop for EventHandler {
-    fn drop(&mut self) {
-        self.0.take().unwrap().join().unwrap();
-    }
-}
-
-fn handle_events(events_rx: mpsc::Receiver<notify::Result<notify::Event>>) {
-    for res in events_rx {
-        match res {
-            Ok(event) => println!("event: {:?}", event),
-            Err(e) => println!("watch error: {:?}", e),
-        }
     }
 }
 

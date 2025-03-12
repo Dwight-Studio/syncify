@@ -13,13 +13,13 @@ impl Keys {
     }
 }
 
-pub struct SyncifyKeyring {
+pub struct Keyring {
     credential_builder: Box<CredentialBuilder>,
 }
 
-impl SyncifyKeyring {
+impl Keyring {
     pub fn new() -> Self {
-        SyncifyKeyring {
+        Keyring {
             credential_builder: keyring::default::default_credential_builder(),
         }
     }

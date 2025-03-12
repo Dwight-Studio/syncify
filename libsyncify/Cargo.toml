@@ -14,7 +14,8 @@ publish = false
 [dependencies]
 iroh = { version = "0.33.0", features = ["discovery-local-network"] }
 iroh-gossip = { version = "0.33.0" }
-iroh-blobs = { version = "0.33.0", features = ["downloader"] }
+iroh-blobs = { version = "0.33.0", features = ["downloader", "fs-store"] }
+iroh-docs = { version = "0.33.0", features = []}
 anyhow = "1.0.97"
 directories = "6.0.0"
 toml = "0.8.20"
@@ -23,7 +24,6 @@ log = "0.4.26"
 tokio = "1.44.0"
 thiserror = "2.0.12"
 rand = "0.8.5"
-quic-rpc = "0.18.2"
 uuid = "1.15.1"
 keyring = { version = "3.6.2", features = ["linux-native-async-persistent", "apple-native", "windows-native", "crypto-rust", "tokio"] }
 notify = "8.0.0"
