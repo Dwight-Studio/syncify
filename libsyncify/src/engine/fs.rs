@@ -1,7 +1,7 @@
 use tokio::task::JoinHandle;
 use std::ops::Deref;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use notify::{Event, EventHandler};
 use crate::store::StoreManager;
 

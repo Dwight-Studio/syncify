@@ -1,14 +1,13 @@
-use std::fmt::Display;
 use crate::store::{SharedDirectoryData, StoreManager};
-use std::path::{PathBuf};
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
-use uuid::Uuid;
 use crate::engine::{Engine, EngineError};
 use crate::store::keyring::SharedDirectorySecrets;
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
+use iroh::{Endpoint};
+use std::path::PathBuf;
+use thiserror::Error;
+use tokio::sync::{RwLock};
+use uuid::Uuid;
 
 mod store;
 mod engine;
@@ -80,7 +79,7 @@ impl Syncify {
             path: canonical_path.to_string_lossy().to_string()
         };
 
-        self.config.write().await.data.shared_directories.push(dir.clone());
+        self.config.write().await.add_shared_dir(dir.clone());
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
@@ -118,6 +117,11 @@ impl Syncify {
             .iter()
             .find(|folder| folder.uuid == *uuid)
             .cloned()
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn get_node_endpoint(&self) -> &Endpoint {
+        self.engine.as_ref().unwrap().get_node_endpoint()
     }
 }
 

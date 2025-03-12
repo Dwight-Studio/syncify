@@ -15,7 +15,6 @@ publish = false
 iroh = { version = "0.33.0", features = ["discovery-local-network"] }
 iroh-gossip = { version = "0.33.0" }
 iroh-blobs = { version = "0.33.0", features = ["downloader", "fs-store"] }
-iroh-docs = { version = "0.33.0", features = []}
 anyhow = "1.0.97"
 directories = "6.0.0"
 toml = "0.8.20"
@@ -27,3 +26,5 @@ rand = "0.8.5"
 uuid = "1.15.1"
 keyring = { version = "3.6.2", features = ["linux-native-async-persistent", "apple-native", "windows-native", "crypto-rust", "tokio"] }
 notify = "8.0.0"
+futures-lite = "2.6.0"
+chacha20poly1305 = "0.10.1"

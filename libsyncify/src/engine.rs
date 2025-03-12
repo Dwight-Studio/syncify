@@ -5,15 +5,16 @@ use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
-use notify::{EventHandler, Watcher};
-use std::error::Error;
+use notify::{Watcher};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use crate::engine::protocol::SyncifyProtocol;
 
-pub mod fs;
+mod fs;
+mod protocol;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 const DATABASE_DIRNAME: &str = "database";
@@ -43,7 +44,7 @@ impl Engine {
         // Router
         let builder = Router::builder(endpoint);
 
-        // Blobs protocole
+        // Blobs protocol
         let download_dir = get_app_dir().join(DOWNLOAD_DIRNAME);
 
         if !download_dir.exists() {
@@ -63,6 +64,7 @@ impl Engine {
             .await
             .map_err(EngineError::GossipInit)?;
 
+        let syncify_prot = SyncifyProtocol{};
 
         // File watcher
         let processor = EventProcessor::new(config.clone());
@@ -70,6 +72,7 @@ impl Engine {
 
         let mut engine = Self {
             router: builder
+                .accept(protocol::SYNCIFY_ALPN, syncify_prot)
                 .accept(iroh_blobs::ALPN, blobs)
                 .accept(iroh_gossip::ALPN, gossip)
                 .spawn()
@@ -101,6 +104,11 @@ impl Engine {
 
     pub async fn remove_watched_directory(&mut self, dir: &SharedDirectoryData) -> Result<(), EngineError> {
         self.watcher.unwatch(&PathBuf::from(dir.path.clone())).map_err(EngineError::CannotWatch)
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn get_node_endpoint(&self) -> &Endpoint {
+        self.router.endpoint()
     }
 }
 

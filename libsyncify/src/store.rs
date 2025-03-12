@@ -1,7 +1,8 @@
-use crate::store::keyring::{Keys, Keyring};
 use crate::get_app_dir;
+use crate::store::keyring::{Keyring, Keys};
+use chacha20poly1305::aead::OsRng;
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use iroh::SecretKey;
-use iroh::discovery::UserData;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -26,15 +27,12 @@ pub struct Store {
 pub struct StoreManager {
     pub secret_key: SecretKey,
     pub data: Store,
+    keyring: Keyring,
 }
 
 impl Display for StoreManager {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "(secret_key: {})",
-            self.secret_key
-        )
+        write!(f, "(secret_key: {})", self.secret_key)
     }
 }
 
@@ -87,7 +85,9 @@ impl StoreManager {
 
             info!("Config file does not exists, creating a new one...");
             let mut w_file = File::create(config_file.as_path())?;
-            let syncify_config_data = Store { shared_directories: vec![] };
+            let syncify_config_data = Store {
+                shared_directories: vec![],
+            };
 
             w_file.write_all(toml::to_string(&syncify_config_data).unwrap().as_bytes())?;
 
@@ -96,20 +96,20 @@ impl StoreManager {
 
         let syncify_keyring = Keyring::new();
         let secret_key = {
-            if !syncify_keyring.key_exists(Keys::SecretKey) {
+            if !syncify_keyring.key_exists(Keys::SecretKey, None) {
                 info!("Generating new secret key...");
                 let mut rng = rand::rngs::OsRng;
                 let key = SecretKey::generate(&mut rng);
 
                 syncify_keyring
-                    .set_key(Keys::SecretKey, key.to_string().as_str())
+                    .set_key(Keys::SecretKey, key.to_string().as_str(), None)
                     .unwrap();
 
                 key
             } else {
                 info!("Key already exists");
                 syncify_keyring
-                    .get_key(Keys::SecretKey)
+                    .get_key(Keys::SecretKey, None)
                     .unwrap()
                     .parse()
                     .unwrap()
@@ -119,7 +119,20 @@ impl StoreManager {
         Ok(StoreManager {
             secret_key,
             data: syncify_config_data,
+            keyring: syncify_keyring,
         })
+    }
+
+    pub fn add_shared_dir(&mut self, data: SharedDirectoryData) {
+        let uuid = data.uuid;
+        self.data.shared_directories.push(data);
+        self.keyring
+            .set_key(
+                Keys::SharedDirKey,
+                &String::from_utf8_lossy(XChaCha20Poly1305::generate_key(&mut OsRng).as_slice()),
+                Some(uuid.to_string().as_str()),
+            )
+            .unwrap();
     }
 }
 
