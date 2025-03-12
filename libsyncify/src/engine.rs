@@ -1,7 +1,7 @@
 use crate::engine::fs::EventProcessor;
 use crate::engine::protocol::SyncifyProtocol;
-use crate::store::StoreManager;
 use crate::get_app_dir;
+use crate::store::StoreManager;
 use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 
 mod fs;
 mod protocol;
+mod state;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 const DATABASE_DIRNAME: &str = "database";

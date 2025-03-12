@@ -1,4 +1,6 @@
 use crate::store::StoreManager;
+use notify::event::{CreateKind, ModifyKind, RemoveKind};
+use notify::EventKind::{Create, Modify, Remove};
 use notify::{Event, EventHandler};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -27,7 +29,32 @@ impl EventProcessor {
         config: Arc<RwLock<StoreManager>>,
         mut rx: mpsc::Receiver<notify::Result<Event>>,
     ) {
-        while let Some(event) = rx.recv().await {}
+        while let Some(result) = rx.recv().await {
+            if let Ok(event) = result {
+                match event.kind {
+                    Create(kind) => match kind {
+                        CreateKind::Any => {}
+                        CreateKind::File => {}
+                        CreateKind::Folder => {}
+                        CreateKind::Other => {}
+                    },
+                    Modify(kind) => match kind {
+                        ModifyKind::Any => {}
+                        ModifyKind::Data(_) => {}
+                        ModifyKind::Metadata(_) => {}
+                        ModifyKind::Name(_) => {}
+                        ModifyKind::Other => {}
+                    },
+                    Remove(kind) => match kind {
+                        RemoveKind::Any => {}
+                        RemoveKind::File => {}
+                        RemoveKind::Folder => {}
+                        RemoveKind::Other => {}
+                    },
+                    _ => continue,
+                }
+            }
+        }
     }
 }
 
@@ -41,8 +68,8 @@ impl Deref for EventProcessor {
 
 impl Drop for EventProcessor {
     fn drop(&mut self) {
-        if let Err(error) = tokio::runtime::Handle::current()
-            .block_on(async { self.task_handle.take().unwrap().await })
+        if let Err(error) =
+            futures::executor::block_on(async { self.task_handle.take().unwrap().await })
         {
             log::error!("Failed to join thread: {error}");
         }
