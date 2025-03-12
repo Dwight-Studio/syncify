@@ -1,6 +1,6 @@
-use crate::get_app_dir;
+use crate::{get_app_dir, SharedDirectory};
 use crate::store::keyring::{Keyring, Keys};
-use chacha20poly1305::aead::OsRng;
+use chacha20poly1305::aead::{Key, OsRng};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use iroh::SecretKey;
 use log::{info, warn};
@@ -123,15 +123,24 @@ impl StoreManager {
         })
     }
 
-    pub fn add_shared_dir(&mut self, data: SharedDirectoryData) {
-        let uuid = data.uuid;
-        self.data.shared_directories.push(data);
+    pub fn add_shared_dir(&mut self, dir: &SharedDirectory) {
+        self.data.shared_directories.push(dir.data.clone());
         self.keyring
             .set_key(
                 Keys::SharedDirKey,
                 &String::from_utf8_lossy(XChaCha20Poly1305::generate_key(&mut OsRng).as_slice()),
-                Some(uuid.to_string().as_str()),
+                Some(dir.data.uuid.to_string().as_str()),
             )
+            .unwrap();
+    }
+
+    pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
+        //let dzqqdzqd: Key<XChaCha20Poly1305> = *Key::<XChaCha20Poly1305>::from_slice(b"");
+        self.data
+            .shared_directories
+            .retain(|shared_directory| !dir.data.uuid.eq(&shared_directory.uuid));
+        self.keyring
+            .delete_key(Keys::SharedDirKey, Some(dir.data.uuid.to_string().as_str()))
             .unwrap();
     }
 }

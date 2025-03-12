@@ -5,6 +5,8 @@ use crate::store::keyring::SharedDirectorySecrets;
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
 use iroh::{Endpoint};
 use std::path::PathBuf;
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+use chacha20poly1305::aead::{Key, OsRng};
 use thiserror::Error;
 use tokio::sync::{RwLock};
 use uuid::Uuid;
@@ -74,40 +76,43 @@ impl Syncify {
         // Add the directory to the store
         let uuid = Uuid::new_v4();
 
-        let dir = SharedDirectoryData {
-            uuid,
-            path: canonical_path.to_string_lossy().to_string()
+        let dir = SharedDirectory {
+            data: SharedDirectoryData {
+                uuid,
+                path: canonical_path.to_string_lossy().to_string(),
+            },
+            key: XChaCha20Poly1305::generate_key(&mut OsRng) 
         };
-
-        self.config.write().await.add_shared_dir(dir.clone());
+        
+        self.config.write().await.add_shared_dir(&dir);
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
-            engine.add_watched_directory(&dir)
+            engine.add_watched_directory(&dir.data)
                 .await
                 .map_err(SyncifyError::CannotWatch)?;
         }
 
-        Ok(dir)
+        Ok(dir.data)
     }
 
     /// Remove shared directory.
     ///
     /// No files are actually deleted, but the directory will no longer be synchronized.
-    pub async fn remove_shared_directory(&mut self, dir: SharedDirectoryData) -> Result<(), SyncifyError> {
-        if self.config.read().await.data.shared_directories.contains(&dir) {
-            self.config.write().await.data.shared_directories.retain(|shared_directory| !dir.uuid.eq(&shared_directory.uuid));
+    pub async fn remove_shared_directory(&mut self, dir: SharedDirectory) -> Result<(), SyncifyError> {
+        if self.config.read().await.data.shared_directories.contains(&dir.data) {
+            self.config.write().await.remove_shared_dir(&dir);
 
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
-                engine.remove_watched_directory(&dir)
+                engine.remove_watched_directory(&dir.data)
                     .await
                     .map_err(SyncifyError::CannotWatch)?;
             }
 
             Ok(())
         } else {
-            Err(NotShared(dir))
+            Err(NotShared(dir.data))
         }
     }
 
@@ -125,9 +130,9 @@ impl Syncify {
     }
 }
 
-struct SharedDirectory {
+pub struct SharedDirectory {
     data: SharedDirectoryData,
-    secrets: SharedDirectorySecrets
+    key: Key<XChaCha20Poly1305>
 }
 
 #[derive(Error, Debug)]
