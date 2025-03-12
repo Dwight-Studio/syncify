@@ -1,8 +1,8 @@
-use std::fmt::{Debug, Formatter};
 use futures_lite::future::Boxed;
-use iroh::endpoint::{Connecting};
+use iroh::endpoint::Connecting;
 use iroh::protocol::ProtocolHandler;
-use log::{debug};
+use log::debug;
+use std::fmt::{Debug, Formatter};
 
 pub const SYNCIFY_ALPN: &[u8] = b"/syncify/1";
 
@@ -18,7 +18,10 @@ impl ProtocolHandler for SyncifyProtocol {
     fn accept(&self, conn: Connecting) -> Boxed<anyhow::Result<()>> {
         Box::pin(async move {
             let connection = conn.await.unwrap();
-            debug!("Incoming connection from {}", connection.remote_node_id().unwrap().to_string());
+            debug!(
+                "Incoming connection from {}",
+                connection.remote_node_id().unwrap().to_string()
+            );
 
             let (mut tx, mut rx) = connection.accept_bi().await.unwrap();
             let mut rcv = [0u8; 8];

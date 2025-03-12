@@ -1,16 +1,16 @@
-use tokio::task::JoinHandle;
+use crate::store::StoreManager;
+use notify::{Event, EventHandler};
 use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use notify::{Event, EventHandler};
-use crate::store::StoreManager;
+use tokio::task::JoinHandle;
 
 const NOTIFICATION_BUFFER_SIZE: usize = 1024;
 
 /// Actor responsible to handle all filesystem events.
 pub struct EventProcessor {
     task_handle: Option<JoinHandle<()>>,
-    handle: EventProcessorHandle
+    handle: EventProcessorHandle,
 }
 
 impl EventProcessor {
@@ -19,14 +19,15 @@ impl EventProcessor {
 
         Self {
             task_handle: Some(tokio::spawn(Self::handle_event(config, rx))),
-            handle: EventProcessorHandle { tx }
+            handle: EventProcessorHandle { tx },
         }
     }
 
-    pub async fn handle_event(config: Arc<RwLock<StoreManager>>, mut rx: mpsc::Receiver<notify::Result<Event>>) {
-        while let Some(event) = rx.recv().await {
-            
-        }
+    pub async fn handle_event(
+        config: Arc<RwLock<StoreManager>>,
+        mut rx: mpsc::Receiver<notify::Result<Event>>,
+    ) {
+        while let Some(event) = rx.recv().await {}
     }
 }
 
@@ -40,9 +41,9 @@ impl Deref for EventProcessor {
 
 impl Drop for EventProcessor {
     fn drop(&mut self) {
-        if let Err(error) = tokio::runtime::Handle::current().block_on(async {
-            self.task_handle.take().unwrap().await
-        }) {
+        if let Err(error) = tokio::runtime::Handle::current()
+            .block_on(async { self.task_handle.take().unwrap().await })
+        {
             log::error!("Failed to join thread: {error}");
         }
     }

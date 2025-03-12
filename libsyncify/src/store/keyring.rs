@@ -27,7 +27,12 @@ impl Keyring {
         }
     }
 
-    pub fn set_key(&self, key: Keys, value: &str, key_complement: Option<&str>) -> Result<(), keyring::Error> {
+    pub fn set_key(
+        &self,
+        key: Keys,
+        value: &str,
+        key_complement: Option<&str>,
+    ) -> Result<(), keyring::Error> {
         let credential = self.get_credential(key, key_complement);
 
         let val = value.to_string();
@@ -37,7 +42,11 @@ impl Keyring {
             .unwrap()
     }
 
-    pub fn get_key(&self, key: Keys, key_complement: Option<&str>) -> Result<String, keyring::Error> {
+    pub fn get_key(
+        &self,
+        key: Keys,
+        key_complement: Option<&str>,
+    ) -> Result<String, keyring::Error> {
         let credential = self.get_credential(key, key_complement);
 
         thread::spawn(move || credential.get_password())
@@ -45,7 +54,11 @@ impl Keyring {
             .unwrap()
     }
 
-    pub fn delete_key(&self, key: Keys, key_complement: Option<&str>) -> Result<(), keyring::Error> {
+    pub fn delete_key(
+        &self,
+        key: Keys,
+        key_complement: Option<&str>,
+    ) -> Result<(), keyring::Error> {
         let credential = self.get_credential(key, key_complement);
 
         thread::spawn(move || credential.delete_credential())
@@ -64,24 +77,22 @@ impl Keyring {
 
     fn get_credential(&self, key: Keys, key_complement: Option<&str>) -> Box<Credential> {
         match key_complement {
-            Some(key_comp) => {
-                self.credential_builder
-                    .build(
-                        None,
-                        (crate::APP_NAME.to_owned() + "-" + key.key_id() + "-" + key_comp).as_str(),
-                        crate::APP_NAME,
-                    )
-                    .unwrap()
-            }
-            None => {
-                self.credential_builder
-                    .build(
-                        None,
-                        (crate::APP_NAME.to_owned() + "-" + key.key_id()).as_str(),
-                        crate::APP_NAME,
-                    )
-                    .unwrap()
-            }
+            Some(key_comp) => self
+                .credential_builder
+                .build(
+                    None,
+                    (crate::APP_NAME.to_owned() + "-" + key.key_id() + "-" + key_comp).as_str(),
+                    crate::APP_NAME,
+                )
+                .unwrap(),
+            None => self
+                .credential_builder
+                .build(
+                    None,
+                    (crate::APP_NAME.to_owned() + "-" + key.key_id()).as_str(),
+                    crate::APP_NAME,
+                )
+                .unwrap(),
         }
     }
 }

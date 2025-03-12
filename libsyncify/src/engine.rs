@@ -1,17 +1,17 @@
 use crate::engine::fs::EventProcessor;
+use crate::engine::protocol::SyncifyProtocol;
 use crate::store::StoreManager;
-use crate::{get_app_dir, SharedDirectoryData};
+use crate::get_app_dir;
 use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
-use notify::{Watcher};
+use notify::Watcher;
 use std::io;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use crate::engine::protocol::SyncifyProtocol;
 
 mod fs;
 mod protocol;
@@ -31,10 +31,7 @@ impl Engine {
     pub async fn new(config: Arc<RwLock<StoreManager>>) -> Result<Self, EngineError> {
         let endpoint = Endpoint::builder()
             .secret_key(config.read().await.secret_key.clone())
-            .alpns(vec![
-                iroh_blobs::ALPN.to_vec(),
-                iroh_gossip::ALPN.to_vec(),
-            ])
+            .alpns(vec![iroh_blobs::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
             .discovery_n0()
             .discovery_local_network()
             .bind()
@@ -64,11 +61,12 @@ impl Engine {
             .await
             .map_err(EngineError::GossipInit)?;
 
-        let syncify_prot = SyncifyProtocol{};
+        let syncify_prot = SyncifyProtocol {};
 
         // File watcher
         let processor = EventProcessor::new(config.clone());
-        let watcher = notify::recommended_watcher(processor.clone()).map_err(EngineError::CannotWatch)?;
+        let watcher =
+            notify::recommended_watcher(processor.clone()).map_err(EngineError::CannotWatch)?;
 
         let mut engine = Self {
             router: builder
@@ -79,12 +77,16 @@ impl Engine {
                 .await
                 .map_err(EngineError::RouterInit)?,
             watcher,
-            processor
+            processor,
         };
 
-        for folder in &config.read().await.data.shared_directories {
-            engine.add_watched_directory(folder)
-                .await?
+        for uuid in &config.read().await.get_all_dirs() {
+            let dir = config
+                .read()
+                .await
+                .get_shared_dir(uuid)
+                .unwrap_or_else(|| panic!("Cannot get directory: {uuid}"));
+            engine.add_watched_directory(&dir.path()).await?
         }
 
         Ok(engine)
@@ -96,14 +98,15 @@ impl Engine {
         drop(self);
     }
 
-    pub async fn add_watched_directory(&mut self, dir: &SharedDirectoryData) -> Result<(), EngineError> {
-        self.watcher.watch(&PathBuf::from(dir.path.clone()), notify::RecursiveMode::Recursive)
+    pub async fn add_watched_directory(&mut self, path: &Path) -> Result<(), EngineError> {
+        self.watcher
+            .watch(path, notify::RecursiveMode::Recursive)
             .map_err(EngineError::CannotWatch)?;
         Ok(())
     }
 
-    pub async fn remove_watched_directory(&mut self, dir: &SharedDirectoryData) -> Result<(), EngineError> {
-        self.watcher.unwatch(&PathBuf::from(dir.path.clone())).map_err(EngineError::CannotWatch)
+    pub async fn remove_watched_directory(&mut self, path: &Path) -> Result<(), EngineError> {
+        self.watcher.unwatch(path).map_err(EngineError::CannotWatch)
     }
 
     #[cfg(debug_assertions)]
@@ -122,7 +125,7 @@ pub enum EngineError {
 
     #[error("Blobs error: {0}")]
     BlobsInit(anyhow::Error),
-    
+
     #[error("Gossip error: {0}")]
     GossipInit(iroh_gossip::net::Error),
 
@@ -139,5 +142,5 @@ pub enum EngineError {
     CannotWatch(notify::Error),
 
     #[error("Unable to unwatch directory: {0}")]
-    CannotUnwatch(notify::Error)
+    CannotUnwatch(notify::Error),
 }

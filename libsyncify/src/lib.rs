@@ -1,26 +1,25 @@
-use crate::store::{SharedDirectoryData, StoreManager};
-use std::sync::Arc;
 use crate::engine::{Engine, EngineError};
 use crate::store::keyring::SharedDirectorySecrets;
+use crate::store::{SharedDirectoryData, StoreManager};
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
-use iroh::{Endpoint};
-use std::path::PathBuf;
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use chacha20poly1305::aead::{Key, OsRng};
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+use iroh::Endpoint;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
-mod store;
 mod engine;
+mod store;
 
 // Set the path where the configs file will be/is stored
 fn get_app_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("target/debug/cache")
     } else {
-    let project_dir =
-        directories::ProjectDirs::from("fr", "Dwight Studio", "Syncify").unwrap();
+        let project_dir = directories::ProjectDirs::from("fr", "Dwight Studio", "Syncify").unwrap();
         project_dir.config_local_dir().to_path_buf()
     }
 }
@@ -29,41 +28,47 @@ const APP_NAME: &str = "Syncify";
 
 /// Entry point of the library.
 pub struct Syncify {
-    pub(crate) config: Arc<RwLock<StoreManager>>,
-    pub(crate) engine: Option<Engine>
+    config: Arc<RwLock<StoreManager>>,
+    engine: Option<Engine>,
 }
 
 impl Syncify {
     /// Construct new instance.
     pub async fn new() -> Result<Self, SyncifyError> {
-        let config = StoreManager::new()
-            .await
-            .map_err(SyncifyError::Config)?;
+        let config = StoreManager::new().await.map_err(SyncifyError::Config)?;
 
-        Ok(Self {config: Arc::new(RwLock::new(config)), engine: None })
+        Ok(Self {
+            config: Arc::new(RwLock::new(config)),
+            engine: None,
+        })
     }
 
     /// Initialize new engine and start syncing.
     pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
-        self.engine = Some(Engine::new(self.config.clone())
-            .await
-            .map_err(SyncifyError::Engine)?);
+        self.engine = Some(
+            Engine::new(self.config.clone())
+                .await
+                .map_err(SyncifyError::Engine)?,
+        );
         Ok(())
     }
 
     /// Stop syncing destroy current engine.
-    pub async fn stop_sync(mut self) -> Self { 
+    pub async fn stop_sync(mut self) -> Self {
         let old_engine = self.engine.take();
 
         if let Some(engine) = old_engine {
             engine.shutdown().await;
         }
-        
+
         self
     }
-    
+
     /// Create shared directory.
-    pub async fn create_shared_directory(&mut self, path: PathBuf) -> Result<SharedDirectoryData, SyncifyError> {
+    pub async fn create_shared_directory(
+        &mut self,
+        path: PathBuf,
+    ) -> Result<SharedDirectoryData, SyncifyError> {
         let canonical_path = std::fs::canonicalize(&path).map_err(|_| InvalidPath(path))?;
 
         // Check if the directory is already shared
@@ -81,14 +86,15 @@ impl Syncify {
                 uuid,
                 path: canonical_path.to_string_lossy().to_string(),
             },
-            key: XChaCha20Poly1305::generate_key(&mut OsRng) 
+            key: XChaCha20Poly1305::generate_key(&mut OsRng),
         };
-        
+
         self.config.write().await.add_shared_dir(&dir);
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
-            engine.add_watched_directory(&dir.data)
+            engine
+                .add_watched_directory(&dir.path())
                 .await
                 .map_err(SyncifyError::CannotWatch)?;
         }
@@ -99,13 +105,24 @@ impl Syncify {
     /// Remove shared directory.
     ///
     /// No files are actually deleted, but the directory will no longer be synchronized.
-    pub async fn remove_shared_directory(&mut self, dir: SharedDirectory) -> Result<(), SyncifyError> {
-        if self.config.read().await.data.shared_directories.contains(&dir.data) {
+    pub async fn remove_shared_directory(
+        &mut self,
+        dir: SharedDirectory,
+    ) -> Result<(), SyncifyError> {
+        if self
+            .config
+            .read()
+            .await
+            .data
+            .shared_directories
+            .contains(&dir.data)
+        {
             self.config.write().await.remove_shared_dir(&dir);
 
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
-                engine.remove_watched_directory(&dir.data)
+                engine
+                    .remove_watched_directory(&dir.path())
                     .await
                     .map_err(SyncifyError::CannotWatch)?;
             }
@@ -129,7 +146,17 @@ impl Syncify {
 
 pub struct SharedDirectory {
     data: SharedDirectoryData,
-    key: Key<XChaCha20Poly1305>
+    key: Key<XChaCha20Poly1305>,
+}
+
+impl SharedDirectory {
+    pub fn uuid(&self) -> Uuid {
+        self.data.uuid
+    }
+
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from(&self.data.path)
+    }
 }
 
 #[derive(Error, Debug)]
@@ -139,10 +166,10 @@ pub enum SyncifyError {
 
     #[error("Engine {0}")]
     Engine(EngineError),
-    
+
     #[error("Engine not initialized")]
     EngineNotInit(),
-    
+
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),
 
@@ -153,5 +180,5 @@ pub enum SyncifyError {
     NotShared(SharedDirectoryData),
 
     #[error("{0}")]
-    CannotWatch(EngineError)
+    CannotWatch(EngineError),
 }

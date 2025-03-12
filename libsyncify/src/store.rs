@@ -1,5 +1,5 @@
-use crate::{get_app_dir, SharedDirectory};
 use crate::store::keyring::{Keyring, Keys};
+use crate::{get_app_dir, SharedDirectory};
 use chacha20poly1305::aead::{Key, OsRng};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use iroh::SecretKey;
@@ -143,16 +143,34 @@ impl StoreManager {
             .delete_key(Keys::SharedDirKey, Some(dir.data.uuid.to_string().as_str()))
             .unwrap();
     }
-    
+
     pub fn get_shared_dir(&self, uuid: &Uuid) -> Option<SharedDirectory> {
-        let dir_data = self.data.shared_directories
+        let dir_data = self
+            .data
+            .shared_directories
             .iter()
             .find(|folder| folder.uuid == *uuid)
             .cloned();
-        
-        if let Ok(key) = self.keyring.get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str())) {
-            dir_data.map(|data| SharedDirectory { data, key: *Key::<XChaCha20Poly1305>::from_slice(key.as_bytes()) })
-        } else { None }
+
+        if let Ok(key) = self
+            .keyring
+            .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
+        {
+            dir_data.map(|data| SharedDirectory {
+                data,
+                key: *Key::<XChaCha20Poly1305>::from_slice(key.as_bytes()),
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn get_all_dirs(&self) -> Vec<Uuid> {
+        self.data
+            .shared_directories
+            .iter()
+            .map(|dir| dir.uuid)
+            .collect()
     }
 }
 

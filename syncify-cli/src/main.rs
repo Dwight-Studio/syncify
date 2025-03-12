@@ -1,12 +1,12 @@
 mod logger;
 
-use std::io;
-use std::str::FromStr;
-use iroh::{NodeAddr, PublicKey};
 use crate::logger::SyncifyLogger;
+use iroh::{NodeAddr, PublicKey};
 use libsyncify::Syncify;
 use log::{debug, info};
-use spdlog::{Level};
+use spdlog::Level;
+use std::io;
+use std::str::FromStr;
 
 #[tokio::main]
 async fn main() {
@@ -16,7 +16,6 @@ async fn main() {
     let logger = SyncifyLogger::new();
     logger.set_max_level(Level::Info);
 
-
     let mut syncify = Syncify::new().await.unwrap();
 
     match arg_refs.as_slice() {
@@ -25,9 +24,7 @@ async fn main() {
             let ep = syncify.get_node_endpoint();
 
             info!("Node id: {}", ep.node_id());
-            loop {
-
-            }
+            loop {}
         }
         ["connect", node_id] => {
             syncify.start_sync().await.unwrap();
@@ -35,13 +32,19 @@ async fn main() {
 
             info!("Connecting to {}", node_id);
 
-            let conn = ep.connect(NodeAddr::new(PublicKey::from_str(node_id).unwrap()), b"/syncify/1").await.unwrap();
+            let conn = ep
+                .connect(
+                    NodeAddr::new(PublicKey::from_str(node_id).unwrap()),
+                    b"/syncify/1",
+                )
+                .await
+                .unwrap();
             info!("Connection established!");
 
             let (mut tx, mut rx) = conn.open_bi().await.unwrap();
             tx.write(b"").await.unwrap();
 
-            let input  = &mut String::new();
+            let input = &mut String::new();
             io::stdin().read_line(input).unwrap();
 
             tx.write(input.as_bytes()).await.unwrap();
