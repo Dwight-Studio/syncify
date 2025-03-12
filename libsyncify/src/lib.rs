@@ -117,11 +117,8 @@ impl Syncify {
     }
 
     /// Get an existing shared directory.
-    pub async fn get_shared_directory(&self, uuid: &Uuid) -> Option<SharedDirectoryData> {
-        self.config.read().await.data.shared_directories
-            .iter()
-            .find(|folder| folder.uuid == *uuid)
-            .cloned()
+    pub async fn get_shared_directory(&self, uuid: &Uuid) -> Option<SharedDirectory> {
+        self.config.read().await.get_shared_dir(uuid)
     }
 
     #[cfg(debug_assertions)]

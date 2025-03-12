@@ -135,13 +135,24 @@ impl StoreManager {
     }
 
     pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
-        //let dzqqdzqd: Key<XChaCha20Poly1305> = *Key::<XChaCha20Poly1305>::from_slice(b"");
+        //let dzqqdzqd: Key<XChaCha20Poly1305> = ;
         self.data
             .shared_directories
             .retain(|shared_directory| !dir.data.uuid.eq(&shared_directory.uuid));
         self.keyring
             .delete_key(Keys::SharedDirKey, Some(dir.data.uuid.to_string().as_str()))
             .unwrap();
+    }
+    
+    pub fn get_shared_dir(&self, uuid: &Uuid) -> Option<SharedDirectory> {
+        let dir_data = self.data.shared_directories
+            .iter()
+            .find(|folder| folder.uuid == *uuid)
+            .cloned();
+        
+        if let Ok(key) = self.keyring.get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str())) {
+            dir_data.map(|data| SharedDirectory { data, key: *Key::<XChaCha20Poly1305>::from_slice(key.as_bytes()) })
+        } else { None }
     }
 }
 
