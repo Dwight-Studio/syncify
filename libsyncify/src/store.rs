@@ -11,11 +11,12 @@ use std::io::{Read, Write};
 use std::path::Path;
 use uuid::{Bytes, Uuid};
 
-mod keyring;
+pub mod keyring;
 
 const MAX_RENAME_ATTEMPTS: u16 = 256;
 const CONFIG_FILENAME: &str = "store.toml";
 
+/// Entity holding the non-sensitive shared folder data.
 #[derive(Serialize, Deserialize)]
 pub struct Store {
     pub shared_directories: Vec<SharedDirectoryData>,

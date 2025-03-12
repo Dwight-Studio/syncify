@@ -13,6 +13,7 @@ impl Keys {
     }
 }
 
+/// Secrets manager.
 pub struct Keyring {
     credential_builder: Box<CredentialBuilder>,
 }
@@ -68,4 +69,9 @@ impl Keyring {
             )
             .unwrap()
     }
+}
+
+/// Entity holding the shared folder secrets.
+pub struct SharedDirectorySecrets {
+    // TODO: Add the secrets
 }

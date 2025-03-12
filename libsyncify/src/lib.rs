@@ -7,6 +7,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 use crate::engine::{Engine, EngineError};
+use crate::store::keyring::SharedDirectorySecrets;
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
 
 mod store;
@@ -118,6 +119,11 @@ impl Syncify {
             .find(|folder| folder.uuid == *uuid)
             .cloned()
     }
+}
+
+struct SharedDirectory {
+    data: SharedDirectoryData,
+    secrets: SharedDirectorySecrets
 }
 
 #[derive(Error, Debug)]

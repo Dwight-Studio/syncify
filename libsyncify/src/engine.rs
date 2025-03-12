@@ -1,19 +1,19 @@
-mod fs;
-
-use std::error::Error;
+use crate::engine::fs::EventProcessor;
 use crate::store::StoreManager;
 use crate::{get_app_dir, SharedDirectoryData};
 use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
-use notify::{Event, EventHandler, Watcher};
-use std::path::PathBuf;
+use notify::{EventHandler, Watcher};
+use std::error::Error;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
-use crate::engine::fs::{EventProcessor, EventProcessorHandle};
+use tokio::sync::RwLock;
+
+pub mod fs;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 const DATABASE_DIRNAME: &str = "database";
