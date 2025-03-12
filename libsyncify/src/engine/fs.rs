@@ -16,16 +16,16 @@ pub struct EventProcessor {
 }
 
 impl EventProcessor {
-    pub fn new(config: Arc<RwLock<StoreManager>>) -> Self {
+    pub fn new(store: Arc<RwLock<StoreManager>>) -> Self {
         let (tx, rx) = mpsc::channel(NOTIFICATION_BUFFER_SIZE);
-        tokio::spawn(Self::handle_event(config, rx));
+        tokio::spawn(Self::handle_event(store, rx));
         Self {
             handle: EventProcessorHandle { tx },
         }
     }
 
     pub async fn handle_event(
-        config: Arc<RwLock<StoreManager>>,
+        store: Arc<RwLock<StoreManager>>,
         mut rx: mpsc::Receiver<notify::Result<Event>>,
     ) {
         while let Some(result) = rx.recv().await {

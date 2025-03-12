@@ -29,9 +29,9 @@ pub struct Engine {
 /// Synchronization engine.
 impl Engine {
     /// Construct new instance.
-    pub async fn new(config: Arc<RwLock<StoreManager>>) -> Result<Self, EngineError> {
+    pub async fn new(store: Arc<RwLock<StoreManager>>) -> Result<Self, EngineError> {
         let endpoint = Endpoint::builder()
-            .secret_key(config.read().await.secret_key.clone())
+            .secret_key(store.read().await.secret_key.clone())
             .alpns(vec![iroh_blobs::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
             .discovery_n0()
             .discovery_local_network()
@@ -62,10 +62,10 @@ impl Engine {
             .await
             .map_err(EngineError::GossipInit)?;
 
-        let syncify_prot = SyncifyProtocol {store: config.clone()};
+        let syncify_prot = SyncifyProtocol {store: store.clone()};
 
         // File watcher
-        let processor = EventProcessor::new(config.clone());
+        let processor = EventProcessor::new(store.clone());
         let watcher =
             notify::recommended_watcher(processor.clone()).map_err(EngineError::CannotWatch)?;
 
@@ -81,7 +81,7 @@ impl Engine {
             processor,
         };
 
-        for dir in &config.read().await.get_all_dirs() {
+        for dir in &store.read().await.get_all_dirs() {
             engine.add_watched_directory(&dir.path()).await?
         }
 

@@ -1,13 +1,13 @@
 use crate::engine::{Engine, EngineError};
 use crate::store::{SharedDirectoryData, StoreManager};
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine as Base64Engine;
 use chacha20poly1305::aead::{Key, OsRng};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use iroh::Endpoint;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use base64::Engine as Base64Engine;
-use base64::prelude::BASE64_STANDARD;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -15,7 +15,7 @@ use uuid::Uuid;
 mod engine;
 mod store;
 
-// Set the path where the configs file will be/is stored
+// Set the path where the store file will be/is stored
 fn get_app_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("target/debug/cache")
@@ -29,17 +29,17 @@ const APP_NAME: &str = "Syncify";
 
 /// Entry point of the library.
 pub struct Syncify {
-    config: Arc<RwLock<StoreManager>>,
+    store: Arc<RwLock<StoreManager>>,
     engine: Option<Engine>,
 }
 
 impl Syncify {
     /// Construct new instance.
     pub async fn new() -> Result<Self, SyncifyError> {
-        let config = StoreManager::new().await.map_err(SyncifyError::Config)?;
+        let store = StoreManager::new().await.map_err(SyncifyError::Config)?;
 
         Ok(Self {
-            config: Arc::new(RwLock::new(config)),
+            store: Arc::new(RwLock::new(store)),
             engine: None,
         })
     }
@@ -47,7 +47,7 @@ impl Syncify {
     /// Initialize new engine and start syncing.
     pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
         self.engine = Some(
-            Engine::new(self.config.clone())
+            Engine::new(self.store.clone())
                 .await
                 .map_err(SyncifyError::Engine)?,
         );
@@ -73,7 +73,7 @@ impl Syncify {
         let canonical_path = std::fs::canonicalize(&path).map_err(|_| InvalidPath(path))?;
 
         // Check if the directory is already shared
-        for folder in &self.config.read().await.data.shared_directories {
+        for folder in &self.store.read().await.data.shared_directories {
             if PathBuf::from(&folder.path).eq(&canonical_path) {
                 return Err(AlreadyShared(canonical_path));
             }
@@ -90,7 +90,7 @@ impl Syncify {
             key: XChaCha20Poly1305::generate_key(&mut OsRng),
         };
 
-        self.config.write().await.add_shared_dir(&dir);
+        self.store.write().await.add_shared_dir(&dir);
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
@@ -111,14 +111,14 @@ impl Syncify {
         dir: SharedDirectory,
     ) -> Result<(), SyncifyError> {
         if self
-            .config
+            .store
             .read()
             .await
             .data
             .shared_directories
             .contains(&dir.data)
         {
-            self.config.write().await.remove_shared_dir(&dir);
+            self.store.write().await.remove_shared_dir(&dir);
 
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
@@ -136,7 +136,7 @@ impl Syncify {
 
     /// Get an existing shared directory.
     pub async fn get_shared_directory(&self, uuid: &Uuid) -> Option<SharedDirectory> {
-        self.config.read().await.get_shared_dir(uuid)
+        self.store.read().await.get_shared_dir(uuid)
     }
 
     #[cfg(debug_assertions)]
