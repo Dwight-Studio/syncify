@@ -62,7 +62,7 @@ impl Engine {
             .await
             .map_err(EngineError::GossipInit)?;
 
-        let syncify_prot = SyncifyProtocol {};
+        let syncify_prot = SyncifyProtocol {store: config.clone()};
 
         // File watcher
         let processor = EventProcessor::new(config.clone());
@@ -81,12 +81,7 @@ impl Engine {
             processor,
         };
 
-        for uuid in &config.read().await.get_all_dirs() {
-            let dir = config
-                .read()
-                .await
-                .get_shared_dir(uuid)
-                .unwrap_or_else(|| panic!("Cannot get directory: {uuid}"));
+        for dir in &config.read().await.get_all_dirs() {
             engine.add_watched_directory(&dir.path()).await?
         }
 

@@ -1,7 +1,7 @@
 use crate::store::keyring::{Keyring, Keys};
 use crate::{get_app_dir, SharedDirectory};
-use chacha20poly1305::aead::{Key, OsRng};
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+use chacha20poly1305::aead::{Key};
+use chacha20poly1305::{XChaCha20Poly1305};
 use iroh::SecretKey;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,8 @@ use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::path::Path;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use uuid::{Bytes, Uuid};
 
 pub mod keyring;
@@ -124,18 +126,19 @@ impl StoreManager {
     }
 
     pub fn add_shared_dir(&mut self, dir: &SharedDirectory) {
+        let key_base64 = BASE64_STANDARD.encode(dir.key);
+        
         self.data.shared_directories.push(dir.data.clone());
         self.keyring
             .set_key(
                 Keys::SharedDirKey,
-                &String::from_utf8_lossy(XChaCha20Poly1305::generate_key(&mut OsRng).as_slice()),
+                key_base64.as_str(),
                 Some(dir.data.uuid.to_string().as_str()),
             )
             .unwrap();
     }
 
-    pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
-        //let dzqqdzqd: Key<XChaCha20Poly1305> = ;
+    pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {        
         self.data
             .shared_directories
             .retain(|shared_directory| !dir.data.uuid.eq(&shared_directory.uuid));
@@ -158,18 +161,18 @@ impl StoreManager {
         {
             dir_data.map(|data| SharedDirectory {
                 data,
-                key: *Key::<XChaCha20Poly1305>::from_slice(key.as_bytes()),
+                key: *Key::<XChaCha20Poly1305>::from_slice(BASE64_STANDARD.decode(key).unwrap().as_slice()),
             })
         } else {
             None
         }
     }
 
-    pub fn get_all_dirs(&self) -> Vec<Uuid> {
+    pub fn get_all_dirs(&self) -> Vec<SharedDirectory> {
         self.data
             .shared_directories
             .iter()
-            .map(|dir| dir.uuid)
+            .map(|dir| self.get_shared_dir(&dir.uuid).unwrap())
             .collect()
     }
 }

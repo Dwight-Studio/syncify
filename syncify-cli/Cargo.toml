@@ -17,4 +17,5 @@ tokio = "1.44.0"
 log = "0.4.26"
 spdlog-rs = { version = "0.4.1", features = ["log", "release-level-warn"] }
 
-iroh = "0.33.0" # TODO: TEMPORARY
+iroh = "0.33.0"
+uuid = { version = "1.15.1", features = ["v4"] } # TODO: TEMPORARY

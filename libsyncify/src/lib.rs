@@ -1,12 +1,13 @@
 use crate::engine::{Engine, EngineError};
-use crate::store::keyring::SharedDirectorySecrets;
 use crate::store::{SharedDirectoryData, StoreManager};
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
 use chacha20poly1305::aead::{Key, OsRng};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use iroh::Endpoint;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::sync::Arc;
+use base64::Engine as Base64Engine;
+use base64::prelude::BASE64_STANDARD;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -68,7 +69,7 @@ impl Syncify {
     pub async fn create_shared_directory(
         &mut self,
         path: PathBuf,
-    ) -> Result<SharedDirectoryData, SyncifyError> {
+    ) -> Result<SharedDirectory, SyncifyError> {
         let canonical_path = std::fs::canonicalize(&path).map_err(|_| InvalidPath(path))?;
 
         // Check if the directory is already shared
@@ -99,7 +100,7 @@ impl Syncify {
                 .map_err(SyncifyError::CannotWatch)?;
         }
 
-        Ok(dir.data)
+        Ok(dir)
     }
 
     /// Remove shared directory.
@@ -156,6 +157,10 @@ impl SharedDirectory {
 
     pub fn path(&self) -> PathBuf {
         PathBuf::from(&self.data.path)
+    }
+    
+    pub fn key(&self) -> String {
+        BASE64_STANDARD.encode(self.key)
     }
 }
 

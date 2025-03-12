@@ -96,8 +96,3 @@ impl Keyring {
         }
     }
 }
-
-/// Entity holding the shared folder secrets.
-pub struct SharedDirectorySecrets {
-    // TODO: Add the secrets
-}
