@@ -1,9 +1,9 @@
 use crate::store::keyring::{Keyring, Keys};
-use crate::{get_app_dir, SharedDirectory};
-use base64::prelude::BASE64_STANDARD;
+use crate::{SharedDirectory, get_app_dir};
 use base64::Engine;
-use chacha20poly1305::aead::Key;
-use chacha20poly1305::XChaCha20Poly1305;
+use base64::prelude::BASE64_STANDARD;
+use chacha20poly1305::aead::OsRng;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::{Bytes, Uuid};
 
 pub mod keyring;
@@ -30,12 +30,7 @@ pub struct StoreManager {
     pub secret_key: SecretKey,
     pub data: Store,
     keyring: Keyring,
-}
-
-impl Display for StoreManager {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(secret_key: {})", self.secret_key)
-    }
+    config_file: PathBuf,
 }
 
 impl StoreManager {
@@ -55,53 +50,55 @@ impl StoreManager {
                 let file_content: &mut String = &mut "".to_string();
                 File::open(store_file.as_path())?.read_to_string(file_content)?;
 
-                let result = toml::from_str(file_content);
+                let result: Result<Store, toml::de::Error> = toml::from_str(file_content);
 
                 // Check if the store is parsable
-                if let Ok(data) = result {
-                    data
-                } else {
-                    warn!("Invalid store file: {}", store_file.display());
-                    let mut i = 0;
-                    while std::fs::exists(
-                        get_app_dir()
-                            .join(format!("{STORE_FILENAME}.backup{i}"))
-                            .as_path(),
-                    )? {
-                        i += 1;
-                        if i >= MAX_RENAME_ATTEMPTS {
-                            break;
+                match result {
+                    Ok(res) => res,
+                    Err(_) => {
+                        warn!("Invalid store file: {}", store_file.display());
+                        let mut i = 0;
+                        while std::fs::exists(
+                            get_app_dir()
+                                .join(format!("{STORE_FILENAME}.backup{i}"))
+                                .as_path(),
+                        )? {
+                            i += 1;
+                            if i >= MAX_RENAME_ATTEMPTS {
+                                break;
+                            }
+                        }
+                        if i < MAX_RENAME_ATTEMPTS {
+                            std::fs::rename(
+                                store_file.as_path(),
+                                store_file.join(format!(".backup{}", &i)).as_path(),
+                            )?;
+                            File::create(store_file.as_path())?;
+
+                            Store {
+                                shared_directories: vec![],
+                            }
+                        } else {
+                            warn!("Unable backup store!");
+                            return Err(io::ErrorKind::AlreadyExists.into());
                         }
                     }
-                    if i < MAX_RENAME_ATTEMPTS {
-                        std::fs::rename(
-                            store_file.as_path(),
-                            store_file.join(format!(".backup{}", &i)).as_path(),
-                        )?;
-                    } else {
-                        warn!("Unable backup store!");
-                        return Err(io::ErrorKind::AlreadyExists.into());
-                    }
+                }
+            } else {
+                info!("Store file does not exists, creating a new one...");
+                File::create(store_file.as_path())?;
+
+                Store {
+                    shared_directories: vec![],
                 }
             }
-
-            info!("Store file does not exists, creating a new one...");
-            let mut w_file = File::create(store_file.as_path())?;
-            let data = Store {
-                shared_directories: vec![],
-            };
-
-            w_file.write_all(toml::to_string(&data).unwrap().as_bytes())?;
-
-            data
         };
 
         let keyring = Keyring::new();
         let secret_key = {
             if !keyring.key_exists(Keys::SecretKey, None) {
                 info!("Generating new secret key...");
-                let mut rng = rand::rngs::OsRng;
-                let key = SecretKey::generate(&mut rng);
+                let key = SecretKey::generate(&mut OsRng);
 
                 keyring
                     .set_key(Keys::SecretKey, key.to_string().as_str(), None)
@@ -122,20 +119,28 @@ impl StoreManager {
             secret_key,
             data: store_data,
             keyring,
+            config_file: store_file,
         })
     }
 
     pub fn add_shared_dir(&mut self, dir: &SharedDirectory) {
-        let key_base64 = BASE64_STANDARD.encode(dir.key);
+        let sign_key_base64: String = {
+            match dir.sign_key.clone() {
+                Some(key) => BASE64_STANDARD.encode(key.to_bytes()),
+                None => String::from("*"),
+            }
+        };
+        let verif_key_base64 = BASE64_STANDARD.encode(dir.verif_key);
 
         self.data.shared_directories.push(dir.data.clone());
         self.keyring
             .set_key(
                 Keys::SharedDirKey,
-                key_base64.as_str(),
+                (sign_key_base64 + " " + verif_key_base64.as_str()).as_str(),
                 Some(dir.data.uuid.to_string().as_str()),
             )
             .unwrap();
+        self.save();
     }
 
     pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
@@ -159,11 +164,32 @@ impl StoreManager {
             .keyring
             .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
         {
+            let mut split_key = key.split(" ");
+            let sign_key = {
+                let raw = split_key.next();
+                if raw.unwrap().contains("*") {
+                    None
+                } else {
+                    Some(
+                        SigningKey::try_from(
+                            BASE64_STANDARD.decode(raw.unwrap()).unwrap().as_slice(),
+                        )
+                        .unwrap(),
+                    )
+                }
+            };
+            let verif_key = VerifyingKey::try_from(
+                BASE64_STANDARD
+                    .decode(split_key.next().unwrap())
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+
             dir_data.map(|data| SharedDirectory {
                 data,
-                key: *Key::<XChaCha20Poly1305>::from_slice(
-                    BASE64_STANDARD.decode(key).unwrap().as_slice(),
-                ),
+                sign_key,
+                verif_key,
             })
         } else {
             None
@@ -176,6 +202,12 @@ impl StoreManager {
             .iter()
             .map(|dir| self.get_shared_dir(&dir.uuid).unwrap())
             .collect()
+    }
+
+    fn save(&self) {
+        let toml_data = toml::to_string(&self.data).unwrap();
+        let mut file = File::create(self.config_file.as_path()).unwrap();
+        file.write_all(toml_data.as_bytes()).unwrap();
     }
 }
 
@@ -198,7 +230,7 @@ pub struct SharedDirectoryData {
 
 impl Display for SharedDirectoryData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.path.clone())
+        write!(f, "{} / {}", self.uuid, self.path.clone())
     }
 }
 

@@ -22,7 +22,6 @@ serde = { version = "1.0.219", features = ["std"] }
 log = "0.4.26"
 tokio = "1.44.0"
 thiserror = "2.0.12"
-rand = "0.8.5"
 uuid = "1.15.1"
 keyring = { version = "3.6.2", features = ["linux-native-async-persistent", "apple-native", "windows-native", "crypto-rust", "tokio"] }
 notify = "8.0.0"

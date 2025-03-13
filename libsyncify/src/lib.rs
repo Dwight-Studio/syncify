@@ -1,10 +1,10 @@
+use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
 use crate::engine::{Engine, EngineError};
 use crate::store::{SharedDirectoryData, StoreManager};
-use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
-use base64::prelude::BASE64_STANDARD;
 use base64::Engine as Base64Engine;
-use chacha20poly1305::aead::{Key, OsRng};
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+use base64::prelude::BASE64_STANDARD;
+use chacha20poly1305::aead::OsRng;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::Endpoint;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -81,13 +81,15 @@ impl Syncify {
 
         // Add the directory to the store
         let uuid = Uuid::new_v4();
+        let sign_key = SigningKey::generate(&mut OsRng);
 
         let dir = SharedDirectory {
             data: SharedDirectoryData {
                 uuid,
                 path: canonical_path.to_string_lossy().to_string(),
             },
-            key: XChaCha20Poly1305::generate_key(&mut OsRng),
+            sign_key: Some(sign_key.clone()),
+            verif_key: sign_key.verifying_key(),
         };
 
         self.store.write().await.add_shared_dir(&dir);
@@ -147,7 +149,8 @@ impl Syncify {
 
 pub struct SharedDirectory {
     data: SharedDirectoryData,
-    key: Key<XChaCha20Poly1305>,
+    sign_key: Option<SigningKey>,
+    verif_key: VerifyingKey,
 }
 
 impl SharedDirectory {
@@ -159,8 +162,12 @@ impl SharedDirectory {
         PathBuf::from(&self.data.path)
     }
 
-    pub fn key(&self) -> String {
-        BASE64_STANDARD.encode(self.key)
+    pub fn sign_key(&self) -> String {
+        BASE64_STANDARD.encode(self.sign_key.clone().unwrap().to_bytes())
+    }
+
+    pub fn verif_key(&self) -> String {
+        BASE64_STANDARD.encode(self.verif_key)
     }
 }
 

@@ -1,12 +1,10 @@
 use crate::store::StoreManager;
-use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::EventKind::{Create, Modify, Remove};
+use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::{Event, EventHandler};
 use std::ops::Deref;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, RwLock};
-use tokio::task::JoinHandle;
+use tokio::sync::{RwLock, mpsc};
 
 const NOTIFICATION_BUFFER_SIZE: usize = 1024;
 
