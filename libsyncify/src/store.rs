@@ -127,7 +127,7 @@ impl StoreManager {
 
     pub fn add_shared_dir(&mut self, dir: &SharedDirectory) {
         let key_base64 = BASE64_STANDARD.encode(dir.key);
-        
+
         self.data.shared_directories.push(dir.data.clone());
         self.keyring
             .set_key(
@@ -138,7 +138,7 @@ impl StoreManager {
             .unwrap();
     }
 
-    pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {        
+    pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
         self.data
             .shared_directories
             .retain(|shared_directory| !dir.data.uuid.eq(&shared_directory.uuid));
@@ -161,7 +161,9 @@ impl StoreManager {
         {
             dir_data.map(|data| SharedDirectory {
                 data,
-                key: *Key::<XChaCha20Poly1305>::from_slice(BASE64_STANDARD.decode(key).unwrap().as_slice()),
+                key: *Key::<XChaCha20Poly1305>::from_slice(
+                    BASE64_STANDARD.decode(key).unwrap().as_slice(),
+                ),
             })
         } else {
             None

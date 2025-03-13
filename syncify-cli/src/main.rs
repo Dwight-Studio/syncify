@@ -22,7 +22,10 @@ async fn main() {
     match arg_refs.as_slice() {
         ["start"] => {
             syncify.start_sync().await.unwrap();
-            let shared_dir = syncify.create_shared_directory(PathBuf::from("test")).await.unwrap();
+            let shared_dir = syncify
+                .create_shared_directory(PathBuf::from("test"))
+                .await
+                .unwrap();
             let ep = syncify.get_node_endpoint();
 
             info!("Node id: {}", ep.node_id());
@@ -47,11 +50,14 @@ async fn main() {
             let (mut tx, mut rx) = conn.open_bi().await.unwrap();
             tx.write(b"").await.unwrap();
 
-            tx.write(Uuid::from_str(shared_dir_uuid).unwrap().as_bytes()).await.unwrap();
+            tx.write(Uuid::from_str(shared_dir_uuid).unwrap().as_bytes())
+                .await
+                .unwrap();
 
             let mut recevice_buf = [0u8; 8];
             loop {
-                if recevice_buf.as_slice() == b"RECEIVED" || recevice_buf.as_slice() == b"CANCELED" {
+                if recevice_buf.as_slice() == b"RECEIVED" || recevice_buf.as_slice() == b"CANCELED"
+                {
                     break;
                 }
                 rx.read_exact(&mut recevice_buf).await.unwrap();

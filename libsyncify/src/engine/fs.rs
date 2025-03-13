@@ -32,23 +32,17 @@ impl EventProcessor {
             if let Ok(event) = result {
                 match event.kind {
                     Create(kind) => match kind {
-                        CreateKind::Any => {}
                         CreateKind::File => {}
-                        CreateKind::Folder => {}
-                        CreateKind::Other => {}
+                        _ => {}
                     },
                     Modify(kind) => match kind {
-                        ModifyKind::Any => {}
                         ModifyKind::Data(_) => {}
-                        ModifyKind::Metadata(_) => {}
                         ModifyKind::Name(_) => {}
-                        ModifyKind::Other => {}
+                        _ => {}
                     },
                     Remove(kind) => match kind {
-                        RemoveKind::Any => {}
                         RemoveKind::File => {}
-                        RemoveKind::Folder => {}
-                        RemoveKind::Other => {}
+                        _ => {}
                     },
                     _ => continue,
                 }

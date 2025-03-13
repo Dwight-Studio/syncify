@@ -158,7 +158,7 @@ impl SharedDirectory {
     pub fn path(&self) -> PathBuf {
         PathBuf::from(&self.data.path)
     }
-    
+
     pub fn key(&self) -> String {
         BASE64_STANDARD.encode(self.key)
     }

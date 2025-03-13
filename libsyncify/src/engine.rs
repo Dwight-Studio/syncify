@@ -62,7 +62,9 @@ impl Engine {
             .await
             .map_err(EngineError::GossipInit)?;
 
-        let syncify_prot = SyncifyProtocol {store: store.clone()};
+        let syncify_prot = SyncifyProtocol {
+            store: store.clone(),
+        };
 
         // File watcher
         let processor = EventProcessor::new(store.clone());
