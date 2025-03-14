@@ -1,3 +1,4 @@
+use std::cmp::PartialEq;
 use crate::engine::{Engine, EngineError};
 use crate::store::{SharedDirectoryData, StoreManager};
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
@@ -26,6 +27,7 @@ fn get_app_dir() -> PathBuf {
     }
 }
 
+#[derive(PartialEq)]
 pub enum SharedFolderPermission {
     ReadOnly,
     Write,
@@ -156,9 +158,23 @@ impl Syncify {
         self.store.read().await.get_all_dirs()
     }
 
-    pub async fn build_link(&self, uuid: Uuid, permission: SharedFolderPermission) -> String {
-        todo!();
-        String::new()
+    pub async fn build_link(&self, uuid: Uuid, permission: SharedFolderPermission) -> Result<String, SyncifyError> {
+        let dir = self.get_shared_directory(&uuid).await.unwrap();
+        let key = {
+            if permission == SharedFolderPermission::Write { 
+                if let Some(tmp) = dir.sign_key {
+                    String::from_utf8_lossy(tmp.as_bytes()).to_string()
+                } else {
+                    return Err(SyncifyError::DirectoryReadOnly());
+                }
+            } else {
+                String::from_utf8_lossy(dir.verif_key.as_bytes()).to_string()
+            }
+        };
+        
+        //let link = format!("syncify://?key={}&payload={}", key);
+        
+        Ok(String::new())
     }
 
     #[cfg(debug_assertions)]
@@ -211,6 +227,9 @@ pub enum SyncifyError {
 
     #[error("Folder is not shared")]
     NotShared(SharedDirectoryData),
+    
+    #[error("Shared directory is in read-only mode")]
+    DirectoryReadOnly(),
 
     #[error("{0}")]
     Watcher(EngineError),

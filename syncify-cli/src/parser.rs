@@ -71,22 +71,8 @@ impl Commands {
                     todo!();
                 } else if let Ok(uuid_str) = Uuid::from_slice(uuid.clone().unwrap().as_bytes()) {
                     match *permission {
-                        InvitePermission::ReadOnly => {
-                            println!(
-                                "{}",
-                                syncify
-                                    .build_link(uuid_str, SharedFolderPermission::ReadOnly)
-                                    .await
-                            );
-                        }
-                        InvitePermission::Write => {
-                            println!(
-                                "{}",
-                                syncify
-                                    .build_link(uuid_str, SharedFolderPermission::Write)
-                                    .await
-                            )
-                        }
+                        InvitePermission::ReadOnly => { println!("{}", syncify.build_link(uuid_str, SharedFolderPermission::ReadOnly).await.unwrap()); }
+                        InvitePermission::Write => { println!("{}", syncify.build_link(uuid_str, SharedFolderPermission::Write).await.unwrap()) }
                     }
                 } else {
                     cmd.error(
