@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -89,7 +90,10 @@ impl Engine {
     pub async fn shutdown(self) {
         info!("Shutting down engine");
         self.router.shutdown().await.unwrap();
-        drop(self);
+        for ref mut entries in self.managers {
+            let (_, manager) = entries;
+            manager.shutdown().await;
+        }
     }
 
     /// Create [`DirectoryManager`] actor for a [`SharedDirectory`].

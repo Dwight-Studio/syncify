@@ -1,12 +1,16 @@
 use crate::engine::state::HashTree::{Directory, Empty, File};
-use crate::engine::state::StateError::NotADirectory;
+use crate::engine::state::StateError::{Hashing, NotADirectory};
 use blake3::Hash;
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;
+use std::fs;
 use std::iter::Peekable;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use walkdir::WalkDir;
 
 /// Tree containing the synchronisation information for a [`SharedDirectory`].
 #[derive(Serialize, Deserialize, Debug)]
@@ -138,7 +142,7 @@ pub enum Mutation {
 }
 
 /// Hash tree describing a state of the file tree.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, Eq)]
 pub enum HashTree {
     Empty,
     File {
@@ -157,7 +161,7 @@ pub enum HashTree {
 impl HashTree {
     /// Generate a vec of references of the file/directory at given path, and its parent in reverse
     /// hierarchical order.
-    fn goto<'a>(
+    pub fn goto<'a>(
         &self,
         mut file_path_iter: impl Iterator<Item = &'a str> + Clone,
     ) -> Option<Vec<&HashTree>> {
@@ -331,7 +335,7 @@ impl HashTree {
         }
     }
 
-    fn get_hash(&self) -> Hash {
+    pub fn get_hash(&self) -> Hash {
         match self {
             Empty => Hash::from_bytes([0; 32]),
             File { hash, .. } => *hash,
@@ -353,6 +357,64 @@ impl HashTree {
         }
         blake3::hash(data.as_slice())
     }
+
+    /// Generate [`HashTree`] from disk.
+    pub fn from_disk(path: &Path) -> Result<Self, std::io::Error> {
+        let mut rtn = Directory {
+            name: path.file_name().unwrap().to_string_lossy().to_string(),
+            content: vec![],
+            hash: Hash::from_bytes([0; 32]),
+        };
+
+        let files_iter = WalkDir::new(path)
+            .follow_links(false)
+            .same_file_system(true)
+            .into_iter();
+
+        let mut hasher = blake3::Hasher::new();
+
+        for file_result in files_iter {
+            match file_result {
+                Ok(file) => {
+                    // Ignore if it is a directory
+                    if !fs::metadata(file.path()).is_ok_and(|e| e.is_file()) {
+                        continue;
+                    }
+
+                    info!("{:?}", file);
+
+                    hasher
+                        .update_mmap(file.path())
+                        .inspect_err(|_| error!("Invalid path: {}", file.path().display()))?;
+                    match rtn.apply(&Mutation::Modify {
+                        file_path: file.path().file_name().unwrap().to_string_lossy().to_string(),
+                        file_hash: hasher.finalize(),
+                    }) {
+                        Ok(new_rtn) => {
+                            rtn = new_rtn;
+                        }
+                        Err(e) => {
+                            warn!("Unable to add `{}` into hash tree", file.path().display())
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Unable to scan file: {e}")
+                }
+            }
+        }
+
+        rtn.update_hash();
+        if rtn.is_empty() { Ok(Empty) } else { Ok(rtn) }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Empty => true,
+            Directory { content, .. } => content.is_empty(),
+            File { .. } => false,
+        }
+    }
 }
 
 impl PartialEq<HashTree> for HashTree {
@@ -373,4 +435,7 @@ pub enum StateError {
 
     #[error("Not a directory: {0}")]
     NotADirectory(String),
+
+    #[error("Hashing error: {0}")]
+    Hashing(std::io::Error),
 }

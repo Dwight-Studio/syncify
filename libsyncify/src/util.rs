@@ -5,11 +5,11 @@ use uuid::Uuid;
 
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "Uuid")]
-pub struct UuidMock(#[serde(getter = "Uuid::as_u128")] u128);
+pub struct UuidMock(#[serde(getter = "Uuid::to_string")] String);
 
 impl From<UuidMock> for Uuid {
     fn from(uuid: UuidMock) -> Self {
-        Uuid::from_u128(uuid.0)
+        Uuid::from_str(uuid.0.as_str()).unwrap()
     }
 }
 
