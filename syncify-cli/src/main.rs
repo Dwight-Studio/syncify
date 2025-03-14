@@ -1,4 +1,5 @@
 use crate::parser::Commands;
+use fern::colors::ColoredLevelConfig;
 use std::time::SystemTime;
 
 mod parser;
@@ -19,13 +20,18 @@ fn setup_logger() -> Result<(), fern::InitError> {
             out.finish(format_args!(
                 "[{} {} {}] {}",
                 humantime::format_rfc3339_seconds(SystemTime::now()),
-                record.level(),
+                ColoredLevelConfig::new().color(record.level()),
                 record.target(),
                 message
             ))
         })
-        .level(log::LevelFilter::Debug)
+        .level(log::LevelFilter::Info)
         .level_for("iroh", log::LevelFilter::Off)
+        .level_for("iroh_net_report", log::LevelFilter::Off)
+        .level_for("portmapper", log::LevelFilter::Off)
+        .level_for("zbus", log::LevelFilter::Off)
+        .level_for("tracing", log::LevelFilter::Off)
+        .level_for("swarm_discovery", log::LevelFilter::Off)
         .chain(std::io::stdout())
         .apply()?;
     Ok(())

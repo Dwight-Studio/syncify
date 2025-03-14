@@ -7,6 +7,7 @@ use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
+use log::info;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -19,17 +20,17 @@ mod protocol;
 mod state;
 
 const DOWNLOAD_DIRNAME: &str = "download";
-const DATABASE_DIRNAME: &str = "database";
 
 pub struct Engine {
     router: Router,
-    managers: HashMap<Uuid, DirectoryManager>
+    managers: HashMap<Uuid, DirectoryManager>,
 }
 
 /// Synchronization engine.
 impl Engine {
     /// Construct new instance.
     pub async fn new(store: Arc<RwLock<StoreManager>>) -> Result<Self, EngineError> {
+        info!("Initializing engine");
         let endpoint = Endpoint::builder()
             .secret_key(store.read().await.secret_key.clone())
             .alpns(vec![iroh_blobs::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
@@ -86,17 +87,23 @@ impl Engine {
 
     /// Gracefully shutdown.
     pub async fn shutdown(self) {
+        info!("Shutting down engine");
         self.router.shutdown().await.unwrap();
         drop(self);
     }
 
     /// Create [`DirectoryManager`] actor for a [`SharedDirectory`].
-    pub async fn add_watched_directory(&mut self, store: Arc<RwLock<StoreManager>>, dir: &SharedDirectory) -> Result<(), EngineError> {
+    pub async fn add_watched_directory(
+        &mut self,
+        store: Arc<RwLock<StoreManager>>,
+        dir: &SharedDirectory,
+    ) -> Result<(), EngineError> {
         if !self.managers.contains_key(&dir.uuid()) {
             // Create manager
             let uuid = dir.uuid();
-            let manager = DirectoryManager::new(store, dir.clone()).map_err(EngineError::CannotWatch)?;
-            
+            let manager =
+                DirectoryManager::new(store, dir.clone()).map_err(EngineError::CannotWatch)?;
+
             self.managers.insert(uuid, manager);
             Ok(())
         } else {
@@ -104,7 +111,11 @@ impl Engine {
         }
     }
 
-    pub async fn remove_watched_directory(&mut self, dir: &SharedDirectory) -> Result<(), EngineError> {
+    pub async fn remove_watched_directory(
+        &mut self,
+        dir: &SharedDirectory,
+    ) -> Result<(), EngineError> {
+        info!("Removing directory manager for {}", dir.uuid());
         if self.managers.contains_key(&dir.uuid()) {
             self.managers.remove(&dir.uuid()).unwrap();
             Ok(())
@@ -146,5 +157,5 @@ pub enum EngineError {
     CannotUnwatch(notify::Error),
 
     #[error("Directory is already watched: {0}")]
-    AlreadyWatched(Uuid)
+    AlreadyWatched(Uuid),
 }

@@ -20,8 +20,7 @@ const MAX_RENAME_ATTEMPTS: u16 = 256;
 const STORE_FILENAME: &str = "store.toml";
 
 /// Entity holding the non-sensitive shared folder data.
-#[derive(Serialize, Deserialize)]
-#[derive(Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Store {
     pub store_version: String,
     pub shared_directories: Vec<SharedDirectoryData>,
@@ -43,7 +42,6 @@ impl StoreManager {
         }
 
         let store_file = get_app_dir().join(STORE_FILENAME);
-
 
         let mut store_data: Option<Store> = None;
 
@@ -111,7 +109,7 @@ impl StoreManager {
 
                 key
             } else {
-                info!("Key already exists");
+                info!("Loading secret key from keyring");
                 keyring
                     .get_key(Keys::SecretKey, None)
                     .unwrap()

@@ -17,7 +17,12 @@ pub struct DirectoryManager {
 }
 
 impl DirectoryManager {
-    pub fn new(store: Arc<RwLock<StoreManager>>, dir: SharedDirectory) -> Result<Self, notify::Error> {
+    pub fn new(
+        store: Arc<RwLock<StoreManager>>,
+        dir: SharedDirectory,
+    ) -> Result<Self, notify::Error> {
+        info!("Initializing directory manager for {}", dir.uuid());
+        
         // Initiate channel
         let (tx, rx) = mpsc::channel(NOTIFICATION_BUFFER_SIZE);
         let handle = DirectoryManagerHandle { tx };
@@ -30,10 +35,7 @@ impl DirectoryManager {
         let mut watcher = notify::recommended_watcher(handle.clone())?;
         watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
 
-        Ok(Self {
-            watcher,
-            handle,
-        })
+        Ok(Self { watcher, handle })
     }
 
     pub async fn handle_event(

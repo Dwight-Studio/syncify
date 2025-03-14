@@ -6,6 +6,7 @@ use base64::Engine as Base64Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::Endpoint;
+use log::info;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -51,6 +52,7 @@ impl Syncify {
 
     /// Initialize new engine and start syncing.
     pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
+        info!("Starting synchronisation");
         self.engine = Some(
             Engine::new(self.store.clone())
                 .await
@@ -61,6 +63,7 @@ impl Syncify {
 
     /// Stop syncing destroy current engine.
     pub async fn stop_sync(mut self) -> Self {
+        info!("Stopping synchronisation");
         let old_engine = self.engine.take();
 
         if let Some(engine) = old_engine {
@@ -78,8 +81,8 @@ impl Syncify {
         let canonical_path = std::fs::canonicalize(&path).map_err(|_| InvalidPath(path))?;
 
         // Check if the directory is already shared
-        for folder in &self.store.read().await.data.shared_directories {
-            if PathBuf::from(&folder.path).eq(&canonical_path) {
+        for dir in &self.store.read().await.data.shared_directories {
+            if PathBuf::from(&dir.path).eq(&canonical_path) {
                 return Err(AlreadyShared(canonical_path));
             }
         }
@@ -96,6 +99,8 @@ impl Syncify {
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
         };
+
+        info!("Creating shared directory '{}' at `{}'", dir.path().display(), dir.uuid());
 
         self.store.write().await.add_shared_dir(&dir);
 
@@ -146,9 +151,9 @@ impl Syncify {
         self.store.read().await.get_shared_dir(uuid)
     }
 
-    /// Get all existing shared directory data
-    pub async fn get_all_shared_directory_data(&self) -> Vec<SharedDirectoryData> {
-        self.store.read().await.get_all_dirs_data()
+    /// Get all existing shared directories
+    pub async fn get_all_shared_directories(&self) -> Vec<SharedDirectory> {
+        self.store.read().await.get_all_dirs()
     }
 
     pub async fn build_link(&self, uuid: Uuid, permission: SharedFolderPermission) -> String {
