@@ -1,46 +1,61 @@
 use crate::store::StoreManager;
-use notify::EventKind::{Create, Modify, Remove};
+use crate::SharedDirectory;
+use log::info;
 use notify::event::{CreateKind, ModifyKind, RemoveKind};
-use notify::{Event, EventHandler};
+use notify::EventKind::{Create, Modify, Remove};
+use notify::{Event, EventHandler, Watcher};
 use std::ops::Deref;
 use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 
 const NOTIFICATION_BUFFER_SIZE: usize = 1024;
 
-/// Actor responsible to handle all filesystem events.
-pub struct EventProcessor {
-    handle: EventProcessorHandle,
+/// Actor responsible to handle all filesystem events for a [`SharedDirectory`].
+pub struct DirectoryManager {
+    watcher: notify::RecommendedWatcher,
+    handle: DirectoryManagerHandle,
 }
 
-impl EventProcessor {
-    pub fn new(store: Arc<RwLock<StoreManager>>) -> Self {
+impl DirectoryManager {
+    pub fn new(store: Arc<RwLock<StoreManager>>, dir: SharedDirectory) -> Result<Self, notify::Error> {
+        // Initiate channel
         let (tx, rx) = mpsc::channel(NOTIFICATION_BUFFER_SIZE);
-        tokio::spawn(Self::handle_event(store, rx));
-        Self {
-            handle: EventProcessorHandle { tx },
-        }
+        let handle = DirectoryManagerHandle { tx };
+
+        // Spawn new thread
+        let path = dir.path();
+        tokio::spawn(Self::handle_event(store, dir, rx));
+
+        // Create and configure watcher
+        let mut watcher = notify::recommended_watcher(handle.clone())?;
+        watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
+
+        Ok(Self {
+            watcher,
+            handle,
+        })
     }
 
     pub async fn handle_event(
         store: Arc<RwLock<StoreManager>>,
+        dir: SharedDirectory,
         mut rx: mpsc::Receiver<notify::Result<Event>>,
     ) {
         while let Some(result) = rx.recv().await {
             if let Ok(event) = result {
                 match event.kind {
                     Create(kind) => match kind {
-                        CreateKind::File => {}
-                        _ => {}
+                        CreateKind::File => info!("Dir {0}: Create File", dir.uuid()),
+                        _ => info!("Dir {0}: Create Other", dir.uuid()),
                     },
                     Modify(kind) => match kind {
-                        ModifyKind::Data(_) => {}
-                        ModifyKind::Name(_) => {}
-                        _ => {}
+                        ModifyKind::Data(_) => info!("Dir {0}: Modify Data", dir.uuid()),
+                        ModifyKind::Name(_) => info!("Dir {0}: Modify Name", dir.uuid()),
+                        _ => info!("Dir {0}: Modify Other", dir.uuid()),
                     },
                     Remove(kind) => match kind {
-                        RemoveKind::File => {}
-                        _ => {}
+                        RemoveKind::File => info!("Dir {0}: Remove File", dir.uuid()),
+                        _ => info!("Dir {0}: Remove Other", dir.uuid()),
                     },
                     _ => continue,
                 }
@@ -49,21 +64,21 @@ impl EventProcessor {
     }
 }
 
-impl Deref for EventProcessor {
-    type Target = EventProcessorHandle;
+impl Deref for DirectoryManager {
+    type Target = DirectoryManagerHandle;
 
     fn deref(&self) -> &Self::Target {
         &self.handle
     }
 }
 
-/// Handle to a [`EventProcessor`].
+/// Handle to a [`DirectoryManager`].
 #[derive(Clone)]
-pub struct EventProcessorHandle {
+pub struct DirectoryManagerHandle {
     tx: mpsc::Sender<notify::Result<Event>>,
 }
 
-impl EventHandler for EventProcessorHandle {
+impl EventHandler for DirectoryManagerHandle {
     fn handle_event(&mut self, event: notify::Result<Event>) {
         if let Err(error) = self.tx.blocking_send(event) {
             log::error!("Failed to send event: {error}");

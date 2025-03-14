@@ -1,8 +1,8 @@
-use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
 use crate::engine::{Engine, EngineError};
 use crate::store::{SharedDirectoryData, StoreManager};
-use base64::Engine as Base64Engine;
+use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
 use base64::prelude::BASE64_STANDARD;
+use base64::Engine as Base64Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::Endpoint;
@@ -102,9 +102,9 @@ impl Syncify {
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
             engine
-                .add_watched_directory(&dir.path())
+                .add_watched_directory(self.store.clone(), &dir)
                 .await
-                .map_err(SyncifyError::CannotWatch)?;
+                .map_err(SyncifyError::Watcher)?;
         }
 
         Ok(dir)
@@ -130,9 +130,9 @@ impl Syncify {
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
                 engine
-                    .remove_watched_directory(&dir.path())
+                    .remove_watched_directory(&dir)
                     .await
-                    .map_err(SyncifyError::CannotWatch)?;
+                    .map_err(SyncifyError::Watcher)?;
             }
 
             Ok(())
@@ -162,6 +162,7 @@ impl Syncify {
     }
 }
 
+#[derive(Clone)]
 pub struct SharedDirectory {
     data: SharedDirectoryData,
     sign_key: Option<SigningKey>,
@@ -207,5 +208,5 @@ pub enum SyncifyError {
     NotShared(SharedDirectoryData),
 
     #[error("{0}")]
-    CannotWatch(EngineError),
+    Watcher(EngineError),
 }

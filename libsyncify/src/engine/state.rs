@@ -1,74 +1,85 @@
-use crate::engine::state::StateError::InvalidPath;
+use crate::engine::state::HashTree::{Directory, Empty, File};
+use crate::engine::state::StateError::NotADirectory;
+use blake3::Hash;
+use std::cell::RefCell;
 use std::cmp::PartialEq;
+use std::iter::Peekable;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub struct State {
-    head: Rc<Delta>,
+    head: Rc<RefCell<Delta>>,
 }
 
 impl State {
     pub fn new() -> Self {
         let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         Self {
-            head: Rc::new(Delta {
+            head: Rc::new(RefCell::new(Delta {
                 parent: None,
                 hash: blake3::hash(&duration_since_epoch.as_millis().to_be_bytes()),
-                file_tree: Some(HashTree::Empty),
+                hash_tree_cache: Some(HashTree::Empty),
                 action: Mutation::Init,
-            }),
+            })),
         }
     }
 
+    /// Get parent state.
     pub fn parent(&self) -> Option<Self> {
-        if self.head.parent.is_some() {
+        if self.head.borrow().parent.is_some() {
             Some(Self {
-                head: self.head.parent.clone().unwrap(),
+                head: self.head.borrow().parent.clone().unwrap(),
             })
         } else {
             None
         }
     }
 
-    pub fn get_hash_tree(&mut self) -> &HashTree {
-        if self.head.parent.is_some() {
-            &self.head.file_tree.as_ref().unwrap()
-        } else {
-            while self.head.parent.is_none() {
-                todo!()
-            }
-
-            &self.head.file_tree.as_ref().unwrap()
-        }
+    /// Get file hash tree.
+    pub fn hash_tree(&mut self) -> Result<HashTree, StateError> {
+        self.head.borrow_mut().compute_hash_tree()?;
+        Ok(self.head.borrow().hash_tree_cache.clone().unwrap())
     }
 }
 
 #[derive(Clone)]
 struct Delta {
-    parent: Option<Rc<Delta>>,
-    hash: blake3::Hash,
-    file_tree: Option<HashTree>,
+    parent: Option<Rc<RefCell<Delta>>>,
+    hash: Hash,
+    hash_tree_cache: Option<HashTree>,
     action: Mutation,
+}
+
+impl Delta {
+    /// Recursively compute hash tree.
+    fn compute_hash_tree(&mut self) -> Result<(), StateError> {
+        if self.hash_tree_cache.is_some() {
+            Ok(())
+        } else {
+            if let Some(parent) = &self.parent {
+                parent.borrow_mut().compute_hash_tree()?;
+                match &parent.borrow().hash_tree_cache {
+                    None => {}
+                    Some(cache) => {
+                        self.hash_tree_cache = Some(cache.apply(&self.action)?);
+                    }
+                }
+            } else {
+                self.hash_tree_cache = Some(Empty);
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(Clone)]
 enum Mutation {
     Init,
-    Merge {
-        parent: Rc<Delta>,
-    },
-    Modify {
-        file_path: String,
-        file_hash: blake3::Hash,
-    },
-    Move {
-        from: String,
-        to: String,
-    },
-    Remove {
-        file_path: String,
-    },
+    Merge { parent: Rc<Delta> },
+    Modify { file_path: String, file_hash: Hash },
+    Move { from: String, to: String },
+    Remove { file_path: String },
 }
 
 #[derive(Clone)]
@@ -76,27 +87,27 @@ pub enum HashTree {
     Empty,
     File {
         name: String,
-        hash: blake3::Hash,
+        hash: Hash,
     },
     Directory {
         name: String,
         content: Vec<HashTree>,
-        hash: blake3::Hash,
+        hash: Hash,
     },
 }
 
 impl HashTree {
-    // TODO: Add traceback to root to be able to modify the hash of the parents
+    /// Generate a vec of references of the file/directory at given path, and its parent in reverse
+    /// hierarchical order.
     fn goto<'a>(
         &self,
         mut file_path_iter: impl Iterator<Item = &'a str> + Clone,
     ) -> Option<Vec<&HashTree>> {
         let dir_name = file_path_iter.next()?;
-
         match self {
             HashTree::Empty => None,
-            HashTree::File { .. } => Some(vec![self]),
-            HashTree::Directory { name, content, .. } => {
+            File { .. } => Some(vec![self]),
+            Directory { name, content, .. } => {
                 if name.eq(&dir_name) {
                     for tree in content {
                         let opt = tree.goto(file_path_iter.clone());
@@ -112,110 +123,191 @@ impl HashTree {
         }
     }
 
-    // TODO: Why not using recursive fn?
-    fn apply(&self, mutation: Mutation) -> Result<HashTree, StateError> {
+    /// Construct a mutated version of self.
+    fn apply(&self, mutation: &Mutation) -> Result<HashTree, StateError> {
         match mutation {
             Mutation::Init => Ok(self.clone()),
-            Mutation::Merge { parent } => todo!(),
+            Mutation::Merge { .. } => Ok(self.clone()),
             Mutation::Modify {
                 file_path,
                 file_hash,
-            } => todo!(),
-            Mutation::Move { from, to } => todo!(),
-            Mutation::Remove { file_path } => {
-                let path = self
-                    .goto(file_path.split("/"))
-                    .ok_or(InvalidPath(file_path.clone()))?;
-                let elem = path[0];
-                let parent;
-                if let HashTree::Directory {
-                    name,
-                    mut content,
-                    hash,
-                } = path[1].clone()
-                {
-                    content.retain(|item| item != elem);
-                    parent = HashTree::Directory {
-                        name,
-                        content,
-                        hash,
-                    };
-                } else {
-                    return Err(InvalidPath(file_path.clone()));
-                }
-
-                Ok(parent.propagate_update(path))
+            } => Self::apply_and_update_parents(
+                self.clone(),
+                &mut |_: HashTree| -> HashTree {
+                    File {
+                        name: file_path.split("/").last().unwrap().to_string(),
+                        hash: file_hash.clone(),
+                    }
+                },
+                file_path.split("/").peekable(),
+            ),
+            Mutation::Move { from, to } => {
+                let extracted = self.goto(from.split("/")).unwrap()[0];
+                let tree = Self::apply_and_update_parents(
+                    self.clone(),
+                    &mut |_: HashTree| -> HashTree { HashTree::Empty },
+                    from.split("/").peekable(),
+                )?;
+                Self::apply_and_update_parents(
+                    tree,
+                    &mut |_: HashTree| -> HashTree { extracted.clone() },
+                    from.split("/").peekable(),
+                )
             }
+            Mutation::Remove { file_path } => Self::apply_and_update_parents(
+                self.clone(),
+                &mut |_: HashTree| -> HashTree { HashTree::Empty },
+                file_path.split("/").peekable(),
+            ),
         }
     }
 
-    fn propagate_update(mut self, path: Vec<&HashTree>) -> Self {
-        self.update_hash();
+    /// Apply a function on a file/folder provided with path, and update parents.
+    fn apply_and_update_parents<'a>(
+        parent: HashTree,
+        mut_fn: &mut dyn FnMut(HashTree) -> HashTree,
+        mut path: Peekable<impl Iterator<Item = &'a str>>,
+    ) -> Result<HashTree, StateError> {
+        let next = path.next();
+        let has_next = path.peek().is_some();
 
-        for i in 2..path.len() {
-            if let HashTree::Directory {
+        // Check if it reaches the end of the iterator
+        if let Some(elem) = next {
+            // If not, check if the current parent is a directory
+            if let Directory {
                 name,
-                mut content,
+                content,
                 hash,
-            } = path[i].clone()
+            } = parent
             {
-                if let Some(p) = content.iter().position(|item| item == path[i - 1]) {
-                    content[p] = self;
-                    self = HashTree::Directory {
-                        name,
-                        content,
-                        hash,
-                    };
-                } else {
-                    panic!("Cannot propagate update")
-                }
-            }
-        }
-
-        self
-    }
-
-    fn update_hash(&mut self) -> Option<blake3::Hash> {
-        match self {
-            &mut HashTree::Directory {
-                mut hash,
-                ref mut content,
-                ..
-            } => {
-                let mut data: Vec<u8> = Vec::new();
-                for item in content {
-                    match item {
+                // If so, construct new content
+                let mut new_content: Vec<HashTree> = Vec::new();
+                let mut pos = 0;
+                let mut elem_pos: i64 = -1;
+                for tree in content {
+                    match &tree {
                         HashTree::Empty => {}
-                        HashTree::File { name, hash, .. }
-                        | HashTree::Directory { name, hash, .. } => {
-                            data.extend_from_slice(name.as_bytes());
-                            data.extend_from_slice(hash.as_bytes());
+                        File { name, .. } | Directory { name, .. } => {
+                            if name == elem {
+                                elem_pos = pos;
+                            }
                         }
                     }
+                    new_content.push(tree);
+                    pos += 1;
                 }
-                hash = blake3::hash(data.as_slice());
-                Some(hash)
+
+                let result;
+
+                // Check if the parent contains the next elem
+                if elem_pos == -1 {
+                    // If not, let the function construct the object
+                    let new_tree;
+                    if has_next {
+                        new_tree = Directory {
+                            name: elem.to_string(),
+                            content: Vec::new(),
+                            hash: Hash::from_bytes([0; 32]),
+                        };
+                    } else {
+                        new_tree = File {
+                            name: elem.to_string(),
+                            hash: Hash::from_bytes([0; 32]),
+                        };
+                    }
+
+                    result = Self::apply_and_update_parents(new_tree, mut_fn, path);
+                } else {
+                    // If so, call recursively
+                    result = Self::apply_and_update_parents(
+                        new_content.remove(pos.try_into().unwrap()),
+                        mut_fn,
+                        path,
+                    );
+                }
+
+                // Check if there is an error
+                if let Ok(mut tree) = result {
+                    // If not, apply function, update hash and push
+                    // If the
+                    if !has_next {
+                        tree = mut_fn(tree);
+                    }
+
+                    // Check if the fonction didn't return Empty
+                    if tree != HashTree::Empty {
+                        // If not, update and push
+                        tree.update_hash();
+                        new_content.push(tree);
+                    }
+
+                    Ok(Directory {
+                        name,
+                        content: new_content,
+                        hash,
+                    })
+                } else {
+                    result
+                }
+            } else {
+                // If not, there is an error (next is not None, and it reached a File)
+                Err(NotADirectory(elem.to_string()))
             }
-            _ => None,
+        } else {
+            // If so, return parent
+            Ok(parent)
         }
+    }
+
+    /// Non recursively update the hash of the directory (computed only with direct children).
+    fn update_hash(&mut self) {
+        match self {
+            Directory { hash, content, .. } => {
+                // Delete empty items
+                content.retain(|e| !matches!(e, Empty));
+
+                if content.len() == 0 {
+                    *hash = Hash::from_bytes([0; 32]);
+                } else {
+                    *hash = Self::compute_content_hash(content);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Non-recursively compute the hash of content (computed only with direct children)
+    fn compute_content_hash(content: &Vec<HashTree>) -> Hash {
+        let mut data: Vec<u8> = Vec::new();
+        for item in content {
+            match item {
+                Empty => {}
+                File { name, hash, .. } | Directory { name, hash, .. } => {
+                    data.extend_from_slice(name.as_bytes());
+                    data.extend_from_slice(hash.as_bytes());
+                }
+            }
+        }
+        blake3::hash(data.as_slice())
     }
 }
 
 impl PartialEq<HashTree> for HashTree {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (HashTree::Empty, HashTree::Empty) => true,
-            (HashTree::File { hash: h1, .. }, HashTree::File { hash: h2, .. }) => h1 == h2,
-            (HashTree::Directory { hash: h1, .. }, HashTree::Directory { hash: h2, .. }) => {
-                h1 == h2
-            }
+            (Empty, Empty) => true,
+            (File { hash: h1, .. }, File { hash: h2, .. }) => h1 == h2,
+            (Directory { hash: h1, .. }, Directory { hash: h2, .. }) => h1 == h2,
             _ => false,
         }
     }
 }
 
 #[derive(Error, Debug)]
-enum StateError {
+pub enum StateError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
+
+    #[error("Not a directory: {0}")]
+    NotADirectory(String),
 }

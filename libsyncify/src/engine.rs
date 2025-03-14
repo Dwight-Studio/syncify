@@ -1,17 +1,18 @@
-use crate::engine::fs::EventProcessor;
+use crate::engine::fs::DirectoryManager;
 use crate::engine::protocol::SyncifyProtocol;
-use crate::get_app_dir;
+use crate::engine::EngineError::AlreadyWatched;
 use crate::store::StoreManager;
-use iroh::Endpoint;
+use crate::{get_app_dir, SharedDirectory};
 use iroh::protocol::Router;
+use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
-use notify::Watcher;
+use std::collections::HashMap;
 use std::io;
-use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 mod fs;
 mod protocol;
@@ -22,8 +23,7 @@ const DATABASE_DIRNAME: &str = "database";
 
 pub struct Engine {
     router: Router,
-    watcher: notify::RecommendedWatcher,
-    processor: EventProcessor,
+    managers: HashMap<Uuid, DirectoryManager>
 }
 
 /// Synchronization engine.
@@ -66,11 +66,6 @@ impl Engine {
             store: store.clone(),
         };
 
-        // File watcher
-        let processor = EventProcessor::new(store.clone());
-        let watcher =
-            notify::recommended_watcher(processor.clone()).map_err(EngineError::CannotWatch)?;
-
         let mut engine = Self {
             router: builder
                 .accept(protocol::SYNCIFY_ALPN, syncify_prot)
@@ -79,12 +74,11 @@ impl Engine {
                 .spawn()
                 .await
                 .map_err(EngineError::RouterInit)?,
-            watcher,
-            processor,
+            managers: HashMap::new(),
         };
 
         for dir in &store.read().await.get_all_dirs() {
-            engine.add_watched_directory(&dir.path()).await?
+            engine.add_watched_directory(store.clone(), dir).await?
         }
 
         Ok(engine)
@@ -96,15 +90,27 @@ impl Engine {
         drop(self);
     }
 
-    pub async fn add_watched_directory(&mut self, path: &Path) -> Result<(), EngineError> {
-        self.watcher
-            .watch(path, notify::RecursiveMode::Recursive)
-            .map_err(EngineError::CannotWatch)?;
-        Ok(())
+    /// Create [`DirectoryManager`] actor for a [`SharedDirectory`].
+    pub async fn add_watched_directory(&mut self, store: Arc<RwLock<StoreManager>>, dir: &SharedDirectory) -> Result<(), EngineError> {
+        if !self.managers.contains_key(&dir.uuid()) {
+            // Create manager
+            let uuid = dir.uuid();
+            let manager = DirectoryManager::new(store, dir.clone()).map_err(EngineError::CannotWatch)?;
+            
+            self.managers.insert(uuid, manager);
+            Ok(())
+        } else {
+            Err(AlreadyWatched(dir.uuid()))
+        }
     }
 
-    pub async fn remove_watched_directory(&mut self, path: &Path) -> Result<(), EngineError> {
-        self.watcher.unwatch(path).map_err(EngineError::CannotWatch)
+    pub async fn remove_watched_directory(&mut self, dir: &SharedDirectory) -> Result<(), EngineError> {
+        if self.managers.contains_key(&dir.uuid()) {
+            self.managers.remove(&dir.uuid()).unwrap();
+            Ok(())
+        } else {
+            Err(AlreadyWatched(dir.uuid()))
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -133,12 +139,12 @@ pub enum EngineError {
     #[error("Router error: {0}")]
     RouterInit(anyhow::Error),
 
-    #[error("Filesystem Watcher error: {0}")]
-    WatcherInit(notify::Error),
-
-    #[error("Unable to watch directory (is it a network filesystem?): {0}")]
+    #[error("Filesystem Watcher error (is it a network filesystem?): {0}")]
     CannotWatch(notify::Error),
 
     #[error("Unable to unwatch directory: {0}")]
     CannotUnwatch(notify::Error),
+
+    #[error("Directory is already watched: {0}")]
+    AlreadyWatched(Uuid)
 }
