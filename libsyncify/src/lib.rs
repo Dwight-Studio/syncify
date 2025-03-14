@@ -1,21 +1,24 @@
-use std::cmp::PartialEq;
+use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::{SharedDirectoryData, StoreManager};
-use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared};
+use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared, ReadOnly};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as Base64Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::Endpoint;
 use log::info;
+use std::cmp::PartialEq;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-mod engine;
-mod store;
+pub mod engine;
+pub mod store;
+pub mod util;
 
 // Set the path where the store file will be/is stored
 fn get_app_dir() -> PathBuf {
@@ -54,7 +57,6 @@ impl Syncify {
 
     /// Initialize new engine and start syncing.
     pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
-        info!("Starting synchronisation");
         self.engine = Some(
             Engine::new(self.store.clone())
                 .await
@@ -65,7 +67,6 @@ impl Syncify {
 
     /// Stop syncing destroy current engine.
     pub async fn stop_sync(mut self) -> Self {
-        info!("Stopping synchronisation");
         let old_engine = self.engine.take();
 
         if let Some(engine) = old_engine {
@@ -80,13 +81,25 @@ impl Syncify {
         &mut self,
         path: PathBuf,
     ) -> Result<SharedDirectory, SyncifyError> {
-        let canonical_path = std::fs::canonicalize(&path).map_err(|_| InvalidPath(path))?;
+        let canonical_path = fs::canonicalize(&path).map_err(InvalidPath)?;
 
         // Check if the directory is already shared
         for dir in &self.store.read().await.data.shared_directories {
             if PathBuf::from(&dir.path).eq(&canonical_path) {
                 return Err(AlreadyShared(canonical_path));
             }
+        }
+
+        if fs::exists(&canonical_path).map_err(InvalidPath)? {
+            // Check if the user has write access in the directory
+            let md = fs::metadata(canonical_path.clone()).map_err(InvalidPath)?;
+            if md.permissions().readonly() {
+                return Err(ReadOnly(canonical_path));
+            }
+        } else {
+            tokio::fs::create_dir_all(&get_app_dir())
+                .await
+                .map_err(InvalidPath)?;
         }
 
         // Add the directory to the store
@@ -97,12 +110,17 @@ impl Syncify {
             data: SharedDirectoryData {
                 uuid,
                 path: canonical_path.to_string_lossy().to_string(),
+                state: State::new(),
             },
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
         };
 
-        info!("Creating shared directory '{}' at `{}'", dir.path().display(), dir.uuid());
+        info!(
+            "Creating shared directory '{}' at `{}'",
+            dir.path().display(),
+            dir.uuid()
+        );
 
         self.store.write().await.add_shared_dir(&dir);
 
@@ -158,10 +176,14 @@ impl Syncify {
         self.store.read().await.get_all_dirs()
     }
 
-    pub async fn build_link(&self, uuid: Uuid, permission: SharedFolderPermission) -> Result<String, SyncifyError> {
+    pub async fn build_link(
+        &self,
+        uuid: Uuid,
+        permission: SharedFolderPermission,
+    ) -> Result<String, SyncifyError> {
         let dir = self.get_shared_directory(&uuid).await.unwrap();
         let key = {
-            if permission == SharedFolderPermission::Write { 
+            if permission == SharedFolderPermission::Write {
                 if let Some(tmp) = dir.sign_key {
                     String::from_utf8_lossy(tmp.as_bytes()).to_string()
                 } else {
@@ -171,9 +193,9 @@ impl Syncify {
                 String::from_utf8_lossy(dir.verif_key.as_bytes()).to_string()
             }
         };
-        
+
         //let link = format!("syncify://?key={}&payload={}", key);
-        
+
         Ok(String::new())
     }
 
@@ -220,14 +242,17 @@ pub enum SyncifyError {
     EngineNotInit(),
 
     #[error("Invalid path: {0}")]
-    InvalidPath(PathBuf),
+    InvalidPath(std::io::Error),
+
+    #[error("Directory is is not writable: {0}")]
+    ReadOnly(PathBuf),
 
     #[error("Folder is already shared: {0}")]
     AlreadyShared(PathBuf),
 
     #[error("Folder is not shared")]
     NotShared(SharedDirectoryData),
-    
+
     #[error("Shared directory is in read-only mode")]
     DirectoryReadOnly(),
 

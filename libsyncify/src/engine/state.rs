@@ -1,35 +1,52 @@
 use crate::engine::state::HashTree::{Directory, Empty, File};
 use crate::engine::state::StateError::NotADirectory;
 use blake3::Hash;
-use std::cell::RefCell;
+use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::iter::Peekable;
-use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+/// Tree containing the synchronisation information for a [`SharedDirectory`].
+#[derive(Serialize, Deserialize, Debug)]
 pub struct State {
-    head: Rc<RefCell<Delta>>,
+    head: Arc<RwLock<Delta>>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for State {
+    fn clone(&self) -> Self {
+        Self {
+            head: self.head.clone(),
+        }
+    }
 }
 
 impl State {
     pub fn new() -> Self {
         let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         Self {
-            head: Rc::new(RefCell::new(Delta {
+            head: Arc::new(RwLock::new(Delta {
                 parent: None,
                 hash: blake3::hash(&duration_since_epoch.as_millis().to_be_bytes()),
-                hash_tree_cache: Some(HashTree::Empty),
+                hash_tree_cache: Some(Empty),
                 action: Mutation::Init,
             })),
         }
     }
 
     /// Get parent state.
-    pub fn parent(&self) -> Option<Self> {
-        if self.head.borrow().parent.is_some() {
+    pub async fn parent(&self) -> Option<Self> {
+        let head = self.head.read().unwrap();
+        if head.parent.is_some() {
             Some(Self {
-                head: self.head.borrow().parent.clone().unwrap(),
+                head: head.parent.clone().unwrap(),
             })
         } else {
             None
@@ -37,15 +54,40 @@ impl State {
     }
 
     /// Get file hash tree.
-    pub fn hash_tree(&mut self) -> Result<HashTree, StateError> {
-        self.head.borrow_mut().compute_hash_tree()?;
-        Ok(self.head.borrow().hash_tree_cache.clone().unwrap())
+    pub async fn hash_tree(&mut self) -> Result<HashTree, StateError> {
+        let mut head = self.head.write().unwrap();
+        head.compute_hash_tree()?;
+        Ok(head.hash_tree_cache.clone().unwrap())
+    }
+
+    pub async fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
+        let mut delta = Delta {
+            parent: Some(self.head.clone()),
+            hash: Hash::from_bytes([0; 32]),
+            hash_tree_cache: None,
+            action: mutation,
+        };
+
+        // Compute hash tree
+        delta.compute_hash_tree()?;
+        delta.hash = {
+            match &delta.hash_tree_cache {
+                Some(tree) => tree.get_hash(),
+                None => Hash::from_bytes([0; 32]),
+            }
+        };
+
+        self.head = Arc::new(RwLock::new(delta));
+
+        Ok(())
     }
 }
 
-#[derive(Clone)]
-struct Delta {
-    parent: Option<Rc<RefCell<Delta>>>,
+/// Node describing a modification of a [`State`].
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Delta {
+    parent: Option<Arc<RwLock<Delta>>>,
+    #[serde(with = "crate::util::HashMock")]
     hash: Hash,
     hash_tree_cache: Option<HashTree>,
     action: Mutation,
@@ -58,8 +100,9 @@ impl Delta {
             Ok(())
         } else {
             if let Some(parent) = &self.parent {
-                parent.borrow_mut().compute_hash_tree()?;
-                match &parent.borrow().hash_tree_cache {
+                let mut p = parent.write().unwrap();
+                p.compute_hash_tree()?;
+                match &p.hash_tree_cache {
                     None => {}
                     Some(cache) => {
                         self.hash_tree_cache = Some(cache.apply(&self.action)?);
@@ -73,25 +116,40 @@ impl Delta {
     }
 }
 
-#[derive(Clone)]
-enum Mutation {
+/// Mutation action of a [`Delta`].
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum Mutation {
     Init,
-    Merge { parent: Rc<Delta> },
-    Modify { file_path: String, file_hash: Hash },
-    Move { from: String, to: String },
-    Remove { file_path: String },
+    Merge {
+        parent: Arc<Delta>,
+    },
+    Modify {
+        file_path: String,
+        #[serde(with = "crate::util::HashMock")]
+        file_hash: Hash,
+    },
+    Move {
+        from: String,
+        to: String,
+    },
+    Remove {
+        file_path: String,
+    },
 }
 
-#[derive(Clone)]
+/// Hash tree describing a state of the file tree.
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum HashTree {
     Empty,
     File {
         name: String,
+        #[serde(with = "crate::util::HashMock")]
         hash: Hash,
     },
     Directory {
         name: String,
         content: Vec<HashTree>,
+        #[serde(with = "crate::util::HashMock")]
         hash: Hash,
     },
 }
@@ -136,7 +194,7 @@ impl HashTree {
                 &mut |_: HashTree| -> HashTree {
                     File {
                         name: file_path.split("/").last().unwrap().to_string(),
-                        hash: file_hash.clone(),
+                        hash: *file_hash,
                     }
                 },
                 file_path.split("/").peekable(),
@@ -151,7 +209,7 @@ impl HashTree {
                 Self::apply_and_update_parents(
                     tree,
                     &mut |_: HashTree| -> HashTree { extracted.clone() },
-                    from.split("/").peekable(),
+                    to.split("/").peekable(),
                 )
             }
             Mutation::Remove { file_path } => Self::apply_and_update_parents(
@@ -261,18 +319,23 @@ impl HashTree {
 
     /// Non recursively update the hash of the directory (computed only with direct children).
     fn update_hash(&mut self) {
-        match self {
-            Directory { hash, content, .. } => {
-                // Delete empty items
-                content.retain(|e| !matches!(e, Empty));
+        if let Directory { hash, content, .. } = self {
+            // Delete empty items
+            content.retain(|e| !matches!(e, Empty));
 
-                if content.len() == 0 {
-                    *hash = Hash::from_bytes([0; 32]);
-                } else {
-                    *hash = Self::compute_content_hash(content);
-                }
+            if content.is_empty() {
+                *hash = Hash::from_bytes([0; 32]);
+            } else {
+                *hash = Self::compute_content_hash(content);
             }
-            _ => {}
+        }
+    }
+
+    fn get_hash(&self) -> Hash {
+        match self {
+            Empty => Hash::from_bytes([0; 32]),
+            File { hash, .. } => *hash,
+            Directory { hash, .. } => *hash,
         }
     }
 

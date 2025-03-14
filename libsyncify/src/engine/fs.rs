@@ -22,7 +22,7 @@ impl DirectoryManager {
         dir: SharedDirectory,
     ) -> Result<Self, notify::Error> {
         info!("Initializing directory manager for {}", dir.uuid());
-        
+
         // Initiate channel
         let (tx, rx) = mpsc::channel(NOTIFICATION_BUFFER_SIZE);
         let handle = DirectoryManagerHandle { tx };
@@ -45,24 +45,26 @@ impl DirectoryManager {
     ) {
         while let Some(result) = rx.recv().await {
             if let Ok(event) = result {
+                info!("Dir {}: {:?}", dir.uuid(), event.kind);
                 match event.kind {
                     Create(kind) => match kind {
-                        CreateKind::File => info!("Dir {0}: Create File", dir.uuid()),
-                        _ => info!("Dir {0}: Create Other", dir.uuid()),
+                        CreateKind::File => {}
+                        _ => {}
                     },
                     Modify(kind) => match kind {
-                        ModifyKind::Data(_) => info!("Dir {0}: Modify Data", dir.uuid()),
-                        ModifyKind::Name(_) => info!("Dir {0}: Modify Name", dir.uuid()),
-                        _ => info!("Dir {0}: Modify Other", dir.uuid()),
+                        ModifyKind::Data(_) => {}
+                        ModifyKind::Name(_) => {}
+                        _ => {}
                     },
                     Remove(kind) => match kind {
-                        RemoveKind::File => info!("Dir {0}: Remove File", dir.uuid()),
-                        _ => info!("Dir {0}: Remove Other", dir.uuid()),
+                        RemoveKind::File => {}
+                        _ => {}
                     },
                     _ => continue,
                 }
             }
         }
+        info!("Dropped directory manager for {}", dir.uuid());
     }
 }
 

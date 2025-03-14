@@ -15,9 +15,9 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-mod fs;
-mod protocol;
-mod state;
+pub mod fs;
+pub mod protocol;
+pub mod state;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 

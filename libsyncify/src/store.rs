@@ -1,3 +1,4 @@
+use crate::engine::state::State;
 use crate::store::keyring::{Keyring, Keys};
 use crate::{get_app_dir, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
@@ -12,7 +13,7 @@ use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use uuid::{Bytes, Uuid};
+use uuid::Uuid;
 
 pub mod keyring;
 
@@ -218,21 +219,12 @@ impl StoreManager {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "Uuid")]
-pub struct UuidDef(#[serde(getter = "Uuid::as_bytes")] Bytes);
-
-impl From<UuidDef> for Uuid {
-    fn from(uuid: UuidDef) -> Self {
-        Uuid::from_bytes(uuid.0)
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedDirectoryData {
-    #[serde(with = "UuidDef")]
+    #[serde(with = "crate::util::UuidMock")]
     pub(crate) uuid: Uuid,
     pub(crate) path: String,
+    pub(crate) state: State,
 }
 
 impl Display for SharedDirectoryData {
@@ -246,6 +238,7 @@ impl Clone for SharedDirectoryData {
         Self {
             uuid: self.uuid,
             path: self.path.clone(),
+            state: self.state.clone(),
         }
     }
 }

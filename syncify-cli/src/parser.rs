@@ -1,7 +1,7 @@
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use libsyncify::{SharedFolderPermission, Syncify};
-use std::io::{stdin, Read};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -63,7 +63,12 @@ impl Commands {
         match &cli.command {
             Subcommands::Sync => {
                 syncify.start_sync().await.unwrap();
-                stdin().read(&mut [0]).unwrap();
+                let (tx, mut rx) = mpsc::channel::<u8>(1);
+                ctrlc::set_handler(move || {
+                    tx.blocking_send(1).unwrap();
+                })
+                .unwrap();
+                rx.recv().await.unwrap();
                 syncify.stop_sync().await;
             }
             Subcommands::Invite { uuid, permission } => {
@@ -71,8 +76,24 @@ impl Commands {
                     todo!();
                 } else if let Ok(uuid_str) = Uuid::from_slice(uuid.clone().unwrap().as_bytes()) {
                     match *permission {
-                        InvitePermission::ReadOnly => { println!("{}", syncify.build_link(uuid_str, SharedFolderPermission::ReadOnly).await.unwrap()); }
-                        InvitePermission::Write => { println!("{}", syncify.build_link(uuid_str, SharedFolderPermission::Write).await.unwrap()) }
+                        InvitePermission::ReadOnly => {
+                            println!(
+                                "{}",
+                                syncify
+                                    .build_link(uuid_str, SharedFolderPermission::ReadOnly)
+                                    .await
+                                    .unwrap()
+                            );
+                        }
+                        InvitePermission::Write => {
+                            println!(
+                                "{}",
+                                syncify
+                                    .build_link(uuid_str, SharedFolderPermission::Write)
+                                    .await
+                                    .unwrap()
+                            )
+                        }
                     }
                 } else {
                     cmd.error(
@@ -86,9 +107,17 @@ impl Commands {
                     println!("'{}' at '{}'", dir.path().display(), dir.uuid())
                 }
             }
+            Subcommands::Create { path } => {
+                println!("Creating directory...");
+                let dir = syncify
+                    .create_shared_directory(path.parse().unwrap())
+                    .await
+                    .unwrap();
+                println!("'{}' created.", dir.uuid())
+            }
             _ => {
                 todo!();
-            },
+            }
         }
     }
 }
