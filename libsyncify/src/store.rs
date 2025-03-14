@@ -1,7 +1,7 @@
 use crate::store::keyring::{Keyring, Keys};
-use crate::{SharedDirectory, get_app_dir};
-use base64::Engine;
+use crate::{get_app_dir, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
@@ -21,7 +21,9 @@ const STORE_FILENAME: &str = "store.toml";
 
 /// Entity holding the non-sensitive shared folder data.
 #[derive(Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Store {
+    pub store_version: String,
     pub shared_directories: Vec<SharedDirectoryData>,
 }
 
@@ -30,7 +32,7 @@ pub struct StoreManager {
     pub secret_key: SecretKey,
     pub data: Store,
     keyring: Keyring,
-    config_file: PathBuf,
+    file_path: PathBuf,
 }
 
 impl StoreManager {
@@ -42,57 +44,60 @@ impl StoreManager {
 
         let store_file = get_app_dir().join(STORE_FILENAME);
 
-        // Create store file if it does not exist
-        // Load the store file if it exists
-        let store_data: Store = {
-            if Path::exists(store_file.as_path()) {
-                info!("Reading store file...");
-                let file_content: &mut String = &mut "".to_string();
-                File::open(store_file.as_path())?.read_to_string(file_content)?;
 
-                let result: Result<Store, toml::de::Error> = toml::from_str(file_content);
+        let mut store_data: Option<Store> = None;
 
-                // Check if the store is parsable
-                match result {
-                    Ok(res) => res,
-                    Err(_) => {
-                        warn!("Invalid store file: {}", store_file.display());
-                        let mut i = 0;
-                        while std::fs::exists(
+        // Check if the store file exists
+        if Path::exists(store_file.as_path()) {
+            // If so, read it
+            info!("Reading store file...");
+            let file_content: &mut String = &mut "".to_string();
+            File::open(store_file.as_path())?.read_to_string(file_content)?;
+
+            let result: Result<Store, toml::de::Error> = toml::from_str(file_content);
+
+            // Check if the store is parsable
+            match result {
+                Ok(res) => store_data = Some(res),
+                Err(_) => {
+                    warn!("Invalid store file: {}", store_file.display());
+                    let mut i = 0;
+                    while std::fs::exists(
+                        get_app_dir()
+                            .join(format!("{STORE_FILENAME}.backup{i}"))
+                            .as_path(),
+                    )? {
+                        i += 1;
+                        if i >= MAX_RENAME_ATTEMPTS {
+                            break;
+                        }
+                    }
+                    if i < MAX_RENAME_ATTEMPTS {
+                        std::fs::rename(
+                            store_file.as_path(),
                             get_app_dir()
                                 .join(format!("{STORE_FILENAME}.backup{i}"))
                                 .as_path(),
-                        )? {
-                            i += 1;
-                            if i >= MAX_RENAME_ATTEMPTS {
-                                break;
-                            }
-                        }
-                        if i < MAX_RENAME_ATTEMPTS {
-                            std::fs::rename(
-                                store_file.as_path(),
-                                store_file.join(format!(".backup{}", &i)).as_path(),
-                            )?;
-                            File::create(store_file.as_path())?;
-
-                            Store {
-                                shared_directories: vec![],
-                            }
-                        } else {
-                            warn!("Unable backup store!");
-                            return Err(io::ErrorKind::AlreadyExists.into());
-                        }
+                        )?;
+                    } else {
+                        warn!("Unable backup store!");
+                        return Err(io::ErrorKind::AlreadyExists.into());
                     }
                 }
-            } else {
-                info!("Store file does not exists, creating a new one...");
-                File::create(store_file.as_path())?;
-
-                Store {
-                    shared_directories: vec![],
-                }
             }
-        };
+        }
+
+        if store_data.is_none() {
+            info!("Store file does not exists, creating a new one...");
+
+            store_data = Some(Store {
+                store_version: env!("CARGO_PKG_VERSION").to_string(),
+                shared_directories: vec![],
+            });
+            let toml_data = toml::to_string(&store_data.clone().unwrap()).unwrap();
+            let mut file = File::create(store_file.as_path())?;
+            file.write_all(toml_data.as_bytes())?;
+        }
 
         let keyring = Keyring::new();
         let secret_key = {
@@ -117,9 +122,9 @@ impl StoreManager {
 
         Ok(StoreManager {
             secret_key,
-            data: store_data,
+            data: store_data.unwrap(),
             keyring,
-            config_file: store_file,
+            file_path: store_file,
         })
     }
 
@@ -203,14 +208,14 @@ impl StoreManager {
             .map(|dir| self.get_shared_dir(&dir.uuid).unwrap())
             .collect()
     }
-    
+
     pub fn get_all_dirs_data(&self) -> Vec<SharedDirectoryData> {
         self.data.shared_directories.clone()
     }
 
     fn save(&self) {
         let toml_data = toml::to_string(&self.data).unwrap();
-        let mut file = File::create(self.config_file.as_path()).unwrap();
+        let mut file = File::create(self.file_path.as_path()).unwrap();
         file.write_all(toml_data.as_bytes()).unwrap();
     }
 }

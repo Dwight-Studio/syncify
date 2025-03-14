@@ -15,6 +15,7 @@ publish = false
 libsyncify = { path= "../libsyncify" }
 tokio = "1.44.0"
 log = "0.4.26"
-spdlog-rs = { version = "0.4.1", features = ["log", "release-level-warn"] }
 clap = { version = "4.5.32", features = ["derive"] }
 uuid = { version = "1.15.1", features = ["v4"] }
+fern = { version = "0.7.1", features = ["colored"] }
+humantime = "2.2.0"
