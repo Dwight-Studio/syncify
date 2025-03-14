@@ -203,6 +203,10 @@ impl StoreManager {
             .map(|dir| self.get_shared_dir(&dir.uuid).unwrap())
             .collect()
     }
+    
+    pub fn get_all_dirs_data(&self) -> Vec<SharedDirectoryData> {
+        self.data.shared_directories.clone()
+    }
 
     fn save(&self) {
         let toml_data = toml::to_string(&self.data).unwrap();

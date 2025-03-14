@@ -25,6 +25,11 @@ fn get_app_dir() -> PathBuf {
     }
 }
 
+pub enum SharedFolderPermission {
+    ReadOnly,
+    Write,
+}
+
 const APP_NAME: &str = "Syncify";
 
 /// Entry point of the library.
@@ -139,6 +144,16 @@ impl Syncify {
     /// Get an existing shared directory.
     pub async fn get_shared_directory(&self, uuid: &Uuid) -> Option<SharedDirectory> {
         self.store.read().await.get_shared_dir(uuid)
+    }
+
+    /// Get all existing shared directory data
+    pub async fn get_all_shared_directory_data(&self) -> Vec<SharedDirectoryData> {
+        self.store.read().await.get_all_dirs_data()
+    }
+
+    pub async fn build_link(&self, uuid: Uuid, permission: SharedFolderPermission) -> String {
+        todo!();
+        String::new()
     }
 
     #[cfg(debug_assertions)]
