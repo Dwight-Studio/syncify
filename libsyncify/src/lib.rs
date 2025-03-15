@@ -1,4 +1,3 @@
-use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared, ReadOnly};
@@ -13,9 +12,11 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
+use rkyv::{Archive, Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::engine::state::State;
 
 pub mod engine;
 pub mod store;
@@ -31,8 +32,9 @@ fn get_app_dir() -> PathBuf {
     }
 }
 
-#[derive(PartialEq)]
-pub enum SharedFolderPermission {
+#[derive(PartialEq, Clone)]
+#[derive(Archive, Serialize, Deserialize)]
+pub enum SharedDirPermission {
     ReadOnly,
     Write,
 }
@@ -178,11 +180,11 @@ impl Syncify {
     pub async fn build_link(
         &self,
         uuid: Uuid,
-        permission: SharedFolderPermission,
+        permission: SharedDirPermission,
     ) -> Result<String, SyncifyError> {
         let dir = self.get_shared_directory(&uuid).await.unwrap();
         let key = {
-            if permission == SharedFolderPermission::Write {
+            if permission == SharedDirPermission::Write {
                 if let Some(tmp) = dir.sign_key {
                     String::from_utf8_lossy(tmp.as_bytes()).to_string()
                 } else {
@@ -262,4 +264,7 @@ pub enum SyncifyError {
 
     #[error("{0}")]
     Watcher(EngineError),
+
+    #[error("Shared directory does not exists: {0}")]
+    DirectoryDoesNotExists(Uuid)
 }

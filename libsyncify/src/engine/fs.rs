@@ -1,14 +1,11 @@
 use crate::engine::state::HashTree;
-use crate::store::StoreManager;
 use crate::SharedDirectory;
 use log::{error, info};
 use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::EventKind::{Create, Modify, Remove};
 use notify::{Event, EventHandler, Watcher};
 use std::ops::Deref;
-use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc};
 use tokio::task::JoinHandle;
 
 const NOTIFICATION_BUFFER_SIZE: usize = 1024;

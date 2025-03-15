@@ -1,9 +1,12 @@
+use std::fmt::Display;
+use std::io::Write;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use libsyncify::{SharedFolderPermission, Syncify};
+use libsyncify::{SharedDirPermission, Syncify};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+use libsyncify::store::link::Link;
 
 #[derive(Parser)]
 #[command(name = "Syncify Command Line Interface")]
@@ -64,6 +67,7 @@ impl Commands {
         match &cli.command {
             Subcommands::Sync => {
                 syncify.start_sync().await.unwrap();
+                syncify.create_shared_directory(PathBuf::from("target/debug/examples")).await.unwrap();
                 let (tx, mut rx) = mpsc::channel::<u8>(1);
                 ctrlc::set_handler(move || {
                     tx.blocking_send(1).unwrap();
@@ -74,26 +78,35 @@ impl Commands {
             }
             Subcommands::Invite { uuid, permission } => {
                 if uuid.is_none() {
-                    todo!();
-                } else if let Ok(uuid_str) = Uuid::from_slice(uuid.clone().unwrap().as_bytes()) {
+                    let dirs = syncify.get_all_shared_directories().await;
+
+                    if dirs.is_empty() { cmd.error(ErrorKind::Io, "No shared folder found! Please join or create a shared folder!"); }
+
+                    let choice = Self::number_choice(dirs.iter().map(|dir| dir.path().display().to_string()).collect(), Some("Choose a directory to share:")).await;
+                    
+                    let uuid = dirs[choice].uuid();
+                    let path = dirs[choice].path();
+                } else if let Ok(uuid_str) = Uuid::parse_str(uuid.clone().unwrap().as_str()) {
                     match *permission {
                         InvitePermission::ReadOnly => {
                             println!(
-                                "{}",
-                                syncify
-                                    .build_link(uuid_str, SharedFolderPermission::ReadOnly)
-                                    .await
-                                    .unwrap()
+                                "Link: {}",
+                                Link::builder(syncify)
+                                    .dir_uuid(uuid_str)
+                                    .permission(SharedDirPermission::ReadOnly)
+                                    .build().await.unwrap()
                             );
                         }
                         InvitePermission::Write => {
-                            println!(
-                                "{}",
-                                syncify
-                                    .build_link(uuid_str, SharedFolderPermission::Write)
-                                    .await
-                                    .unwrap()
-                            )
+                            if let Ok(link) = Link::builder(syncify)
+                                .dir_uuid(uuid_str)
+                                .build().await {
+                                println!(
+                                    "Link: {link}",
+                                )
+                            } else {
+                                cmd.error(ErrorKind::Io, "You cannot share a directory with read-only access as a directory with write permission!");
+                            }
                         }
                     }
                 } else {
@@ -128,13 +141,36 @@ impl Commands {
                 }
             }
             Subcommands::Remove{uuid} => {
-                
+
             }
             Subcommands::Join{link, path} => {
-                
+
             }
             Subcommands::Reset => {
-                
+
+            }
+        }
+    }
+    
+    async fn number_choice<T: Display>(vec: Vec<T>, head_message: Option<&str>, ) -> usize {
+        loop {
+            print!("\x1B[2J\x1B[1;1H");
+            std::io::stdout().flush().unwrap();
+            if let Some(msg) = head_message { println!("{msg}\n") }
+            for (i, dir) in vec.iter().enumerate() {
+                println!("{}> {}", i + 1, dir);
+            }
+
+            print!("\nChoice> ");
+            std::io::stdout().flush().unwrap();
+
+            let choice = &mut String::new();
+            std::io::stdin().read_line(choice).unwrap();
+
+            if let Ok(ch) = choice.trim_end().parse::<usize>() {
+                if ch > 0 && ch - 1 < vec.len() {
+                    break ch - 1
+                }
             }
         }
     }

@@ -30,5 +30,5 @@ base64 = "0.22.1"
 blake3 = { version = "1.6.1", features = ["std", "mmap", "rayon"] }
 futures = "0.3.31"
 walkdir = "2.5.0"
-redb = "2.4.0"
 rkyv = "0.8.10"
+redb = "2.4.0"
