@@ -91,7 +91,7 @@ impl State {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Delta {
     parent: Option<Arc<RwLock<Delta>>>,
-    #[serde(with = "crate::util::HashMock")]
+    #[serde(with = "crate::util::NewHash")]
     hash: Hash,
     hash_tree_cache: Option<HashTree>,
     action: Mutation,
@@ -129,7 +129,7 @@ pub enum Mutation {
     },
     Modify {
         file_path: String,
-        #[serde(with = "crate::util::HashMock")]
+        #[serde(with = "crate::util::NewHash")]
         file_hash: Hash,
     },
     Move {
@@ -147,13 +147,13 @@ pub enum HashTree {
     Empty,
     File {
         name: String,
-        #[serde(with = "crate::util::HashMock")]
+        #[serde(with = "crate::util::NewHash")]
         hash: Hash,
     },
     Directory {
         name: String,
         content: Vec<HashTree>,
-        #[serde(with = "crate::util::HashMock")]
+        #[serde(with = "crate::util::NewHash")]
         hash: Hash,
     },
 }

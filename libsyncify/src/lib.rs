@@ -10,7 +10,8 @@ use iroh::Endpoint;
 use log::info;
 use std::cmp::PartialEq;
 use std::fs;
-use std::path::PathBuf;
+use std::io::{Error, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -84,12 +85,13 @@ impl Syncify {
         let canonical_path = fs::canonicalize(&path).map_err(InvalidPath)?;
 
         // Check if the directory is already shared
-        for dir in &self.store.read().await.data.shared_directories {
-            if PathBuf::from(&dir.path).eq(&canonical_path) {
-                return Err(AlreadyShared(canonical_path));
+        for dir in &self.store.read().await.get_all_dirs() {
+            if dir.path == path {
+                return Err(AlreadyShared(canonical_path.clone()));
             }
         }
 
+        // Check if the dir exists
         if fs::exists(&canonical_path).map_err(InvalidPath)? {
             // Check if the user has write access in the directory
             let md = fs::metadata(canonical_path.clone()).map_err(InvalidPath)?;
@@ -97,21 +99,27 @@ impl Syncify {
                 return Err(ReadOnly(canonical_path));
             }
         } else {
+            // Create the dir and its parent
             tokio::fs::create_dir_all(&get_app_dir())
-                .await
-                .map_err(InvalidPath)?;
+                .await.map_err(|e| match e.kind() {
+                ErrorKind::PermissionDenied => ReadOnly(canonical_path.clone()),
+                _ => InvalidPath(e)
+            })?
         }
 
         // Add the directory to the store
         let uuid = Uuid::new_v4();
         let sign_key = SigningKey::generate(&mut OsRng);
 
+        let data = SharedDirectoryData {
+            path: canonical_path.to_string_lossy().to_string(),
+            state: Default::default(),
+        };
+        
         let dir = SharedDirectory {
-            data: SharedDirectoryData {
-                uuid,
-                path: canonical_path.to_string_lossy().to_string(),
-                state: State::new(),
-            },
+            uuid,
+            path,
+            stored_data: Arc::new(RwLock::new(data)),
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
         };
@@ -142,14 +150,7 @@ impl Syncify {
         &mut self,
         dir: SharedDirectory,
     ) -> Result<(), SyncifyError> {
-        if self
-            .store
-            .read()
-            .await
-            .data
-            .shared_directories
-            .contains(&dir.data)
-        {
+        if self.store.read().await.get_shared_dir(&dir.uuid).is_some() {
             self.store.write().await.remove_shared_dir(&dir);
 
             // If the engine is available, add the directory to watched directory
@@ -162,7 +163,7 @@ impl Syncify {
 
             Ok(())
         } else {
-            Err(NotShared(dir.data))
+            Err(NotShared(dir.path()))
         }
     }
 
@@ -207,18 +208,20 @@ impl Syncify {
 
 #[derive(Clone)]
 pub struct SharedDirectory {
-    data: SharedDirectoryData,
+    uuid: Uuid,
+    path: PathBuf,
+    stored_data: Arc<RwLock<SharedDirectoryData>>,
     sign_key: Option<SigningKey>,
     verif_key: VerifyingKey,
 }
 
 impl SharedDirectory {
     pub fn uuid(&self) -> Uuid {
-        self.data.uuid
+        self.uuid
     }
 
     pub fn path(&self) -> PathBuf {
-        PathBuf::from(&self.data.path)
+        self.path.clone()
     }
 
     pub fn sign_key(&self) -> String {
@@ -247,11 +250,11 @@ pub enum SyncifyError {
     #[error("Directory is is not writable: {0}")]
     ReadOnly(PathBuf),
 
-    #[error("Folder is already shared: {0}")]
+    #[error("Directory is already shared: {0}")]
     AlreadyShared(PathBuf),
 
-    #[error("Folder is not shared")]
-    NotShared(SharedDirectoryData),
+    #[error("Directory is not shared")]
+    NotShared(PathBuf),
 
     #[error("Shared directory is in read-only mode")]
     DirectoryReadOnly(),

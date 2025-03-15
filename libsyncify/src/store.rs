@@ -6,13 +6,16 @@ use base64::Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
-use log::{info, warn};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod keyring;
@@ -22,15 +25,15 @@ const STORE_FILENAME: &str = "store.toml";
 
 /// Entity holding the non-sensitive shared folder data.
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Store {
+pub struct DataStore {
     pub store_version: String,
-    pub shared_directories: Vec<SharedDirectoryData>,
+    pub shared_directories: HashMap<String, SharedDirectoryData>,
 }
 
 /// Store manager.
 pub struct StoreManager {
-    pub secret_key: SecretKey,
-    pub data: Store,
+    cache: HashMap<Uuid, SharedDirectory>,
+    secret_key: SecretKey,
     keyring: Keyring,
     file_path: PathBuf,
 }
@@ -42,10 +45,22 @@ impl StoreManager {
             tokio::fs::create_dir_all(&get_app_dir()).await?;
         }
 
+        // Initialize everything
         let store_file = get_app_dir().join(STORE_FILENAME);
+        let keyring = Keyring::new();
+        let secret_key = Self::load_secret_key(&keyring);
+        let cache = Self::build_cache(&keyring, Self::load_data_store(&store_file)?);
 
-        let mut store_data: Option<Store> = None;
+        Ok(StoreManager {
+            cache,
+            secret_key,
+            keyring,
+            file_path: store_file,
+        })
+    }
 
+    /// Load data store (for initialization).
+    fn load_data_store(store_file: &PathBuf) -> Result<DataStore, io::Error> {
         // Check if the store file exists
         if Path::exists(store_file.as_path()) {
             // If so, read it
@@ -53,11 +68,11 @@ impl StoreManager {
             let file_content: &mut String = &mut "".to_string();
             File::open(store_file.as_path())?.read_to_string(file_content)?;
 
-            let result: Result<Store, toml::de::Error> = toml::from_str(file_content);
+            let result: Result<DataStore, toml::de::Error> = toml::from_str(file_content);
 
             // Check if the store is parsable
             match result {
-                Ok(res) => store_data = Some(res),
+                Ok(res) => return Ok(res),
                 Err(_) => {
                     warn!("Invalid store file: {}", store_file.display());
                     let mut i = 0;
@@ -84,50 +99,113 @@ impl StoreManager {
                     }
                 }
             }
-        }
-
-        if store_data.is_none() {
-            info!("Store file does not exists, creating a new one...");
-
-            store_data = Some(Store {
-                store_version: env!("CARGO_PKG_VERSION").to_string(),
-                shared_directories: vec![],
-            });
-            let toml_data = toml::to_string(&store_data.clone().unwrap()).unwrap();
-            let mut file = File::create(store_file.as_path())?;
-            file.write_all(toml_data.as_bytes())?;
-        }
-
-        let keyring = Keyring::new();
-        let secret_key = {
-            if !keyring.key_exists(Keys::SecretKey, None) {
-                info!("Generating new secret key...");
-                let key = SecretKey::generate(&mut OsRng);
-
-                keyring
-                    .set_key(Keys::SecretKey, key.to_string().as_str(), None)
-                    .unwrap();
-
-                key
-            } else {
-                info!("Loading secret key from keyring");
-                keyring
-                    .get_key(Keys::SecretKey, None)
-                    .unwrap()
-                    .parse()
-                    .unwrap()
-            }
         };
 
-        Ok(StoreManager {
-            secret_key,
-            data: store_data.unwrap(),
-            keyring,
-            file_path: store_file,
+        Ok(DataStore {
+            store_version: env!("CARGO_PKG_VERSION").to_string(),
+            shared_directories: HashMap::new(),
         })
     }
 
-    pub fn add_shared_dir(&mut self, dir: &SharedDirectory) {
+    /// Load secret key (for initialization).
+    fn load_secret_key(keyring: &Keyring) -> SecretKey {
+        if !keyring.key_exists(Keys::SecretKey, None) {
+            info!("Generating new secret key...");
+            let key = SecretKey::generate(&mut OsRng);
+
+            keyring
+                .set_key(Keys::SecretKey, key.to_string().as_str(), None)
+                .unwrap();
+
+            key
+        } else {
+            info!("Loading secret key from keyring");
+            keyring
+                .get_key(Keys::SecretKey, None)
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+    }
+
+    /// Build [`SharedDirectory`] cache (for initialization).
+    fn build_cache(keyring: &Keyring, store_data: DataStore) -> HashMap<Uuid, SharedDirectory> {
+        let mut cache = HashMap::new();
+
+        for (uuid_str, dir_data) in store_data.shared_directories {
+            if let Ok(uuid) = Uuid::try_from(uuid_str.as_str()) {
+                if let Ok(key) = keyring
+                    .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
+                {
+                    let mut split_key = key.split(" ");
+
+                    // Decode signing key
+                    let sign_key = {
+                        if let Some(raw) = split_key.next() {
+                            if raw.contains("*") {
+                                None
+                            } else {
+                                match BASE64_STANDARD.decode(raw) {
+                                    Ok(unencoded) => match SigningKey::try_from(unencoded.as_slice()) {
+                                        Ok(key) => Some(key),
+                                        Err(e) => {
+                                            error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
+                                            continue;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
+                                        continue;
+                                    }
+                                }
+                            }
+                        } else {
+                            error!("Malformed SharedDirKey for {}", uuid);
+                            continue
+                        }
+                    };
+
+                    // Decode verifying key
+                    let verif_key = {
+                        if let Some(raw) = split_key.next() {
+                            match BASE64_STANDARD.decode(raw) {
+                                Ok(unencoded) => match VerifyingKey::try_from(unencoded.as_slice()) {
+                                    Ok(key) => key,
+                                    Err(e) => {
+                                        error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
+                                        continue;
+                                    }
+                                },
+                                Err(e) => {
+                                    error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            error!("Malformed SharedDirKey for {}", uuid);
+                            continue
+                        }
+                    };
+
+                    cache.insert(uuid, SharedDirectory {
+                        uuid,
+                        path: PathBuf::from(&dir_data.path),
+                        stored_data: Arc::new(RwLock::new(dir_data)),
+                        sign_key,
+                        verif_key,
+                    });
+                } else {
+                    error!("Unable to load SharedDirKey for {}", uuid)
+                }
+            } else {
+                error!("Unable to read UUID '{}'", uuid_str);
+            }
+        }
+        cache
+    }
+
+    /// Add a [`SharedDirectory`] to the store.
+    pub async fn add_shared_dir(&mut self, dir: &SharedDirectory) {
         let sign_key_base64: String = {
             match dir.sign_key.clone() {
                 Some(key) => BASE64_STANDARD.encode(key.to_bytes()),
@@ -136,115 +214,79 @@ impl StoreManager {
         };
         let verif_key_base64 = BASE64_STANDARD.encode(dir.verif_key);
 
-        self.data.shared_directories.push(dir.data.clone());
         self.keyring
             .set_key(
                 Keys::SharedDirKey,
                 (sign_key_base64 + " " + verif_key_base64.as_str()).as_str(),
-                Some(dir.data.uuid.to_string().as_str()),
+                Some(dir.uuid.to_string().as_str()),
             )
             .unwrap();
-        self.save();
+
+        self.cache.insert(dir.uuid, dir.clone());
+        self.save().await;
     }
 
-    pub fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
-        self.data
-            .shared_directories
-            .retain(|shared_directory| !dir.data.uuid.eq(&shared_directory.uuid));
+    /// Remove a [`SharedDirectory`] from store.
+    pub async fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
+        self.cache.remove(&dir.uuid);
+
         self.keyring
-            .delete_key(Keys::SharedDirKey, Some(dir.data.uuid.to_string().as_str()))
+            .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))
             .unwrap();
+
+        self.save().await;
     }
 
+    /// Get a specific [`SharedDirectory`].
     pub fn get_shared_dir(&self, uuid: &Uuid) -> Option<SharedDirectory> {
-        let dir_data = self
-            .data
-            .shared_directories
-            .iter()
-            .find(|folder| folder.uuid == *uuid)
-            .cloned();
-
-        if let Ok(key) = self
-            .keyring
-            .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
-        {
-            let mut split_key = key.split(" ");
-            let sign_key = {
-                let raw = split_key.next();
-                if raw.unwrap().contains("*") {
-                    None
-                } else {
-                    Some(
-                        SigningKey::try_from(
-                            BASE64_STANDARD.decode(raw.unwrap()).unwrap().as_slice(),
-                        )
-                        .unwrap(),
-                    )
-                }
-            };
-            let verif_key = VerifyingKey::try_from(
-                BASE64_STANDARD
-                    .decode(split_key.next().unwrap())
-                    .unwrap()
-                    .as_slice(),
-            )
-            .unwrap();
-
-            dir_data.map(|data| SharedDirectory {
-                data,
-                sign_key,
-                verif_key,
-            })
-        } else {
-            None
-        }
+        self.cache.get(uuid).cloned()
     }
 
+    /// Get all [`SharedDirectory`].
     pub fn get_all_dirs(&self) -> Vec<SharedDirectory> {
-        self.data
-            .shared_directories
-            .iter()
-            .map(|dir| self.get_shared_dir(&dir.uuid).unwrap())
-            .collect()
+        self.cache.values().cloned().collect()
     }
 
-    pub fn get_all_dirs_data(&self) -> Vec<SharedDirectoryData> {
-        self.data.shared_directories.clone()
-    }
+    /// Save cache to file.
+    pub async fn save(&self) {
+        // Translate HashMap
+        let mut serial_map = HashMap::new();
+        for (uuid, dir) in &self.cache {
+            serial_map.insert(uuid.to_string(), dir.stored_data.read().await.clone());
+        }
 
-    fn save(&self) {
-        let toml_data = toml::to_string(&self.data).unwrap();
+        let store_data = DataStore {
+            store_version: env!("CARGO_PKG_VERSION").to_string(),
+            shared_directories: serial_map,
+        };
+
+        let toml_data = toml::to_string(&store_data).unwrap();
         let mut file = File::create(self.file_path.as_path()).unwrap();
         file.write_all(toml_data.as_bytes()).unwrap();
+    }
+
+    pub fn secret_key(&self) -> SecretKey {
+        self.secret_key.clone()
     }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SharedDirectoryData {
-    #[serde(with = "crate::util::UuidMock")]
-    pub(crate) uuid: Uuid,
     pub(crate) path: String,
     pub(crate) state: State,
 }
 
 impl Display for SharedDirectoryData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} / {}", self.uuid, self.path.clone())
+        write!(f, "{}", self.path.clone())
     }
 }
 
 impl Clone for SharedDirectoryData {
     fn clone(&self) -> Self {
         Self {
-            uuid: self.uuid,
             path: self.path.clone(),
             state: self.state.clone(),
         }
-    }
-}
-
-impl PartialEq<SharedDirectoryData> for SharedDirectoryData {
-    fn eq(&self, other: &SharedDirectoryData) -> bool {
-        self.uuid.eq(&other.uuid)
     }
 }

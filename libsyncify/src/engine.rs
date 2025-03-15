@@ -33,7 +33,7 @@ impl Engine {
     pub async fn new(store: Arc<RwLock<StoreManager>>) -> Result<Self, EngineError> {
         info!("Initializing engine");
         let endpoint = Endpoint::builder()
-            .secret_key(store.read().await.secret_key.clone())
+            .secret_key(store.read().await.secret_key())
             .alpns(vec![iroh_blobs::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
             .discovery_n0()
             .discovery_local_network()
@@ -106,7 +106,7 @@ impl Engine {
             // Create manager
             let uuid = dir.uuid();
             let manager =
-                DirectoryManager::new(store, dir.clone()).map_err(EngineError::CannotWatch)?;
+                DirectoryManager::new(dir.clone()).map_err(EngineError::CannotWatch)?;
 
             self.managers.insert(uuid, manager);
             Ok(())

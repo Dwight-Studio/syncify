@@ -22,7 +22,6 @@ pub struct DirectoryManager {
 
 impl DirectoryManager {
     pub fn new(
-        store: Arc<RwLock<StoreManager>>,
         dir: SharedDirectory,
     ) -> Result<Self, notify::Error> {
         info!("Initializing directory manager for {}", dir.uuid());
@@ -33,7 +32,7 @@ impl DirectoryManager {
 
         // Spawn new thread
         let path = dir.path();
-        let join_handle = Some(tokio::spawn(Self::handle_event(store, dir, rx)));
+        let join_handle = Some(tokio::spawn(Self::handle_event(dir, rx)));
 
         // Create and configure watcher
         let mut watcher = notify::recommended_watcher(handle.clone())?;
@@ -49,12 +48,11 @@ impl DirectoryManager {
     }
 
     pub async fn handle_event(
-        store: Arc<RwLock<StoreManager>>,
-        mut dir: SharedDirectory,
+        dir: SharedDirectory,
         mut rx: mpsc::Receiver<Option<Event>>,
     ) {
         // First, verify that the current state correspond to the what's in memory
-        let old_tree = match dir.data.state.hash_tree().await {
+        let old_tree = match dir.stored_data.write().await.state.hash_tree().await {
             Ok(tree) => tree,
             Err(e) => {
                 error!("Unable to create hash tree from saved state: {e}");
