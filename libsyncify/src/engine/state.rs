@@ -392,9 +392,7 @@ impl HashTree {
                     if !fs::metadata(file.path()).is_ok_and(|e| e.is_file()) {
                         continue;
                     }
-
-                    info!("{:?}", file);
-
+                    
                     hasher
                         .update_mmap(file.path())
                         .inspect_err(|_| error!("Invalid path: {}", file.path().display()))?;
@@ -535,30 +533,34 @@ impl From<&State> for SerialState {
 impl From<SerialState> for State {
     fn from(value: SerialState) -> Self {
         State {
-            head: Arc::new(RwLock::new(from_recursive(value.head, &value.pool))),
+            head: Arc::new(RwLock::new(from_recursive(value.head, &value.pool).unwrap())),
         }
     }
 }
 
-fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) -> Delta {
-    let head = pool.get(&head_hash).unwrap();
-
+fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) -> Option<Delta> {
+    let head = pool.get(&head_hash)?;
+    
     if head.hash != head.parent {
-        let delta = from_recursive(head.parent, pool);
+        let opt_delta = from_recursive(head.parent, pool);
 
-        Delta {
-            parent: Some(Arc::new(RwLock::new(delta))),
-            hash: Hash::from_bytes(head.hash),
-            hash_tree_cache: head.hash_tree_cache.clone(),
-            action: head.action.clone(),
+        if let Some(delta) = opt_delta {
+            Some(Delta {
+                parent: Some(Arc::new(RwLock::new(delta))),
+                hash: Hash::from_bytes(head.hash),
+                hash_tree_cache: head.hash_tree_cache.clone(),
+                action: head.action.clone(),
+            })
+        } else {
+            Some(Delta {
+                parent: None,
+                hash: Hash::from_bytes(head.hash),
+                hash_tree_cache: head.hash_tree_cache.clone(),
+                action: head.action.clone(),
+            })
         }
     } else {
-        Delta {
-            parent: None,
-            hash: Hash::from_bytes(head.hash),
-            hash_tree_cache: head.hash_tree_cache.clone(),
-            action: head.action.clone(),
-        }
+        None
     }
 }
 

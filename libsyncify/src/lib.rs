@@ -91,7 +91,7 @@ impl Syncify {
 
         // Check if the directory is already shared
         for dir in &self.store.read().await.get_all_dirs() {
-            if dir.path == path {
+            if dir.path == abs_path {
                 return Err(AlreadyShared(abs_path.clone()));
             }
         }
@@ -125,9 +125,9 @@ impl Syncify {
         };
 
         info!(
-            "Creating shared directory '{}' at `{}'",
-            dir.path().display(),
-            dir.uuid()
+            "Creating shared directory {} at \"{}\"",
+            dir.uuid(),
+            dir.path().display()
         );
 
         self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::StoreKeyring)?;
