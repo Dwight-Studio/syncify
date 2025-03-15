@@ -1,9 +1,9 @@
 use crate::engine::state::Mutation;
 use crate::SharedDirectory;
 use iroh_gossip::net::GossipSender;
-use log::{debug, error, info, warn};
-use notify::event::{CreateKind, ModifyKind, RemoveKind};
-use notify::EventKind::{Create, Modify, Remove};
+use log::{error, info};
+use notify::event::{ModifyKind, RemoveKind};
+use notify::EventKind::{Modify, Remove};
 use std::path::{Path, PathBuf};
 
 pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event: notify::Event) {

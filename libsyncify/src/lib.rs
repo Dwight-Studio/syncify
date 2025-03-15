@@ -2,11 +2,8 @@ use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared, ReadOnly};
-use base64::prelude::BASE64_STANDARD;
-use base64::Engine as Base64Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use iroh::Endpoint;
 use log::info;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
@@ -199,11 +196,6 @@ impl Syncify {
 
         Ok(String::new())
     }
-
-    #[cfg(debug_assertions)]
-    pub fn get_node_endpoint(&self) -> &Endpoint {
-        self.engine.as_ref().unwrap().get_node_endpoint()
-    }
 }
 
 #[derive(Clone)]
@@ -223,13 +215,9 @@ impl SharedDirectory {
     pub fn path(&self) -> PathBuf {
         self.path.clone()
     }
-
-    pub fn sign_key(&self) -> String {
-        BASE64_STANDARD.encode(self.sign_key.clone().unwrap().to_bytes())
-    }
-
-    pub fn verif_key(&self) -> String {
-        BASE64_STANDARD.encode(self.verif_key)
+    
+    pub fn is_read_only(&self) -> bool {
+        self.sign_key.is_none()
     }
 }
 
@@ -266,5 +254,8 @@ pub enum SyncifyError {
     Watcher(EngineError),
 
     #[error("Shared directory does not exists: {0}")]
-    DirectoryDoesNotExists(Uuid)
+    DirectoryDoesNotExists(Uuid),
+    
+    #[error("Error while parsing link: {0}")]
+    LinkParseError(String),
 }

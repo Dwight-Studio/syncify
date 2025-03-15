@@ -139,11 +139,6 @@ impl Engine {
             Err(AlreadyWatched(dir.uuid()))
         }
     }
-
-    #[cfg(debug_assertions)]
-    pub fn get_node_endpoint(&self) -> &Endpoint {
-        self.router.endpoint()
-    }
 }
 
 #[derive(Error, Debug)]

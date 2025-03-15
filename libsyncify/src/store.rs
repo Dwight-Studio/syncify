@@ -6,13 +6,13 @@ use base64::Engine;
 use chacha20poly1305::aead::OsRng;
 use iroh::SecretKey;
 use ::keyring::Error;
-use log::{error, info, warn};
+use log::{error, info};
 use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TransactionError};
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::os::linux::raw::stat;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -101,13 +101,70 @@ impl StoreManager {
 
                     info!("Loading state for {}", uuid);
 
-                    cache.insert(uuid, SharedDirectory {
-                        uuid,
-                        path: PathBuf::from(path.value()),
-                        state: Arc::new(RwLock::new(state)),
-                        sign_key: None,
-                        verif_key: Default::default(),
-                    });
+                    
+                    if let Ok(key) = keyring
+                        .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
+                    {
+                        let mut split_key = key.split(" ");
+
+                        // Decode signing key
+                        let sign_key = {
+                            if let Some(raw) = split_key.next() {
+                                if raw.contains("*") {
+                                    None
+                                } else {
+                                    match BASE64_STANDARD.decode(raw) {
+                                        Ok(unencoded) => match SigningKey::try_from(unencoded.as_slice()) {
+                                            Ok(key) => Some(key),
+                                            Err(e) => {
+                                                error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
+                                                continue;
+                                            }
+                                        },
+                                        Err(e) => {
+                                            error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
+                                            continue;
+                                        }
+                                    }
+                                }
+                            } else {
+                                error!("Malformed SharedDirKey for {}", uuid);
+                                continue
+                            }
+                        };
+
+                        // Decode verifying key
+                        let verif_key = {
+                            if let Some(raw) = split_key.next() {
+                                match BASE64_STANDARD.decode(raw) {
+                                    Ok(unencoded) => match VerifyingKey::try_from(unencoded.as_slice()) {
+                                        Ok(key) => key,
+                                        Err(e) => {
+                                            error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
+                                            continue;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                error!("Malformed SharedDirKey for {}", uuid);
+                                continue
+                            }
+                        };
+
+                        cache.insert(uuid, SharedDirectory {
+                            uuid,
+                            path: PathBuf::from(path.value()),
+                            state: Arc::new(RwLock::new(state)),
+                            sign_key,
+                            verif_key,
+                        });
+                    } else {
+                        error!("Unable to load SharedDirKey for {}", uuid);
+                    }
                 }
             }
         }
@@ -133,7 +190,7 @@ impl StoreManager {
                 (sign_key_base64 + " " + verif_key_base64.as_str()).as_str(),
                 Some(dir.uuid.to_string().as_str()),
             )?;
-
+        
         self.cache.insert(dir.uuid, dir.clone());
         self.flush().await;
         Ok(())

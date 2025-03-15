@@ -1,7 +1,7 @@
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::NotADirectory;
 use blake3::Hash;
-use log::{error, info, warn};
+use log::{error, warn};
 use redb::{TypeName, Value};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;

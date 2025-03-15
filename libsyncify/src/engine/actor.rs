@@ -1,15 +1,13 @@
 use crate::engine::state::HashTree;
 use crate::engine::{fs, gossip};
 use crate::SharedDirectory;
-use futures::{AsyncRead, Sink, StreamExt};
-use iroh_gossip::net::{GossipReceiver, GossipSender, GossipTopic};
+use futures::{Sink, StreamExt};
+use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info};
 use notify::{EventHandler, Watcher};
-use std::io::Error;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
