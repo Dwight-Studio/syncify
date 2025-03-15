@@ -1,3 +1,4 @@
+use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared, ReadOnly};
@@ -7,16 +8,15 @@ use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::Endpoint;
 use log::info;
+use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
-use rkyv::{Archive, Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::engine::state::State;
 
 pub mod engine;
 pub mod store;
@@ -87,27 +87,27 @@ impl Syncify {
         &mut self,
         path: PathBuf,
     ) -> Result<SharedDirectory, SyncifyError> {
-        let canonical_path = fs::canonicalize(&path).map_err(InvalidPath)?;
+        let abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
 
         // Check if the directory is already shared
         for dir in &self.store.read().await.get_all_dirs() {
             if dir.path == path {
-                return Err(AlreadyShared(canonical_path.clone()));
+                return Err(AlreadyShared(abs_path.clone()));
             }
         }
 
         // Check if the dir exists
-        if fs::exists(&canonical_path).map_err(InvalidPath)? {
+        if fs::exists(&abs_path).map_err(InvalidPath)? {
             // Check if the user has write access in the directory
-            let md = fs::metadata(canonical_path.clone()).map_err(InvalidPath)?;
+            let md = fs::metadata(abs_path.clone()).map_err(InvalidPath)?;
             if md.permissions().readonly() {
-                return Err(ReadOnly(canonical_path));
+                return Err(ReadOnly(abs_path));
             }
         } else {
             // Create the dir and its parent
             tokio::fs::create_dir_all(&get_app_dir())
                 .await.map_err(|e| match e.kind() {
-                ErrorKind::PermissionDenied => ReadOnly(canonical_path.clone()),
+                ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
                 _ => InvalidPath(e)
             })?
         }
@@ -118,8 +118,8 @@ impl Syncify {
 
         let dir = SharedDirectory {
             uuid,
-            path,
-            state: Arc::new(RwLock::new(State::new())),
+            path: abs_path.clone(),
+            state: Arc::new(RwLock::new(State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()))),
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
         };

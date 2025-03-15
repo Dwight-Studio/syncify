@@ -92,11 +92,11 @@ impl DirectoryManager {
         while let Some(result) = rx.recv().await {
             match result {
                 Event::FileSystem(fs_event) => {
-                    fs::handle_events(&dir, &topic, fs_event)
+                    fs::handle_events(&dir, &topic, fs_event).await
                 },
 
                 Event::Gossip(gossip_event) => {
-                    gossip::handle_events(&dir, &topic, gossip_event)
+                    gossip::handle_events(&dir, &topic, gossip_event).await
                 }
 
                 Event::Shutdown => {

@@ -1,4 +1,4 @@
-use crate::engine::state::HashTree::{Directory, Empty, File};
+use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::NotADirectory;
 use blake3::Hash;
 use log::{error, info, warn};
@@ -20,20 +20,18 @@ pub struct State {
     head: Arc<RwLock<Delta>>,
 }
 
-impl Default for State {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl State {
-    pub fn new() -> Self {
+    pub fn new(directory_name: String) -> Self {
         let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         Self {
             head: Arc::new(RwLock::new(Delta {
                 parent: None,
                 hash: blake3::hash(&duration_since_epoch.as_millis().to_be_bytes()),
-                hash_tree_cache: Some(Empty),
+                hash_tree_cache: Some(Directory {
+                    name: directory_name,
+                    content: vec![],
+                    hash: [0; 32],
+                }),
                 action: Mutation::Init,
             })),
         }
@@ -58,6 +56,7 @@ impl State {
         Ok(head.hash_tree_cache.clone().unwrap())
     }
 
+    // TODO: Add optimisation: Detect if the same file is modified in the last delta and fuse
     pub async fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
@@ -79,7 +78,7 @@ impl State {
                     // Tree
                     data.extend(tree.get_hash().as_bytes());
                     blake3::hash(data.leak())
-                },
+                }
                 None => Hash::from_bytes([0; 32]),
             }
         };
@@ -115,7 +114,7 @@ impl Delta {
                     }
                 }
             } else {
-                self.hash_tree_cache = Some(Empty);
+                self.hash_tree_cache = Some(Void);
             }
             Ok(())
         }
@@ -126,10 +125,20 @@ impl Delta {
 #[derive(Clone, Debug, Archive, Serialize, Deserialize)]
 pub enum Mutation {
     Init,
-    Merge { other_head: [u8; 32] },
-    Modify { file_path: String, file_hash: [u8; 32] },
-    Move { from: String, to: String },
-    Remove { file_path: String },
+    Merge {
+        other_head: [u8; 32],
+    },
+    Modify {
+        file_path: String,
+        file_hash: [u8; 32],
+    },
+    Move {
+        from: String,
+        to: String,
+    },
+    Remove {
+        file_path: String,
+    },
 }
 
 /// Hash tree describing a state of the file tree.
@@ -145,7 +154,7 @@ pub enum Mutation {
     )
 ))]
 pub enum HashTree {
-    Empty,
+    Void,
     File {
         name: String,
         hash: [u8; 32],
@@ -167,7 +176,7 @@ impl HashTree {
     ) -> Option<Vec<&HashTree>> {
         let dir_name = file_path_iter.next()?;
         match self {
-            Empty => None,
+            Void => None,
             File { .. } => Some(vec![self]),
             Directory { name, content, .. } => {
                 if name.eq(&dir_name) {
@@ -207,7 +216,7 @@ impl HashTree {
                 let extracted = self.goto(from.split("/")).unwrap()[0];
                 let tree = Self::apply_and_update_parents(
                     self.clone(),
-                    &mut |_: HashTree| -> HashTree { HashTree::Empty },
+                    &mut |_: HashTree| -> HashTree { Void },
                     from.split("/").peekable(),
                 )?;
                 Self::apply_and_update_parents(
@@ -218,7 +227,7 @@ impl HashTree {
             }
             Mutation::Remove { file_path } => Self::apply_and_update_parents(
                 self.clone(),
-                &mut |_: HashTree| -> HashTree { HashTree::Empty },
+                &mut |_: HashTree| -> HashTree { Void },
                 file_path.split("/").peekable(),
             ),
         }
@@ -248,7 +257,7 @@ impl HashTree {
                 let mut elem_pos: i64 = -1;
                 for tree in content {
                     match &tree {
-                        HashTree::Empty => {}
+                        Void => {}
                         File { name, .. } | Directory { name, .. } => {
                             if name == elem {
                                 elem_pos = pos;
@@ -264,19 +273,18 @@ impl HashTree {
                 // Check if the parent contains the next elem
                 if elem_pos == -1 {
                     // If not, let the function construct the object
-                    let new_tree;
-                    if has_next {
-                        new_tree = Directory {
+                    let new_tree = if has_next {
+                        Directory {
                             name: elem.to_string(),
                             content: Vec::new(),
                             hash: [0; 32],
-                        };
+                        }
                     } else {
-                        new_tree = File {
+                        File {
                             name: elem.to_string(),
                             hash: [0; 32],
-                        };
-                    }
+                        }
+                    };
 
                     result = Self::apply_and_update_parents(new_tree, mut_fn, path);
                 } else {
@@ -297,7 +305,7 @@ impl HashTree {
                     }
 
                     // Check if the fonction didn't return Empty
-                    if tree != HashTree::Empty {
+                    if tree != Void {
                         // If not, update and push
                         tree.update_hash();
                         new_content.push(tree);
@@ -313,7 +321,11 @@ impl HashTree {
                 }
             } else {
                 // If not, there is an error (next is not None, and it reached a File)
-                Err(NotADirectory(elem.to_string()))
+                match parent {
+                    File { name, .. } => Err(NotADirectory(name)),
+                    Void => Err(NotADirectory("Void".to_string())),
+                    _ => unreachable!(),
+                }
             }
         } else {
             // If so, return parent
@@ -325,7 +337,7 @@ impl HashTree {
     fn update_hash(&mut self) {
         if let Directory { hash, content, .. } = self {
             // Delete empty items
-            content.retain(|e| !matches!(e, Empty));
+            content.retain(|e| !matches!(e, Void));
 
             if content.is_empty() {
                 *hash = [0; 32];
@@ -337,7 +349,7 @@ impl HashTree {
 
     pub fn get_hash(&self) -> Hash {
         match self {
-            Empty => Hash::from_bytes([0; 32]),
+            Void => Hash::from_bytes([0; 32]),
             File { hash, .. } => Hash::from(*hash),
             Directory { hash, .. } => Hash::from(*hash),
         }
@@ -348,7 +360,7 @@ impl HashTree {
         let mut data: Vec<u8> = Vec::new();
         for item in content {
             match item {
-                Empty => {}
+                Void => {}
                 File { name, hash, .. } | Directory { name, hash, .. } => {
                     data.extend(name.as_bytes());
                     data.extend(hash);
@@ -410,12 +422,12 @@ impl HashTree {
         }
 
         rtn.update_hash();
-        if rtn.is_empty() { Ok(Empty) } else { Ok(rtn) }
+        Ok(rtn)
     }
 
     pub fn is_empty(&self) -> bool {
         match self {
-            Empty => true,
+            Void => true,
             Directory { content, .. } => content.is_empty(),
             File { .. } => false,
         }
@@ -425,7 +437,7 @@ impl HashTree {
 impl PartialEq<HashTree> for HashTree {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Empty, Empty) => true,
+            (Void, Void) => true,
             (File { hash: h1, .. }, File { hash: h2, .. }) => h1 == h2,
             (Directory { hash: h1, .. }, Directory { hash: h2, .. }) => h1 == h2,
             _ => false,
@@ -436,7 +448,6 @@ impl PartialEq<HashTree> for HashTree {
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub struct SerialState {
     head: [u8; 32],
-    root: [u8; 32],
     pool: HashMap<[u8; 32], SerialDelta>,
 }
 
@@ -451,7 +462,7 @@ impl Value for SerialState {
     //noinspection RsTraitObligations
     fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
     where
-        Self: 'a
+        Self: 'a,
     {
         let archived = rkyv::access::<ArchivedSerialState, rkyv::rancor::Error>(data).unwrap();
         rkyv::deserialize::<SerialState, rkyv::rancor::Error>(archived).unwrap()
@@ -459,9 +470,12 @@ impl Value for SerialState {
 
     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
     where
-        Self: 'b
+        Self: 'b,
     {
-        rkyv::to_bytes::<rkyv::rancor::Error>(value).unwrap().to_vec().leak()
+        rkyv::to_bytes::<rkyv::rancor::Error>(value)
+            .unwrap()
+            .to_vec()
+            .leak()
     }
 
     fn type_name() -> TypeName {
@@ -482,21 +496,27 @@ impl From<&State> for SerialState {
             // Check if it reached the root
             if parent.is_none() {
                 // If so, break
-                pool.insert(*head.hash.as_bytes(), SerialDelta {
-                    parent: *head.hash.as_bytes(),
-                    hash: *head.hash.as_bytes(),
-                    hash_tree_cache: head.hash_tree_cache.clone(),
-                    action: head.action.clone(),
-                });
-                break
+                pool.insert(
+                    *head.hash.as_bytes(),
+                    SerialDelta {
+                        parent: *head.hash.as_bytes(),
+                        hash: *head.hash.as_bytes(),
+                        hash_tree_cache: head.hash_tree_cache.clone(),
+                        action: head.action.clone(),
+                    },
+                );
+                break;
             } else {
                 // If not, continue
-                pool.insert(*head.hash.as_bytes(), SerialDelta {
-                    parent: *parent.clone().unwrap().read().unwrap().hash.as_bytes(),
-                    hash: *head.hash.as_bytes(),
-                    hash_tree_cache: head.hash_tree_cache.clone(),
-                    action: head.action.clone(),
-                });
+                pool.insert(
+                    *head.hash.as_bytes(),
+                    SerialDelta {
+                        parent: *parent.clone().unwrap().read().unwrap().hash.as_bytes(),
+                        hash: *head.hash.as_bytes(),
+                        hash_tree_cache: head.hash_tree_cache.clone(),
+                        action: head.action.clone(),
+                    },
+                );
             }
 
             // Drop head to be able to use borrow head_ref
@@ -507,7 +527,6 @@ impl From<&State> for SerialState {
 
         Self {
             head: *value.head.read().unwrap().hash.as_bytes(),
-            root: *head_ref.read().unwrap().hash.as_bytes(),
             pool,
         }
     }
@@ -515,28 +534,30 @@ impl From<&State> for SerialState {
 
 impl From<SerialState> for State {
     fn from(value: SerialState) -> Self {
-        let mut head_hash = value.root;
-        let mut rtn: Option<Arc<RwLock<Delta>>> = None;
-
-        loop {
-            let head = value.pool.get(&head_hash).unwrap();
-
-            rtn = Some(Arc::new(RwLock::new(Delta {
-                parent: rtn,
-                hash: Hash::from_bytes(head.hash),
-                hash_tree_cache: None,
-                action: Mutation::Init,
-            })));
-
-            if head_hash == value.head {
-                break
-            }
-
-            head_hash = head.parent;
-        }
-
         State {
-            head: rtn.unwrap(),
+            head: Arc::new(RwLock::new(from_recursive(value.head, &value.pool))),
+        }
+    }
+}
+
+fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) -> Delta {
+    let head = pool.get(&head_hash).unwrap();
+
+    if head.hash != head.parent {
+        let delta = from_recursive(head.parent, pool);
+
+        Delta {
+            parent: Some(Arc::new(RwLock::new(delta))),
+            hash: Hash::from_bytes(head.hash),
+            hash_tree_cache: head.hash_tree_cache.clone(),
+            action: head.action.clone(),
+        }
+    } else {
+        Delta {
+            parent: None,
+            hash: Hash::from_bytes(head.hash),
+            hash_tree_cache: head.hash_tree_cache.clone(),
+            action: head.action.clone(),
         }
     }
 }
@@ -560,7 +581,7 @@ impl Value for SerialDelta {
     //noinspection RsTraitObligations
     fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
     where
-        Self: 'a
+        Self: 'a,
     {
         let archived = rkyv::access::<ArchivedSerialDelta, rkyv::rancor::Error>(data).unwrap();
         rkyv::deserialize::<SerialDelta, rkyv::rancor::Error>(archived).unwrap()
@@ -568,9 +589,12 @@ impl Value for SerialDelta {
 
     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
     where
-        Self: 'b
+        Self: 'b,
     {
-        rkyv::to_bytes::<rkyv::rancor::Error>(value).unwrap().to_vec().leak()
+        rkyv::to_bytes::<rkyv::rancor::Error>(value)
+            .unwrap()
+            .to_vec()
+            .leak()
     }
 
     fn type_name() -> TypeName {
@@ -583,7 +607,7 @@ pub enum StateError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
-    #[error("Not a directory: {0}")]
+    #[error("Not a directory: {0:?}")]
     NotADirectory(String),
 
     #[error("Hashing error: {0}")]

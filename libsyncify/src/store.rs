@@ -79,6 +79,7 @@ impl StoreManager {
 
     /// Build [`SharedDirectory`] cache (for initialization).
     fn build_cache(keyring: &Keyring, path: &Path) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
+        info!("Building store cache...");
         let mut cache = HashMap::new();
 
         let db = Database::create(path).map_err(StoreError::Database)?;

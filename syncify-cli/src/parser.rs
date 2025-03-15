@@ -1,12 +1,12 @@
-use std::fmt::Display;
-use std::io::Write;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use libsyncify::store::link::Link;
 use libsyncify::{SharedDirPermission, Syncify};
+use std::fmt::Display;
+use std::io::Write;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use libsyncify::store::link::Link;
 
 #[derive(Parser)]
 #[command(name = "Syncify Command Line Interface")]
@@ -67,7 +67,7 @@ impl Commands {
         match &cli.command {
             Subcommands::Sync => {
                 syncify.start_sync().await.unwrap();
-                syncify.create_shared_directory(PathBuf::from("target/debug/examples")).await.unwrap();
+                syncify.create_shared_directory(PathBuf::from("target/debug/examples")).await;
                 let (tx, mut rx) = mpsc::channel::<u8>(1);
                 ctrlc::set_handler(move || {
                     tx.blocking_send(1).unwrap();
