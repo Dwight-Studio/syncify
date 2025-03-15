@@ -1,21 +1,19 @@
-use crate::engine::state::State;
+use crate::engine::state::{SerialState, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::{get_app_dir, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use chacha20poly1305::aead::OsRng;
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use ::keyring::Error;
 use log::{error, info, warn};
-use serde::{Deserialize, Serialize};
+use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TransactionError};
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use std::fs::File;
-use std::io;
-use std::io::{Read, Write};
+use std::ops::Deref;
+use std::os::linux::raw::stat;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -23,14 +21,11 @@ pub mod keyring;
 pub mod link;
 
 const MAX_RENAME_ATTEMPTS: u16 = 256;
-const STORE_FILENAME: &str = "store.toml";
+const STORE_FILENAME: &str = "store.db";
 
-/// Entity holding the non-sensitive shared folder data.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct DataStore {
-    pub store_version: String,
-    pub shared_directories: HashMap<String, SharedDirectoryData>,
-}
+// Base table linking Path to UUID
+const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
+const STATE_TABLE: TableDefinition<[u8; 16], SerialState> = TableDefinition::new("state");
 
 /// Store manager.
 pub struct StoreManager {
@@ -41,71 +36,23 @@ pub struct StoreManager {
 }
 
 impl StoreManager {
-    pub async fn new() -> Result<Self, io::Error> {
+    pub async fn new() -> Result<Self, StoreError> {
         // Create app dir (and parents)
         if !get_app_dir().exists() {
-            tokio::fs::create_dir_all(&get_app_dir()).await?;
+            tokio::fs::create_dir_all(&get_app_dir()).await.map_err(StoreError::IO)?;
         }
 
         // Initialize everything
-        let store_file = get_app_dir().join(STORE_FILENAME);
+        let database_file = get_app_dir().join(STORE_FILENAME);
         let keyring = Keyring::new();
         let secret_key = Self::load_secret_key(&keyring);
-        let cache = Self::build_cache(&keyring, Self::load_data_store(&store_file)?);
+        let cache = Self::build_cache(&keyring, database_file.as_path())?;
 
         Ok(StoreManager {
             cache,
             secret_key,
             keyring,
-            file_path: store_file,
-        })
-    }
-
-    /// Load data store (for initialization).
-    fn load_data_store(store_file: &PathBuf) -> Result<DataStore, io::Error> {
-        // Check if the store file exists
-        if Path::exists(store_file.as_path()) {
-            // If so, read it
-            info!("Reading store file...");
-            let file_content: &mut String = &mut "".to_string();
-            File::open(store_file.as_path())?.read_to_string(file_content)?;
-
-            let result: Result<DataStore, toml::de::Error> = toml::from_str(file_content);
-
-            // Check if the store is parsable
-            match result {
-                Ok(res) => return Ok(res),
-                Err(_) => {
-                    warn!("Invalid store file: {}", store_file.display());
-                    let mut i = 0;
-                    while std::fs::exists(
-                        get_app_dir()
-                            .join(format!("{STORE_FILENAME}.backup{i}"))
-                            .as_path(),
-                    )? {
-                        i += 1;
-                        if i >= MAX_RENAME_ATTEMPTS {
-                            break;
-                        }
-                    }
-                    if i < MAX_RENAME_ATTEMPTS {
-                        std::fs::rename(
-                            store_file.as_path(),
-                            get_app_dir()
-                                .join(format!("{STORE_FILENAME}.backup{i}"))
-                                .as_path(),
-                        )?;
-                    } else {
-                        warn!("Unable backup store!");
-                        return Err(io::ErrorKind::AlreadyExists.into());
-                    }
-                }
-            }
-        };
-
-        Ok(DataStore {
-            store_version: env!("CARGO_PKG_VERSION").to_string(),
-            shared_directories: HashMap::new(),
+            file_path: database_file,
         })
     }
 
@@ -131,79 +78,42 @@ impl StoreManager {
     }
 
     /// Build [`SharedDirectory`] cache (for initialization).
-    fn build_cache(keyring: &Keyring, store_data: DataStore) -> HashMap<Uuid, SharedDirectory> {
+    fn build_cache(keyring: &Keyring, path: &Path) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
         let mut cache = HashMap::new();
 
-        for (uuid_str, dir_data) in store_data.shared_directories {
-            if let Ok(uuid) = Uuid::try_from(uuid_str.as_str()) {
-                if let Ok(key) = keyring
-                    .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
-                {
-                    let mut split_key = key.split(" ");
+        let db = Database::create(path).map_err(StoreError::Database)?;
+        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
 
-                    // Decode signing key
-                    let sign_key = {
-                        if let Some(raw) = split_key.next() {
-                            if raw.contains("*") {
-                                None
-                            } else {
-                                match BASE64_STANDARD.decode(raw) {
-                                    Ok(unencoded) => match SigningKey::try_from(unencoded.as_slice()) {
-                                        Ok(key) => Some(key),
-                                        Err(e) => {
-                                            error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
-                                            continue;
-                                        }
-                                    },
-                                    Err(e) => {
-                                        error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
-                                        continue;
-                                    }
-                                }
-                            }
-                        } else {
-                            error!("Malformed SharedDirKey for {}", uuid);
-                            continue
-                        }
-                    };
+        {
+            let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
+            let state_table = transaction.open_table(STATE_TABLE).map_err(StoreError::Table)?;
 
-                    // Decode verifying key
-                    let verif_key = {
-                        if let Some(raw) = split_key.next() {
-                            match BASE64_STANDARD.decode(raw) {
-                                Ok(unencoded) => match VerifyingKey::try_from(unencoded.as_slice()) {
-                                    Ok(key) => key,
-                                    Err(e) => {
-                                        error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
-                                        continue;
-                                    }
-                                },
-                                Err(e) => {
-                                    error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
-                                    continue;
-                                }
-                            }
-                        } else {
-                            error!("Malformed SharedDirKey for {}", uuid);
-                            continue
-                        }
-                    };
+            for range in base_table.iter().map_err(StoreError::Storage)? {
+                let (path, uuid_bytes) = range.unwrap();
+                let serial_state = state_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+
+                if serial_state.is_none() {
+                    error!("Unable to load state (not in state table)")
+                } else {
+                    let uuid = Uuid::from_bytes(uuid_bytes.value());
+                    let state = State::from(serial_state.unwrap().value());
+
+                    info!("Loading state for {}", uuid);
 
                     cache.insert(uuid, SharedDirectory {
                         uuid,
-                        path: PathBuf::from(&dir_data.path),
-                        stored_data: Arc::new(RwLock::new(dir_data)),
-                        sign_key,
-                        verif_key,
+                        path: PathBuf::from(path.value()),
+                        state: Arc::new(RwLock::new(state)),
+                        sign_key: None,
+                        verif_key: Default::default(),
                     });
-                } else {
-                    error!("Unable to load SharedDirKey for {}", uuid)
                 }
-            } else {
-                error!("Unable to read UUID '{}'", uuid_str);
             }
         }
-        cache
+
+        transaction.commit().map_err(StoreError::Commit)?;
+        
+        Ok(cache)
     }
 
     /// Add a [`SharedDirectory`] to the store.
@@ -224,7 +134,7 @@ impl StoreManager {
             )?;
 
         self.cache.insert(dir.uuid, dir.clone());
-        self.save().await;
+        self.flush().await;
         Ok(())
     }
 
@@ -235,7 +145,7 @@ impl StoreManager {
         self.keyring
             .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))?;
 
-        self.save().await;
+        self.flush().await;
         Ok(())
     }
 
@@ -249,24 +159,27 @@ impl StoreManager {
         self.cache.values().cloned().collect()
     }
 
-    /// Save cache to file.
-    pub async fn save(&self) {
+    /// Flush cache to database.
+    pub async fn flush(&self) -> Result<(), StoreError> {
         info!("Saving store...");
 
-        // Translate HashMap
-        let mut serial_map = HashMap::new();
-        for (uuid, dir) in &self.cache {
-            serial_map.insert(uuid.to_string(), dir.stored_data.read().await.clone());
+        let db = Database::create(self.file_path.as_path()).map_err(StoreError::Database)?;
+        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
+
+        {
+            let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
+            let mut state_table = transaction.open_table(STATE_TABLE).map_err(StoreError::Table)?;
+
+            for (uuid, dir) in &self.cache {
+                base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
+
+                state_table.insert(uuid.as_bytes(), SerialState::from(dir.state.read().await.deref())).map_err(StoreError::Storage)?;
+            }
         }
 
-        let store_data = DataStore {
-            store_version: env!("CARGO_PKG_VERSION").to_string(),
-            shared_directories: serial_map,
-        };
+        transaction.commit().map_err(StoreError::Commit)?;
 
-        let toml_data = toml::to_string(&store_data).unwrap();
-        let mut file = File::create(self.file_path.as_path()).unwrap();
-        file.write_all(toml_data.as_bytes()).unwrap();
+        Ok(())
     }
 
     pub fn secret_key(&self) -> SecretKey {
@@ -274,23 +187,23 @@ impl StoreManager {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct SharedDirectoryData {
-    pub(crate) path: String,
-    pub(crate) state: State,
-}
+#[derive(Error, Debug)]
+pub enum StoreError {
+    #[error("{0}")]
+    IO(std::io::Error),
 
-impl Display for SharedDirectoryData {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.path.clone())
-    }
-}
+    #[error("{0}")]
+    Database(DatabaseError),
 
-impl Clone for SharedDirectoryData {
-    fn clone(&self) -> Self {
-        Self {
-            path: self.path.clone(),
-            state: self.state.clone(),
-        }
-    }
+    #[error("{0}")]
+    Transaction(TransactionError),
+
+    #[error("{0}")]
+    Table(TableError),
+
+    #[error("{0}")]
+    Storage(StorageError),
+
+    #[error("{0}")]
+    Commit(CommitError)
 }

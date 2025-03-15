@@ -1,19 +1,21 @@
 use crate::engine::state::HashTree::{Directory, Empty, File};
-use crate::engine::state::StateError::{Hashing, NotADirectory};
+use crate::engine::state::StateError::NotADirectory;
 use blake3::Hash;
 use log::{error, info, warn};
-use serde::{Deserialize, Serialize};
+use redb::{TypeName, Value};
+use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
+use std::collections::HashMap;
 use std::fs;
 use std::iter::Peekable;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use walkdir::WalkDir;
 
 /// Tree containing the synchronisation information for a [`SharedDirectory`].
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub struct State {
     head: Arc<RwLock<Delta>>,
 }
@@ -21,14 +23,6 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Clone for State {
-    fn clone(&self) -> Self {
-        Self {
-            head: self.head.clone(),
-        }
     }
 }
 
@@ -76,7 +70,16 @@ impl State {
         delta.compute_hash_tree()?;
         delta.hash = {
             match &delta.hash_tree_cache {
-                Some(tree) => tree.get_hash(),
+                Some(tree) => {
+                    let mut data = Vec::new();
+
+                    // Parent
+                    data.extend(self.head.read().unwrap().hash.as_bytes());
+
+                    // Tree
+                    data.extend(tree.get_hash().as_bytes());
+                    blake3::hash(data.leak())
+                },
                 None => Hash::from_bytes([0; 32]),
             }
         };
@@ -88,10 +91,9 @@ impl State {
 }
 
 /// Node describing a modification of a [`State`].
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub struct Delta {
     parent: Option<Arc<RwLock<Delta>>>,
-    #[serde(with = "crate::util::NewHash")]
     hash: Hash,
     hash_tree_cache: Option<HashTree>,
     action: Mutation,
@@ -103,10 +105,10 @@ impl Delta {
         if self.hash_tree_cache.is_some() {
             Ok(())
         } else {
-            if let Some(parent) = &self.parent {
-                let mut p = parent.write().unwrap();
-                p.compute_hash_tree()?;
-                match &p.hash_tree_cache {
+            if let Some(parent_ref) = &self.parent {
+                let mut parent = parent_ref.write().unwrap();
+                parent.compute_hash_tree()?;
+                match &parent.hash_tree_cache {
                     None => {}
                     Some(cache) => {
                         self.hash_tree_cache = Some(cache.apply(&self.action)?);
@@ -121,40 +123,38 @@ impl Delta {
 }
 
 /// Mutation action of a [`Delta`].
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
 pub enum Mutation {
     Init,
-    Merge {
-        parent: Arc<Delta>,
-    },
-    Modify {
-        file_path: String,
-        #[serde(with = "crate::util::NewHash")]
-        file_hash: Hash,
-    },
-    Move {
-        from: String,
-        to: String,
-    },
-    Remove {
-        file_path: String,
-    },
+    Merge { other_head: [u8; 32] },
+    Modify { file_path: String, file_hash: [u8; 32] },
+    Move { from: String, to: String },
+    Remove { file_path: String },
 }
 
 /// Hash tree describing a state of the file tree.
-#[derive(Clone, Serialize, Deserialize, Debug, Eq)]
+#[derive(Clone, Debug, Eq, Archive, Serialize, Deserialize)]
+#[rkyv(serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+))]
+#[rkyv(deserialize_bounds(__D::Error: rkyv::rancor::Source))]
+#[rkyv(bytecheck(
+    bounds(
+        __C: rkyv::validation::ArchiveContext,
+    )
+))]
 pub enum HashTree {
     Empty,
     File {
         name: String,
-        #[serde(with = "crate::util::NewHash")]
-        hash: Hash,
+        hash: [u8; 32],
     },
     Directory {
         name: String,
+        #[rkyv(omit_bounds)]
         content: Vec<HashTree>,
-        #[serde(with = "crate::util::NewHash")]
-        hash: Hash,
+        hash: [u8; 32],
     },
 }
 
@@ -167,7 +167,7 @@ impl HashTree {
     ) -> Option<Vec<&HashTree>> {
         let dir_name = file_path_iter.next()?;
         match self {
-            HashTree::Empty => None,
+            Empty => None,
             File { .. } => Some(vec![self]),
             Directory { name, content, .. } => {
                 if name.eq(&dir_name) {
@@ -269,12 +269,12 @@ impl HashTree {
                         new_tree = Directory {
                             name: elem.to_string(),
                             content: Vec::new(),
-                            hash: Hash::from_bytes([0; 32]),
+                            hash: [0; 32],
                         };
                     } else {
                         new_tree = File {
                             name: elem.to_string(),
-                            hash: Hash::from_bytes([0; 32]),
+                            hash: [0; 32],
                         };
                     }
 
@@ -328,7 +328,7 @@ impl HashTree {
             content.retain(|e| !matches!(e, Empty));
 
             if content.is_empty() {
-                *hash = Hash::from_bytes([0; 32]);
+                *hash = [0; 32];
             } else {
                 *hash = Self::compute_content_hash(content);
             }
@@ -338,24 +338,24 @@ impl HashTree {
     pub fn get_hash(&self) -> Hash {
         match self {
             Empty => Hash::from_bytes([0; 32]),
-            File { hash, .. } => *hash,
-            Directory { hash, .. } => *hash,
+            File { hash, .. } => Hash::from(*hash),
+            Directory { hash, .. } => Hash::from(*hash),
         }
     }
 
     /// Non-recursively compute the hash of content (computed only with direct children)
-    fn compute_content_hash(content: &Vec<HashTree>) -> Hash {
+    fn compute_content_hash(content: &Vec<HashTree>) -> [u8; 32] {
         let mut data: Vec<u8> = Vec::new();
         for item in content {
             match item {
                 Empty => {}
                 File { name, hash, .. } | Directory { name, hash, .. } => {
-                    data.extend_from_slice(name.as_bytes());
-                    data.extend_from_slice(hash.as_bytes());
+                    data.extend(name.as_bytes());
+                    data.extend(hash);
                 }
             }
         }
-        blake3::hash(data.as_slice())
+        *blake3::hash(data.as_slice()).as_bytes()
     }
 
     /// Generate [`HashTree`] from disk.
@@ -363,7 +363,7 @@ impl HashTree {
         let mut rtn = Directory {
             name: path.file_name().unwrap().to_string_lossy().to_string(),
             content: vec![],
-            hash: Hash::from_bytes([0; 32]),
+            hash: [0; 32],
         };
 
         let files_iter = WalkDir::new(path)
@@ -387,8 +387,13 @@ impl HashTree {
                         .update_mmap(file.path())
                         .inspect_err(|_| error!("Invalid path: {}", file.path().display()))?;
                     match rtn.apply(&Mutation::Modify {
-                        file_path: file.path().file_name().unwrap().to_string_lossy().to_string(),
-                        file_hash: hasher.finalize(),
+                        file_path: file
+                            .path()
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        file_hash: *hasher.finalize().as_bytes(),
                     }) {
                         Ok(new_rtn) => {
                             rtn = new_rtn;
@@ -425,6 +430,151 @@ impl PartialEq<HashTree> for HashTree {
             (Directory { hash: h1, .. }, Directory { hash: h2, .. }) => h1 == h2,
             _ => false,
         }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug)]
+pub struct SerialState {
+    head: [u8; 32],
+    root: [u8; 32],
+    pool: HashMap<[u8; 32], SerialDelta>,
+}
+
+impl Value for SerialState {
+    type SelfType<'a> = SerialState;
+    type AsBytes<'a> = &'a [u8];
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    //noinspection RsTraitObligations
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a
+    {
+        let archived = rkyv::access::<ArchivedSerialState, rkyv::rancor::Error>(data).unwrap();
+        rkyv::deserialize::<SerialState, rkyv::rancor::Error>(archived).unwrap()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b
+    {
+        rkyv::to_bytes::<rkyv::rancor::Error>(value).unwrap().to_vec().leak()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("SerialState")
+    }
+}
+
+impl From<&State> for SerialState {
+    fn from(value: &State) -> Self {
+        let mut pool: HashMap<[u8; 32], SerialDelta> = HashMap::new();
+
+        let mut head_ref = value.head.clone();
+
+        loop {
+            let head = head_ref.read().unwrap();
+            let parent = head.parent.clone();
+
+            // Check if it reached the root
+            if parent.is_none() {
+                // If so, break
+                pool.insert(*head.hash.as_bytes(), SerialDelta {
+                    parent: *head.hash.as_bytes(),
+                    hash: *head.hash.as_bytes(),
+                    hash_tree_cache: head.hash_tree_cache.clone(),
+                    action: head.action.clone(),
+                });
+                break
+            } else {
+                // If not, continue
+                pool.insert(*head.hash.as_bytes(), SerialDelta {
+                    parent: *parent.clone().unwrap().read().unwrap().hash.as_bytes(),
+                    hash: *head.hash.as_bytes(),
+                    hash_tree_cache: head.hash_tree_cache.clone(),
+                    action: head.action.clone(),
+                });
+            }
+
+            // Drop head to be able to use borrow head_ref
+            drop(head);
+
+            head_ref = parent.clone().unwrap();
+        }
+
+        Self {
+            head: *value.head.read().unwrap().hash.as_bytes(),
+            root: *head_ref.read().unwrap().hash.as_bytes(),
+            pool,
+        }
+    }
+}
+
+impl From<SerialState> for State {
+    fn from(value: SerialState) -> Self {
+        let mut head_hash = value.root;
+        let mut rtn: Option<Arc<RwLock<Delta>>> = None;
+
+        loop {
+            let head = value.pool.get(&head_hash).unwrap();
+
+            rtn = Some(Arc::new(RwLock::new(Delta {
+                parent: rtn,
+                hash: Hash::from_bytes(head.hash),
+                hash_tree_cache: None,
+                action: Mutation::Init,
+            })));
+
+            if head_hash == value.head {
+                break
+            }
+
+            head_hash = head.parent;
+        }
+
+        State {
+            head: rtn.unwrap(),
+        }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug)]
+struct SerialDelta {
+    parent: [u8; 32],
+    hash: [u8; 32],
+    hash_tree_cache: Option<HashTree>,
+    action: Mutation,
+}
+
+impl Value for SerialDelta {
+    type SelfType<'a> = SerialDelta;
+    type AsBytes<'a> = &'a [u8];
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    //noinspection RsTraitObligations
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a
+    {
+        let archived = rkyv::access::<ArchivedSerialDelta, rkyv::rancor::Error>(data).unwrap();
+        rkyv::deserialize::<SerialDelta, rkyv::rancor::Error>(archived).unwrap()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b
+    {
+        rkyv::to_bytes::<rkyv::rancor::Error>(value).unwrap().to_vec().leak()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("SerialDelta")
     }
 }
 

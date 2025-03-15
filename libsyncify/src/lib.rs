@@ -1,21 +1,19 @@
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
-use crate::store::{SharedDirectoryData, StoreManager};
+use crate::store::StoreManager;
 use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared, ReadOnly};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as Base64Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use futures::TryFutureExt;
 use iroh::Endpoint;
 use log::info;
 use std::cmp::PartialEq;
 use std::fs;
-use std::io::{Error, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -76,8 +74,8 @@ impl Syncify {
             engine.shutdown().await;
         }
 
-        // Saving store
-        self.store.write().await.save().await;
+        // Flushing store
+        self.store.write().await.flush().await;
 
         self
     }
@@ -116,15 +114,10 @@ impl Syncify {
         let uuid = Uuid::new_v4();
         let sign_key = SigningKey::generate(&mut OsRng);
 
-        let data = SharedDirectoryData {
-            path: canonical_path.to_string_lossy().to_string(),
-            state: Default::default(),
-        };
-
         let dir = SharedDirectory {
             uuid,
             path,
-            stored_data: Arc::new(RwLock::new(data)),
+            state: Arc::new(RwLock::new(State::new())),
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
         };
@@ -215,7 +208,7 @@ impl Syncify {
 pub struct SharedDirectory {
     uuid: Uuid,
     path: PathBuf,
-    stored_data: Arc<RwLock<SharedDirectoryData>>,
+    state: Arc<RwLock<State>>,
     sign_key: Option<SigningKey>,
     verif_key: VerifyingKey,
 }
@@ -241,7 +234,7 @@ impl SharedDirectory {
 #[derive(Error, Debug)]
 pub enum SyncifyError {
     #[error("Store error: {0}")]
-    Store(std::io::Error),
+    Store(store::StoreError),
 
     #[error("Store error: {0}")]
     StoreKeyring(keyring::Error),

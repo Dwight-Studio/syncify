@@ -52,7 +52,7 @@ impl DirectoryManager {
         mut rx: mpsc::Receiver<Option<Event>>,
     ) {
         // First, verify that the current state correspond to the what's in memory
-        let old_tree = match dir.stored_data.write().await.state.hash_tree().await {
+        let old_tree = match dir.state.write().await.hash_tree().await {
             Ok(tree) => tree,
             Err(e) => {
                 error!("Unable to create hash tree from saved state: {e}");

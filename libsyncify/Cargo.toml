@@ -17,8 +17,6 @@ iroh-gossip = { version = "0.33.0" }
 iroh-blobs = { version = "0.33.0", features = ["downloader", "fs-store"] }
 anyhow = "1.0.97"
 directories = "6.0.0"
-toml = "0.8.20"
-serde = { version = "1.0.219", features = ["std"] }
 log = "0.4.26"
 tokio = "1.44.0"
 thiserror = "2.0.12"
@@ -32,3 +30,5 @@ base64 = "0.22.1"
 blake3 = { version = "1.6.1", features = ["std", "mmap", "rayon"] }
 futures = "0.3.31"
 walkdir = "2.5.0"
+redb = "2.4.0"
+rkyv = "0.8.10"
