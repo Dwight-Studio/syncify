@@ -20,6 +20,12 @@ pub struct Keyring {
     credential_builder: Box<CredentialBuilder>,
 }
 
+impl Default for Keyring {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Keyring {
     pub fn new() -> Self {
         Keyring {

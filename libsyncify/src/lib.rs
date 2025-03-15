@@ -6,6 +6,7 @@ use base64::prelude::BASE64_STANDARD;
 use base64::Engine as Base64Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use futures::TryFutureExt;
 use iroh::Endpoint;
 use log::info;
 use std::cmp::PartialEq;
@@ -14,6 +15,7 @@ use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -48,7 +50,7 @@ pub struct Syncify {
 impl Syncify {
     /// Construct new instance.
     pub async fn new() -> Result<Self, SyncifyError> {
-        let store = StoreManager::new().await.map_err(SyncifyError::Config)?;
+        let store = StoreManager::new().await.map_err(SyncifyError::Store)?;
 
         Ok(Self {
             store: Arc::new(RwLock::new(store)),
@@ -73,6 +75,9 @@ impl Syncify {
         if let Some(engine) = old_engine {
             engine.shutdown().await;
         }
+
+        // Saving store
+        self.store.write().await.save().await;
 
         self
     }
@@ -115,7 +120,7 @@ impl Syncify {
             path: canonical_path.to_string_lossy().to_string(),
             state: Default::default(),
         };
-        
+
         let dir = SharedDirectory {
             uuid,
             path,
@@ -130,7 +135,7 @@ impl Syncify {
             dir.uuid()
         );
 
-        self.store.write().await.add_shared_dir(&dir);
+        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::StoreKeyring)?;
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
@@ -151,7 +156,7 @@ impl Syncify {
         dir: SharedDirectory,
     ) -> Result<(), SyncifyError> {
         if self.store.read().await.get_shared_dir(&dir.uuid).is_some() {
-            self.store.write().await.remove_shared_dir(&dir);
+            self.store.write().await.remove_shared_dir(&dir).await.map_err(SyncifyError::StoreKeyring)?;
 
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
@@ -235,8 +240,11 @@ impl SharedDirectory {
 
 #[derive(Error, Debug)]
 pub enum SyncifyError {
-    #[error("Config error: {0}")]
-    Config(std::io::Error),
+    #[error("Store error: {0}")]
+    Store(std::io::Error),
+
+    #[error("Store error: {0}")]
+    StoreKeyring(keyring::Error),
 
     #[error("Engine {0}")]
     Engine(EngineError),

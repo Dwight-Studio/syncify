@@ -1,6 +1,7 @@
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use libsyncify::{SharedFolderPermission, Syncify};
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -108,12 +109,23 @@ impl Commands {
                 }
             }
             Subcommands::Create { path } => {
-                println!("Creating directory...");
-                let dir = syncify
-                    .create_shared_directory(path.parse().unwrap())
-                    .await
-                    .unwrap();
-                println!("'{}' created.", dir.uuid())
+                match path.parse::<PathBuf>() {
+                    Ok(pathbuf) => {
+                        match syncify
+                            .create_shared_directory(pathbuf)
+                            .await {
+                            Ok(dir) => {
+                                println!("'{}' created.", dir.uuid())
+                            },
+                            Err(e) => {
+                                println!("{e}")
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        println!("Invalid path ({e})." )
+                    }
+                }
             }
             _ => {
                 todo!();

@@ -6,6 +6,7 @@ use base64::Engine;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
+use ::keyring::Error;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -205,7 +206,7 @@ impl StoreManager {
     }
 
     /// Add a [`SharedDirectory`] to the store.
-    pub async fn add_shared_dir(&mut self, dir: &SharedDirectory) {
+    pub async fn add_shared_dir(&mut self, dir: &SharedDirectory) -> Result<(), Error> {
         let sign_key_base64: String = {
             match dir.sign_key.clone() {
                 Some(key) => BASE64_STANDARD.encode(key.to_bytes()),
@@ -219,22 +220,22 @@ impl StoreManager {
                 Keys::SharedDirKey,
                 (sign_key_base64 + " " + verif_key_base64.as_str()).as_str(),
                 Some(dir.uuid.to_string().as_str()),
-            )
-            .unwrap();
+            )?;
 
         self.cache.insert(dir.uuid, dir.clone());
         self.save().await;
+        Ok(())
     }
 
     /// Remove a [`SharedDirectory`] from store.
-    pub async fn remove_shared_dir(&mut self, dir: &SharedDirectory) {
+    pub async fn remove_shared_dir(&mut self, dir: &SharedDirectory) -> Result<(), Error> {
         self.cache.remove(&dir.uuid);
 
         self.keyring
-            .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))
-            .unwrap();
+            .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))?;
 
         self.save().await;
+        Ok(())
     }
 
     /// Get a specific [`SharedDirectory`].
@@ -249,6 +250,8 @@ impl StoreManager {
 
     /// Save cache to file.
     pub async fn save(&self) {
+        info!("Saving store...");
+
         // Translate HashMap
         let mut serial_map = HashMap::new();
         for (uuid, dir) in &self.cache {
