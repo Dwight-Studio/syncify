@@ -1,4 +1,4 @@
-use crate::engine::fs::DirectoryManager;
+use crate::engine::actor::DirectoryManager;
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::EngineError::AlreadyWatched;
 use crate::store::StoreManager;
@@ -7,6 +7,7 @@ use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
+use iroh_gossip::proto::TopicId;
 use log::info;
 use std::collections::HashMap;
 use std::io;
@@ -15,14 +16,18 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-pub mod fs;
+pub mod actor;
 pub mod protocol;
 pub mod state;
+pub mod fs;
+pub mod gossip;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 
 pub struct Engine {
     router: Router,
+    gossip: Gossip,
+    blobs: Blobs<iroh_blobs::store::fs::Store>,
     managers: HashMap<Uuid, DirectoryManager>,
 }
 
@@ -38,7 +43,7 @@ impl Engine {
             .discovery_local_network()
             .bind()
             .await
-            .map_err(EngineError::EndpointInit)?;
+            .map_err(EngineError::Endpoint)?;
 
         // Router
         let builder = Router::builder(endpoint);
@@ -54,14 +59,14 @@ impl Engine {
 
         let blobs = Blobs::persistent(download_dir)
             .await
-            .map_err(EngineError::BlobsInit)?
+            .map_err(EngineError::Blobs)?
             .build(builder.endpoint());
 
         // Gossip protocol
         let gossip = Gossip::builder()
             .spawn(builder.endpoint().clone())
             .await
-            .map_err(EngineError::GossipInit)?;
+            .map_err(EngineError::Gossip)?;
 
         let syncify_prot = SyncifyProtocol {
             store: store.clone(),
@@ -70,11 +75,13 @@ impl Engine {
         let mut engine = Self {
             router: builder
                 .accept(protocol::SYNCIFY_ALPN, syncify_prot)
-                .accept(iroh_blobs::ALPN, blobs)
-                .accept(iroh_gossip::ALPN, gossip)
+                .accept(iroh_blobs::ALPN, blobs.clone())
+                .accept(iroh_gossip::ALPN, gossip.clone())
                 .spawn()
                 .await
-                .map_err(EngineError::RouterInit)?,
+                .map_err(EngineError::Router)?,
+            blobs,
+            gossip,
             managers: HashMap::new(),
         };
 
@@ -102,12 +109,18 @@ impl Engine {
         dir: &SharedDirectory,
     ) -> Result<(), EngineError> {
         if !self.managers.contains_key(&dir.uuid()) {
-            // Create manager
-            let uuid = dir.uuid();
-            let manager =
-                DirectoryManager::new(dir.clone()).map_err(EngineError::CannotWatch)?;
+            let topic = self.gossip.subscribe(
+                TopicId::from_bytes(
+                    <[u8; 32]>::try_from(dir.uuid().as_simple().to_string().as_bytes()).unwrap()
+                ),
+                Vec::new(),
+            ).map_err(EngineError::Gossip)?;
 
-            self.managers.insert(uuid, manager);
+            // Create manager
+            let manager =
+                DirectoryManager::new(dir.clone(), topic).map_err(EngineError::CannotWatch)?;
+
+            self.managers.insert(dir.uuid, manager);
             Ok(())
         } else {
             Err(AlreadyWatched(dir.uuid()))
@@ -139,19 +152,16 @@ pub enum EngineError {
     MakeDir(io::Error),
 
     #[error("Endpoint error: {0}")]
-    EndpointInit(anyhow::Error),
+    Endpoint(anyhow::Error),
 
     #[error("Blobs error: {0}")]
-    BlobsInit(anyhow::Error),
+    Blobs(anyhow::Error),
 
     #[error("Gossip error: {0}")]
-    GossipInit(iroh_gossip::net::Error),
-
-    #[error("Docs error: {0}")]
-    DocsInit(anyhow::Error),
+    Gossip(iroh_gossip::net::Error),
 
     #[error("Router error: {0}")]
-    RouterInit(anyhow::Error),
+    Router(anyhow::Error),
 
     #[error("Filesystem Watcher error (is it a network filesystem?): {0}")]
     CannotWatch(notify::Error),
