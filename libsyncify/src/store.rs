@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod keyring;
+pub mod link;
 
 const MAX_RENAME_ATTEMPTS: u16 = 256;
 const STORE_FILENAME: &str = "store.toml";

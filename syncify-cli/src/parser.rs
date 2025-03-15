@@ -42,7 +42,7 @@ enum Subcommands {
     Join {
         #[arg(long)]
         link: String,
-        #[arg(value_enum)]
+        #[arg(long)]
         path: String,
     },
     /// Reset the configuration and shared folders
@@ -127,8 +127,14 @@ impl Commands {
                     }
                 }
             }
-            _ => {
-                todo!();
+            Subcommands::Remove{uuid} => {
+                
+            }
+            Subcommands::Join{link, path} => {
+                
+            }
+            Subcommands::Reset => {
+                
             }
         }
     }
