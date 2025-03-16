@@ -1,5 +1,6 @@
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
+use crate::store::link::Link;
 use crate::store::StoreManager;
 use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
 use chacha20poly1305::aead::OsRng;
@@ -13,7 +14,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::store::link::Link;
 
 pub mod engine;
 pub mod store;
@@ -84,7 +84,10 @@ impl Syncify {
         &mut self,
         path: PathBuf,
     ) -> Result<SharedDirectory, SyncifyError> {
-        let abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
+        let mut abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
+        
+        // Add a trailing "/" at the end of the path
+        abs_path.push("");
 
         // Check if the directory is already shared
         for dir in &self.store.read().await.get_all_dirs() {
@@ -182,8 +185,11 @@ impl Syncify {
 
     /// Join a shared directory
     pub async fn join_shared_directory(&mut self, link: Link, path: PathBuf) -> Result<SharedDirectory, SyncifyError> {
-        let abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
+        let mut abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
 
+        // Add a trailing "/" at the end of the path
+        abs_path.push("");
+        
         // Check if the dir exists
         if abs_path.exists() {
             // Check if abs_path is a directory

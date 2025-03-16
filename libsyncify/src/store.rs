@@ -269,7 +269,7 @@ impl StoreManager {
 
                 let state_table_def: TableDefinition<[u8; 32], SerialDelta> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
-
+                
                 let serial_state = SerialState::from(&inner.state);
 
                 for (hash, serial_delta) in serial_state.pool() {
