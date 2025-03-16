@@ -68,11 +68,12 @@ impl DirectoryManager {
                 return
             }
         };
+        
+        info!("{:?}", dir.state.read().await.deref());
 
+        // TODO: Add fast-forward sync
         match HashTree::from_disk(dir.path().as_path()) {
             Ok(tree) => {
-                info!("{:?}", old_tree);
-                info!("{:?}", tree);
                 if tree == old_tree {
                     info!("State is up-to-date");
                 } else {

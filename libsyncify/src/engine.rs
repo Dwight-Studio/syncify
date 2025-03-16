@@ -2,15 +2,17 @@ use crate::engine::actor::DirectoryManager;
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::EngineError::AlreadyWatched;
 use crate::store::StoreManager;
+use crate::SyncifyError::{InvalidPath, ReadOnly};
 use crate::{get_app_dir, SharedDirectory};
 use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use log::info;
+use log::{info, warn};
 use std::collections::HashMap;
 use std::io;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -21,6 +23,7 @@ pub mod protocol;
 pub mod state;
 pub mod fs;
 pub mod gossip;
+pub mod serial_state;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 
@@ -54,7 +57,7 @@ impl Engine {
         if !download_dir.exists() {
             tokio::fs::create_dir_all(&download_dir)
                 .await
-                .map_err(EngineError::MakeDir)?
+                .map_err(EngineError::IO)?
         }
 
         let blobs = Blobs::persistent(download_dir)
@@ -109,6 +112,14 @@ impl Engine {
         dir: &SharedDirectory,
     ) -> Result<(), EngineError> {
         if !self.managers.contains_key(&dir.uuid()) {
+            if !&dir.path.exists() {
+                warn!("Directory for {} don't exist", dir.uuid);
+                
+                // Create the dir and its parent
+                tokio::fs::create_dir_all(&dir.path)
+                    .await.map_err(EngineError::IO)?
+            }
+            
             let topic = self.gossip.subscribe(
                 TopicId::from_bytes(
                     <[u8; 32]>::try_from(dir.uuid().as_simple().to_string().as_bytes()).unwrap()
@@ -143,8 +154,8 @@ impl Engine {
 
 #[derive(Error, Debug)]
 pub enum EngineError {
-    #[error("Filesystem error: Cannot create directory ({0})")]
-    MakeDir(io::Error),
+    #[error("Filesystem error: {0}")]
+    IO(io::Error),
 
     #[error("Endpoint error: {0}")]
     Endpoint(anyhow::Error),

@@ -94,9 +94,9 @@ impl Syncify {
         }
 
         // Check if the dir exists
-        if fs::exists(&abs_path).map_err(InvalidPath)? {
+        if abs_path.exists() {
             // Check if the user has write access in the directory
-            let md = fs::metadata(abs_path.clone()).map_err(InvalidPath)?;
+            let md = abs_path.metadata().map_err(InvalidPath)?;
             if md.permissions().readonly() {
                 return Err(ReadOnly(abs_path));
             }

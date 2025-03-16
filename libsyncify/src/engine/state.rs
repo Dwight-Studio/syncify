@@ -1,25 +1,32 @@
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::NotADirectory;
 use blake3::Hash;
-use log::{error, warn};
-use redb::{TypeName, Value};
+use log::{error, info, warn};
+use redb::{ReadableTable, Table, TypeName, Value};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fs;
 use std::iter::Peekable;
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use walkdir::WalkDir;
 
+pub const MAX_LOADED_DELTAS: u32 = 16384;
+pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
+
 /// Tree containing the synchronisation information for a [`SharedDirectory`].
 #[derive(Clone, Debug)]
 pub struct State {
-    head: Arc<RwLock<Delta>>,
+    pub(crate) head: Arc<RwLock<Delta>>,
 }
 
+// TODO: Add optimization
+//  -> Fuse unshared changes if possible
+//  -> Compute when last modified date is > than the last save date
 impl State {
     pub fn new(directory_name: String) -> Self {
         let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -87,15 +94,32 @@ impl State {
 
         Ok(())
     }
+    
+    /// Prune tree if over the limit of loaded deltas.
+    pub fn optimize(&mut self) -> bool {
+        let mut head = self.head.clone();
+        
+        for i in 0..MAX_LOADED_DELTAS {
+            if let Some(parent) = head.clone().read().unwrap().parent.clone() {
+                head = parent;
+            } else {
+                return false;
+            }
+        }
+        
+        head.write().unwrap().parent = None;
+        
+        true
+    }
 }
 
 /// Node describing a modification of a [`State`].
 #[derive(Clone, Debug)]
 pub struct Delta {
-    parent: Option<Arc<RwLock<Delta>>>,
-    hash: Hash,
-    hash_tree_cache: Option<HashTree>,
-    action: Mutation,
+    pub(crate) parent: Option<Arc<RwLock<Delta>>>,
+    pub(crate) hash: Hash,
+    pub(crate) hash_tree_cache: Option<HashTree>,
+    pub(crate) action: Mutation,
 }
 
 impl Delta {
@@ -253,19 +277,17 @@ impl HashTree {
             {
                 // If so, construct new content
                 let mut new_content: Vec<HashTree> = Vec::new();
-                let mut pos = 0;
                 let mut elem_pos: i64 = -1;
-                for tree in content {
+                for (pos, tree) in content.into_iter().enumerate() {
                     match &tree {
                         Void => {}
                         File { name, .. } | Directory { name, .. } => {
                             if name == elem {
-                                elem_pos = pos;
+                                elem_pos = pos as i64;
                             }
                         }
                     }
                     new_content.push(tree);
-                    pos += 1;
                 }
 
                 let result;
@@ -290,7 +312,7 @@ impl HashTree {
                 } else {
                     // If so, call recursively
                     result = Self::apply_and_update_parents(
-                        new_content.remove(pos.try_into().unwrap()),
+                        new_content.remove(elem_pos.try_into().unwrap()),
                         mut_fn,
                         path,
                     );
@@ -440,167 +462,6 @@ impl PartialEq<HashTree> for HashTree {
             (Directory { hash: h1, .. }, Directory { hash: h2, .. }) => h1 == h2,
             _ => false,
         }
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug)]
-pub struct SerialState {
-    head: [u8; 32],
-    pool: HashMap<[u8; 32], SerialDelta>,
-}
-
-impl Value for SerialState {
-    type SelfType<'a> = SerialState;
-    type AsBytes<'a> = &'a [u8];
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    //noinspection RsTraitObligations
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        let archived = rkyv::access::<ArchivedSerialState, rkyv::rancor::Error>(data).unwrap();
-        rkyv::deserialize::<SerialState, rkyv::rancor::Error>(archived).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-    where
-        Self: 'b,
-    {
-        rkyv::to_bytes::<rkyv::rancor::Error>(value)
-            .unwrap()
-            .to_vec()
-            .leak()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new("SerialState")
-    }
-}
-
-impl From<&State> for SerialState {
-    fn from(value: &State) -> Self {
-        let mut pool: HashMap<[u8; 32], SerialDelta> = HashMap::new();
-
-        let mut head_ref = value.head.clone();
-
-        loop {
-            let head = head_ref.read().unwrap();
-            let parent = head.parent.clone();
-
-            // Check if it reached the root
-            if parent.is_none() {
-                // If so, break
-                pool.insert(
-                    *head.hash.as_bytes(),
-                    SerialDelta {
-                        parent: *head.hash.as_bytes(),
-                        hash: *head.hash.as_bytes(),
-                        hash_tree_cache: head.hash_tree_cache.clone(),
-                        action: head.action.clone(),
-                    },
-                );
-                break;
-            } else {
-                // If not, continue
-                pool.insert(
-                    *head.hash.as_bytes(),
-                    SerialDelta {
-                        parent: *parent.clone().unwrap().read().unwrap().hash.as_bytes(),
-                        hash: *head.hash.as_bytes(),
-                        hash_tree_cache: head.hash_tree_cache.clone(),
-                        action: head.action.clone(),
-                    },
-                );
-            }
-
-            // Drop head to be able to use borrow head_ref
-            drop(head);
-
-            head_ref = parent.clone().unwrap();
-        }
-
-        Self {
-            head: *value.head.read().unwrap().hash.as_bytes(),
-            pool,
-        }
-    }
-}
-
-impl From<SerialState> for State {
-    fn from(value: SerialState) -> Self {
-        State {
-            head: Arc::new(RwLock::new(from_recursive(value.head, &value.pool).unwrap())),
-        }
-    }
-}
-
-fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) -> Option<Delta> {
-    let head = pool.get(&head_hash)?;
-    
-    if head.hash != head.parent {
-        let opt_delta = from_recursive(head.parent, pool);
-
-        if let Some(delta) = opt_delta {
-            Some(Delta {
-                parent: Some(Arc::new(RwLock::new(delta))),
-                hash: Hash::from_bytes(head.hash),
-                hash_tree_cache: head.hash_tree_cache.clone(),
-                action: head.action.clone(),
-            })
-        } else {
-            Some(Delta {
-                parent: None,
-                hash: Hash::from_bytes(head.hash),
-                hash_tree_cache: head.hash_tree_cache.clone(),
-                action: head.action.clone(),
-            })
-        }
-    } else {
-        None
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize, Debug)]
-struct SerialDelta {
-    parent: [u8; 32],
-    hash: [u8; 32],
-    hash_tree_cache: Option<HashTree>,
-    action: Mutation,
-}
-
-impl Value for SerialDelta {
-    type SelfType<'a> = SerialDelta;
-    type AsBytes<'a> = &'a [u8];
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    //noinspection RsTraitObligations
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        let archived = rkyv::access::<ArchivedSerialDelta, rkyv::rancor::Error>(data).unwrap();
-        rkyv::deserialize::<SerialDelta, rkyv::rancor::Error>(archived).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-    where
-        Self: 'b,
-    {
-        rkyv::to_bytes::<rkyv::rancor::Error>(value)
-            .unwrap()
-            .to_vec()
-            .leak()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new("SerialDelta")
     }
 }
 

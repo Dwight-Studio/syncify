@@ -2,9 +2,9 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use libsyncify::store::link::Link;
 use libsyncify::{SharedDirPermission, Syncify};
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Write;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::sync::mpsc;
@@ -139,7 +139,7 @@ impl Commands {
                 for dir in syncify.get_all_shared_directories().await {
                     println!(
                         "'{}' as '{}'",
-                        dir.path().canonicalize().unwrap().display(),
+                        dir.path().display(),
                         dir.uuid()
                     )
                 }

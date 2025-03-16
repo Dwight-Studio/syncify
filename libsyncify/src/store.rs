@@ -1,18 +1,19 @@
-use crate::engine::state::{SerialState, State};
+use crate::engine::serial_state::{SerialDelta, SerialState};
+use crate::engine::{serial_state, state};
 use crate::store::keyring::{Keyring, Keys};
 use crate::{get_app_dir, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use chacha20poly1305::aead::OsRng;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use ::keyring::Error;
-use log::{error, info};
-use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TransactionError};
+use log::{error, info, warn};
+use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -20,12 +21,11 @@ use uuid::Uuid;
 pub mod keyring;
 pub mod link;
 
-const MAX_RENAME_ATTEMPTS: u16 = 256;
 const STORE_FILENAME: &str = "store.db";
 
 // Base table linking Path to UUID
 const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
-const STATE_TABLE: TableDefinition<[u8; 16], SerialState> = TableDefinition::new("state");
+const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
 
 /// Store manager.
 pub struct StoreManager {
@@ -77,6 +77,68 @@ impl StoreManager {
         }
     }
 
+    /// Get shared folder keys.
+    fn get_keys(keyring: &Keyring, uuid: Uuid) -> Option<(Option<SigningKey>, VerifyingKey)> {
+        if let Ok(key) = keyring
+            .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
+        {
+            let mut split_key = key.split(" ");
+
+            // Decode signing key
+            let sign_key = {
+                if let Some(raw) = split_key.next() {
+                    if raw.contains("*") {
+                        None
+                    } else {
+                        match BASE64_STANDARD.decode(raw) {
+                            Ok(unencoded) => match SigningKey::try_from(unencoded.as_slice()) {
+                                Ok(key) => Some(key),
+                                Err(e) => {
+                                    error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
+                                    return None;
+                                }
+                            },
+                            Err(e) => {
+                                error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
+                                return None;
+                            }
+                        }
+                    }
+                } else {
+                    error!("Malformed SharedDirKey for {}", uuid);
+                    return None
+                }
+            };
+
+            // Decode verifying key
+            let verif_key = {
+                if let Some(raw) = split_key.next() {
+                    match BASE64_STANDARD.decode(raw) {
+                        Ok(unencoded) => match VerifyingKey::try_from(unencoded.as_slice()) {
+                            Ok(key) => key,
+                            Err(e) => {
+                                error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
+                                return None;
+                            }
+                        },
+                        Err(e) => {
+                            error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
+                            return None;
+                        }
+                    }
+                } else {
+                    error!("Malformed SharedDirKey for {}", uuid);
+                    return None
+                }
+            };
+
+            Some((sign_key, verif_key))
+        } else {
+            error!("Unable to load SharedDirKey for {}", uuid);
+            None
+        }
+    }
+
     /// Build [`SharedDirectory`] cache (for initialization).
     fn build_cache(keyring: &Keyring, path: &Path) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
         info!("Building store cache...");
@@ -87,84 +149,44 @@ impl StoreManager {
 
         {
             let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
-            let state_table = transaction.open_table(STATE_TABLE).map_err(StoreError::Table)?;
+            let head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
 
             for range in base_table.iter().map_err(StoreError::Storage)? {
                 let (path, uuid_bytes) = range.unwrap();
-                let serial_state = state_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let opt_head = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
 
-                if serial_state.is_none() {
-                    error!("Unable to load state (not in state table)")
-                } else {
-                    let uuid = Uuid::from_bytes(uuid_bytes.value());
-                    let state = State::from(serial_state.unwrap().value());
+                let uuid = Uuid::from_bytes(uuid_bytes.value());
 
-                    info!("Loading state for {}", uuid);
+                if let Some(head) = opt_head {
+                    if let Some((sign_key, verif_key)) = Self::get_keys(&keyring, uuid) {
 
-                    
-                    if let Ok(key) = keyring
-                        .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
-                    {
-                        let mut split_key = key.split(" ");
+                        let uuid_string = uuid.to_string();
 
-                        // Decode signing key
-                        let sign_key = {
-                            if let Some(raw) = split_key.next() {
-                                if raw.contains("*") {
-                                    None
-                                } else {
-                                    match BASE64_STANDARD.decode(raw) {
-                                        Ok(unencoded) => match SigningKey::try_from(unencoded.as_slice()) {
-                                            Ok(key) => Some(key),
-                                            Err(e) => {
-                                                error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
-                                                continue;
-                                            }
-                                        },
-                                        Err(e) => {
-                                            error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
-                                            continue;
-                                        }
-                                    }
-                                }
+                        // Reading state table
+                        let state_table_def: TableDefinition<[u8; 32], SerialDelta> = TableDefinition::new(uuid_string.as_str());
+                        if transaction.list_tables().map_err(StoreError::Storage)?
+                            .map(|e| e.name().to_string()).any(|e| e == uuid.to_string()) {
+                            let state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
+
+                            // Build state
+                            info!("Building state for {}", uuid);
+                            if let Some(state) = serial_state::build_serial_state(state_table, head.value()) {
+                                cache.insert(uuid, SharedDirectory {
+                                    uuid,
+                                    path: PathBuf::from(path.value()),
+                                    state: Arc::new(RwLock::new(state)),
+                                    sign_key,
+                                    verif_key,
+                                });
                             } else {
-                                error!("Malformed SharedDirKey for {}", uuid);
-                                continue
+                                warn!("Failed!");
                             }
-                        };
-
-                        // Decode verifying key
-                        let verif_key = {
-                            if let Some(raw) = split_key.next() {
-                                match BASE64_STANDARD.decode(raw) {
-                                    Ok(unencoded) => match VerifyingKey::try_from(unencoded.as_slice()) {
-                                        Ok(key) => key,
-                                        Err(e) => {
-                                            error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
-                                            continue;
-                                        }
-                                    },
-                                    Err(e) => {
-                                        error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                error!("Malformed SharedDirKey for {}", uuid);
-                                continue
-                            }
-                        };
-
-                        cache.insert(uuid, SharedDirectory {
-                            uuid,
-                            path: PathBuf::from(path.value()),
-                            state: Arc::new(RwLock::new(state)),
-                            sign_key,
-                            verif_key,
-                        });
-                    } else {
-                        error!("Unable to load SharedDirKey for {}", uuid);
+                        } else {
+                            error!("Unable to load state for {}: Table not found", uuid);
+                        }
                     }
+                } else {
+                    error!("Unable to load state for {}: Head not found", uuid);
                 }
             }
         }
@@ -226,12 +248,31 @@ impl StoreManager {
 
         {
             let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
-            let mut state_table = transaction.open_table(STATE_TABLE).map_err(StoreError::Table)?;
+            let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
 
+            // Save each SharedDirectory
             for (uuid, dir) in &self.cache {
-                base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
+                info!("Saving state for {}", uuid);
+                let mut state = dir.state.write().await;
 
-                state_table.insert(uuid.as_bytes(), SerialState::from(dir.state.read().await.deref())).map_err(StoreError::Storage)?;
+                // Update index tables
+                base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
+                head_table.insert(uuid.as_bytes(), state.head.read().unwrap().hash.as_bytes()).map_err(StoreError::Storage)?;
+
+                let uuid_string = uuid.to_string();
+
+                let state_table_def: TableDefinition<[u8; 32], SerialDelta> = TableDefinition::new(uuid_string.as_str());
+                let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
+
+                let serial_state = SerialState::from(state.deref());
+
+                for (hash, serial_delta) in serial_state.pool() {
+                    state_table.insert(hash, serial_delta).map_err(StoreError::Storage)?;
+                }
+
+                if state.optimize() {
+                    info!("Pruned state {}", uuid_string);
+                }
             }
         }
 
