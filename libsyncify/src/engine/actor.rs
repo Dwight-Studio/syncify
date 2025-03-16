@@ -69,7 +69,7 @@ impl DirectoryManager {
             }
         };
         
-        info!("{:?}", dir.state.read().await.deref());
+        info!("{}", dir.state.read().await.deref());
 
         // TODO: Add fast-forward sync
         match HashTree::from_disk(dir.path().as_path()) {

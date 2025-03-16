@@ -170,7 +170,7 @@ impl StoreManager {
 
                             // Build state
                             info!("Building state for {}", uuid);
-                            if let Some(state) = serial_state::build_serial_state(state_table, head.value()) {
+                            if let Some(state) = SerialState::build_from_table(state_table, head.value()) {
                                 cache.insert(uuid, SharedDirectory {
                                     uuid,
                                     path: PathBuf::from(path.value()),
@@ -257,7 +257,7 @@ impl StoreManager {
 
                 // Update index tables
                 base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
-                head_table.insert(uuid.as_bytes(), state.head.read().unwrap().hash.as_bytes()).map_err(StoreError::Storage)?;
+                head_table.insert(uuid.as_bytes(), state.head().hash().as_bytes()).map_err(StoreError::Storage)?;
 
                 let uuid_string = uuid.to_string();
 
@@ -270,7 +270,7 @@ impl StoreManager {
                     state_table.insert(hash, serial_delta).map_err(StoreError::Storage)?;
                 }
 
-                if state.optimize() {
+                if state.prune() {
                     info!("Pruned state {}", uuid_string);
                 }
             }

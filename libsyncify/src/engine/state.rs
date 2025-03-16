@@ -1,17 +1,15 @@
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::NotADirectory;
 use blake3::Hash;
-use log::{error, info, warn};
-use redb::{ReadableTable, Table, TypeName, Value};
+use chrono::{DateTime, Utc};
+use log::{error, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
-use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::fs;
 use std::iter::Peekable;
-use std::ops::Deref;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -22,6 +20,9 @@ pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
 #[derive(Clone, Debug)]
 pub struct State {
     pub(crate) head: Arc<RwLock<Delta>>,
+    /// The timestamp is dated from last time it was "seen" out of the cache
+    /// i.e. last time it was saved, loaded or synced.
+    pub(crate) timestamp: DateTime<Utc>,
 }
 
 // TODO: Add optimization
@@ -29,31 +30,40 @@ pub struct State {
 //  -> Compute when last modified date is > than the last save date
 impl State {
     pub fn new(directory_name: String) -> Self {
-        let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let timestamp = Utc::now();
         Self {
             head: Arc::new(RwLock::new(Delta {
                 parent: None,
-                hash: blake3::hash(&duration_since_epoch.as_millis().to_be_bytes()),
+                hash: blake3::hash(&timestamp.timestamp().to_be_bytes()),
                 hash_tree_cache: Some(Directory {
                     name: directory_name,
                     content: vec![],
                     hash: [0; 32],
                 }),
                 action: Mutation::Init,
+                timestamp,
             })),
+            timestamp,
         }
     }
 
     /// Get parent state.
-    pub async fn parent(&self) -> Option<Self> {
+    pub fn parent(&self) -> Option<Self> {
         let head = self.head.read().unwrap();
         if head.parent.is_some() {
+            let parent = head.parent.clone().unwrap();
+
             Some(Self {
-                head: head.parent.clone().unwrap(),
+                head: parent.clone(),
+                timestamp: parent.read().unwrap().timestamp,
             })
         } else {
             None
         }
+    }
+
+    pub fn head(&self) -> RwLockReadGuard<'_, Delta> {
+        self.head.read().unwrap()
     }
 
     /// Get file hash tree.
@@ -70,6 +80,7 @@ impl State {
             hash: Hash::from_bytes([0; 32]),
             hash_tree_cache: None,
             action: mutation,
+            timestamp: Utc::now(),
         };
 
         // Compute hash tree
@@ -94,11 +105,11 @@ impl State {
 
         Ok(())
     }
-    
+
     /// Prune tree if over the limit of loaded deltas.
-    pub fn optimize(&mut self) -> bool {
+    pub fn prune(&mut self) -> bool {
         let mut head = self.head.clone();
-        
+
         for i in 0..MAX_LOADED_DELTAS {
             if let Some(parent) = head.clone().read().unwrap().parent.clone() {
                 head = parent;
@@ -106,24 +117,80 @@ impl State {
                 return false;
             }
         }
-        
+
         head.write().unwrap().parent = None;
-        
+
         true
+    }
+
+    pub fn iter(&self) -> StateIterator {
+        StateIterator {
+            head_ref: Some(self.head.clone())
+        }
+    }
+}
+
+impl Display for State {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        writeln!(f, "Timestamp: {}\n", self.timestamp)?;
+        
+        for head_ref in self.iter() {
+            let head = head_ref.read().unwrap();
+
+            let mut prefix = "│";
+            writeln!(f, "{prefix}")?;
+            
+            if head.parent.is_some() {
+                writeln!(f, "├─ {}", head.hash)?;
+            } else {
+                writeln!(f, "└─ {}", head.hash)?;
+                prefix = " ";
+            }
+
+            writeln!(f, "{prefix}  Timestamp: {}", head.timestamp)?;
+            writeln!(f, "{prefix}  {}", head.action)?;
+        }
+
+        writeln!(f)?;
+
+        Ok(())
+    }
+}
+
+pub struct StateIterator {
+    head_ref: Option<Arc<RwLock<Delta>>>,
+}
+
+impl Iterator for StateIterator {
+    type Item = Arc<RwLock<Delta>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.head_ref.clone() {
+            Some(head_ref) => {
+                let rtn = head_ref.clone();
+
+                let head = head_ref.read().unwrap();
+                self.head_ref = head.parent.clone();
+
+                Some(rtn)
+            }
+            None => None
+        }
     }
 }
 
 /// Node describing a modification of a [`State`].
 #[derive(Clone, Debug)]
 pub struct Delta {
-    pub(crate) parent: Option<Arc<RwLock<Delta>>>,
-    pub(crate) hash: Hash,
-    pub(crate) hash_tree_cache: Option<HashTree>,
-    pub(crate) action: Mutation,
+    pub(super) parent: Option<Arc<RwLock<Delta>>>,
+    pub(super) hash: Hash,
+    pub(super) hash_tree_cache: Option<HashTree>,
+    pub(super) action: Mutation,
+    pub(super) timestamp: DateTime<Utc>,
 }
 
 impl Delta {
-    /// Recursively compute hash tree.
+    /// Recursively compute hash tree if the cache is empty.
     fn compute_hash_tree(&mut self) -> Result<(), StateError> {
         if self.hash_tree_cache.is_some() {
             Ok(())
@@ -138,10 +205,14 @@ impl Delta {
                     }
                 }
             } else {
-                self.hash_tree_cache = Some(Void);
+                return Err(StateError::InvalidRoot(self.hash));
             }
             Ok(())
         }
+    }
+
+    pub fn hash(&self) -> Hash {
+        self.hash
     }
 }
 
@@ -163,6 +234,18 @@ pub enum Mutation {
     Remove {
         file_path: String,
     },
+}
+
+impl Display for Mutation {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            Mutation::Init => write!(f, "Initialized directory"),
+            Mutation::Merge { other_head, .. } => write!(f, "Merged branch {}", Hash::from_bytes(*other_head)),
+            Mutation::Modify { file_path, .. } => write!(f, "Modified file \"{}\"", file_path),
+            Mutation::Move { from, to, .. } => write!(f, "Moved file \"{from}\" to \"{to}\""),
+            Mutation::Remove { file_path, .. } => write!(f, "Removed file \"{}\"", file_path)
+        }
+    }
 }
 
 /// Hash tree describing a state of the file tree.
@@ -414,7 +497,7 @@ impl HashTree {
                     if !fs::metadata(file.path()).is_ok_and(|e| e.is_file()) {
                         continue;
                     }
-                    
+
                     hasher
                         .update_mmap(file.path())
                         .inspect_err(|_| error!("Invalid path: {}", file.path().display()))?;
@@ -475,4 +558,7 @@ pub enum StateError {
 
     #[error("Hashing error: {0}")]
     Hashing(std::io::Error),
+
+    #[error("Root node has no tree: {0}")]
+    InvalidRoot(Hash)
 }

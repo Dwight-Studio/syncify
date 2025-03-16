@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const SYNCIFY_ALPN: &[u8] = b"/syncify/1";
 
 pub struct SyncifyProtocol {
-    pub(crate) store: Arc<RwLock<StoreManager>>,
+    pub(super) store: Arc<RwLock<StoreManager>>,
 }
 
 impl Debug for SyncifyProtocol {

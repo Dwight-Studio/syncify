@@ -1,19 +1,22 @@
 use crate::engine::state::{Delta, HashTree, Mutation, State, MAX_LOADED_DELTAS};
 use blake3::Hash;
+use chrono::{DateTime, Utc};
 use redb::{ReadableTable, Table, TypeName, Value};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+/// Serializable form of [`State`].
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub struct SerialState {
     head: [u8; 32],
     pool: HashMap<[u8; 32], SerialDelta>,
+    timestamp: i64
 }
 
 impl SerialState {
-    pub fn new(head: [u8; 32], pool: HashMap<[u8; 32], SerialDelta>) -> Self {
-        Self { head, pool }
+    pub fn new(head: [u8; 32], pool: HashMap<[u8; 32], SerialDelta>, timestamp: i64) -> Self {
+        Self { head, pool, timestamp }
     }
 
     pub fn head(&self) -> [u8; 32] {
@@ -22,6 +25,42 @@ impl SerialState {
 
     pub fn pool(self) -> HashMap<[u8; 32], SerialDelta> {
         self.pool
+    }
+
+    pub fn build_from_table(state_table: Table<[u8; 32], SerialDelta>, head_hash: [u8; 32]) -> Option<State> {
+        if let Ok(Some(head_access)) = state_table.get(&head_hash) {
+            let head = head_access.value();
+            let mut pool = HashMap::new();
+
+            // Insert head into the pool
+            pool.insert(head_hash, head.clone());
+
+            let mut parent_hash = head.parent;
+
+            for _ in 0..MAX_LOADED_DELTAS {
+                if let Ok(Some(parent_access)) = state_table.get(&parent_hash) {
+                    let parent = parent_access.value();
+                    pool.insert(parent_hash, parent.clone());
+
+                    // Check if it reached the root
+                    if parent.hash != parent.parent {
+                        parent_hash = parent.parent;
+                    } else {
+                        break
+                    }
+                } else {
+                    break
+                }
+            }
+
+            if pool.len() != 0 {
+                Some(State::from(SerialState::new(head_hash, pool, Utc::now().timestamp())))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -61,14 +100,10 @@ impl From<&State> for SerialState {
     fn from(value: &State) -> Self {
         let mut pool: HashMap<[u8; 32], SerialDelta> = HashMap::new();
 
-        let mut head_ref = value.head.clone();
-
-        loop {
+        for head_ref in value.iter() {
             let head = head_ref.read().unwrap();
-            let parent = head.parent.clone();
 
-            // Check if it reached the root
-            if parent.is_none() {
+            if head.parent.is_none() {
                 // If so, break
                 pool.insert(
                     *head.hash.as_bytes(),
@@ -77,6 +112,7 @@ impl From<&State> for SerialState {
                         hash: *head.hash.as_bytes(),
                         hash_tree_cache: head.hash_tree_cache.clone(),
                         action: head.action.clone(),
+                        timestamp: head.timestamp.timestamp()
                     },
                 );
                 break;
@@ -85,23 +121,20 @@ impl From<&State> for SerialState {
                 pool.insert(
                     *head.hash.as_bytes(),
                     SerialDelta {
-                        parent: *parent.clone().unwrap().read().unwrap().hash.as_bytes(),
+                        parent: *head.parent.clone().unwrap().read().unwrap().hash.as_bytes(),
                         hash: *head.hash.as_bytes(),
                         hash_tree_cache: head.hash_tree_cache.clone(),
                         action: head.action.clone(),
+                        timestamp: head.timestamp.timestamp()
                     },
                 );
             }
-
-            // Drop head to be able to use borrow head_ref
-            drop(head);
-
-            head_ref = parent.clone().unwrap();
         }
 
         Self {
             head: *value.head.read().unwrap().hash.as_bytes(),
             pool,
+            timestamp: value.timestamp.timestamp()
         }
     }
 }
@@ -110,6 +143,7 @@ impl From<SerialState> for State {
     fn from(value: SerialState) -> Self {
         State {
             head: Arc::new(RwLock::new(from_recursive(value.head, &value.pool).unwrap())),
+            timestamp: DateTime::<Utc>::from_timestamp(value.timestamp, 0).unwrap()
         }
     }
 }
@@ -126,6 +160,7 @@ fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) ->
                 hash: Hash::from_bytes(head.hash),
                 hash_tree_cache: head.hash_tree_cache.clone(),
                 action: head.action.clone(),
+                timestamp: DateTime::<Utc>::from_timestamp(head.timestamp, 0).unwrap()
             });
         }
     }
@@ -135,52 +170,18 @@ fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) ->
         hash: Hash::from_bytes(head.hash),
         hash_tree_cache: head.hash_tree_cache.clone(),
         action: head.action.clone(),
+        timestamp: DateTime::<Utc>::from_timestamp(head.timestamp, 0).unwrap()
     })
 }
 
-pub fn build_serial_state(state_table: Table<[u8; 32], SerialDelta>, head_hash: [u8; 32]) -> Option<State> {
-    if let Ok(Some(head_access)) = state_table.get(&head_hash) {
-        let head = head_access.value();
-        let mut pool = HashMap::new();
-
-        // Insert head into the pool
-        pool.insert(head_hash, head.clone());
-
-        let mut parent_hash = head.parent;
-
-        for _ in 0..MAX_LOADED_DELTAS {
-            if let Ok(Some(parent_access)) = state_table.get(&parent_hash) {
-                let parent = parent_access.value();
-                pool.insert(parent_hash, parent.clone());
-
-                // Check if it reached the root
-                if parent.hash != parent.parent {
-                    parent_hash = parent.parent;
-                } else {
-                    break
-                }
-            } else {
-                break
-            }
-        }
-
-        if pool.len() != 0 {
-            Some(State::from(SerialState::new(head_hash, pool)))
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
-
+/// Serializable form of [`Delta`].
 #[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub struct SerialDelta {
     parent: [u8; 32],
     hash: [u8; 32],
     hash_tree_cache: Option<HashTree>,
     action: Mutation,
+    timestamp: i64
 }
 
 impl Value for SerialDelta {

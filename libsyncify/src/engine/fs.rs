@@ -4,7 +4,6 @@ use iroh_gossip::net::GossipSender;
 use log::{error, info};
 use notify::event::{ModifyKind, RemoveKind, RenameMode};
 use notify::EventKind::{Modify, Remove};
-use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 
 pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event: notify::Event) {
@@ -14,10 +13,9 @@ pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event
         Modify(ModifyKind::Data(_)) => {
             for abs_path in fs_event.paths {
                 if let Some(path) = relative(dir, &abs_path) {
-                    info!("File {:?} modified in {}", path, dir.uuid());
-
+                    info!("File {:?} Modified in {}", path, dir.uuid());
                     let file_hash = match hasher.update_mmap(&abs_path) {
-                        Ok(hash) => hash.finalize().as_bytes().clone(),
+                        Ok(hash) => *hash.finalize().as_bytes(),
                         Err(e) => {
                             error!("Cannot compute hash: {}", path.display());
                             continue;
