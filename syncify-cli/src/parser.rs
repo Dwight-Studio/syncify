@@ -195,7 +195,10 @@ impl Commands {
             }
             Subcommands::Join { link, path } => match Link::from_str(link) {
                 Ok(o_link) => {
-                    todo!()
+                    match syncify.join_shared_directory(o_link, PathBuf::from(path)).await {
+                        Ok(dir) => { utils::print_success(format!("Joined shared directory '{}'", dir.uuid())) }
+                        Err(e) => { utils::print_error(format!("{e}")); }
+                    }
                 }
                 Err(e) => {
                     utils::print_error(format!("{e}"));

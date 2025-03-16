@@ -144,10 +144,9 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
     }
 
     fn start_send(self: Pin<&mut Self>, item: iroh_gossip::net::Event) -> Result<(), Self::Error> {
-        match self.tx.blocking_send(Event::Gossip(item)) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(iroh_gossip::net::Error::from(e)),
-        }
+        let fut = self.tx.clone();
+        tokio::spawn(async move { fut.send(Event::Gossip(item)).await; } );
+        Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

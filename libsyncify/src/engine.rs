@@ -4,7 +4,7 @@ use crate::engine::EngineError::AlreadyWatched;
 use crate::store::StoreManager;
 use crate::{get_app_dir, SharedDirectory};
 use iroh::protocol::Router;
-use iroh::Endpoint;
+use iroh::{Endpoint, NodeId};
 use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
@@ -122,7 +122,7 @@ impl Engine {
                 TopicId::from_bytes(
                     <[u8; 32]>::try_from(dir.uuid().as_simple().to_string().as_bytes()).unwrap()
                 ),
-                Vec::new(),
+                dir.inner.read().await.neighbors.iter().map(|n| { NodeId::from_bytes(n).unwrap() }).collect(),
             ).map_err(EngineError::Gossip)?;
 
             // Create manager

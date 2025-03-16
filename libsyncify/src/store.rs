@@ -24,6 +24,7 @@ const STORE_FILENAME: &str = "store.db";
 // Base table linking Path to UUID
 const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
 const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
+const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
 
 /// Store manager.
 pub struct StoreManager {
@@ -148,14 +149,16 @@ impl StoreManager {
         {
             let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+            let neighbors_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
 
             for range in base_table.iter().map_err(StoreError::Storage)? {
                 let (path, uuid_bytes) = range.unwrap();
                 let opt_head = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let opt_neighbors = neighbors_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
 
                 let uuid = Uuid::from_bytes(uuid_bytes.value());
 
-                if let Some(head) = opt_head {
+                if let (Some(head), Some(neighbors)) = (opt_head, opt_neighbors) {
                     if let Some((sign_key, verif_key)) = Self::get_keys(&keyring, uuid) {
 
                         let uuid_string = uuid.to_string();
@@ -174,7 +177,7 @@ impl StoreManager {
                                     path: PathBuf::from(path.value()),
                                     inner: Arc::new(RwLock::new(InnerSharedDirectory {
                                         state,
-                                        neighbors: Vec::new()
+                                        neighbors: neighbors.value()
                                     })),
                                     sign_key,
                                     verif_key,
@@ -250,6 +253,7 @@ impl StoreManager {
         {
             let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+            let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
 
             // Save each SharedDirectory
             for (uuid, dir) in &self.cache {
@@ -259,6 +263,7 @@ impl StoreManager {
                 // Update index tables
                 base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
                 head_table.insert(uuid.as_bytes(), inner.state.head().hash().as_bytes()).map_err(StoreError::Storage)?;
+                neighbor_table.insert(uuid.as_bytes(), inner.neighbors.clone()).map_err(StoreError::Storage)?;
 
                 let uuid_string = uuid.to_string();
 

@@ -1,12 +1,12 @@
 use crate::store::StoreManager;
 use crate::{SharedDirPermission, Syncify, SyncifyError};
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
 use rkyv::rancor::Error;
 use rkyv::{deserialize, Archive, Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
-use base64::Engine;
-use base64::prelude::BASE64_STANDARD;
 use tokio::sync::RwLock;
 use uuid::{Bytes, Uuid};
 
@@ -15,9 +15,10 @@ const LINK_PREFIX: &str = "syncify://";
 #[derive(Archive, Serialize, Deserialize)]
 pub struct Link {
     #[rkyv(with = UuidDef)]
-    uuid: Uuid,
-    permission: SharedDirPermission,
-    key: [u8; 32],
+    pub(crate) uuid: Uuid,
+    pub(crate) permission: SharedDirPermission,
+    pub(crate) key: [u8; 32],
+    pub(crate) neighbors: Vec<[u8; 32]>
 }
 
 impl Link {
@@ -65,23 +66,30 @@ pub struct LinkBuilder {
 impl LinkBuilder {
     pub async fn build(&self) -> Result<Link, SyncifyError> {
         let dir = self.store.read().await.get_shared_dir(&self.uuid);
-        if dir.is_none() { return Err(SyncifyError::DirectoryDoesNotExists(self.uuid)) }
 
-        let key = {
-            match self.permission {
-                SharedDirPermission::ReadOnly => { dir.unwrap().verif_key.to_bytes() }
-                SharedDirPermission::Write => {
-                     if dir.clone().unwrap().sign_key.is_none() { return Err(SyncifyError::DirectoryReadOnly()) }
-                    dir.unwrap().sign_key.unwrap().to_bytes()
+        if let Some(dir) = dir {
+            let key = {
+                match self.permission {
+                    SharedDirPermission::ReadOnly => { dir.verif_key.to_bytes() }
+                    SharedDirPermission::Write => {
+                        if dir.sign_key.is_none() { return Err(SyncifyError::DirectoryReadOnly()) }
+                        dir.sign_key.unwrap().to_bytes()
+                    }
                 }
-            }
-        };
+            };
 
-        Ok(Link {
-            uuid: self.uuid,
-            permission: self.permission.clone(),
-            key
-        })
+            let mut neighbors = dir.inner.read().await.neighbors.clone();
+            neighbors.push(*self.store.read().await.secret_key.public().as_bytes());
+
+            Ok(Link {
+                uuid: self.uuid,
+                permission: self.permission.clone(),
+                key,
+                neighbors
+            })
+        } else {
+            Err(SyncifyError::DirectoryDoesNotExists(self.uuid))
+        }
     }
 
     pub fn dir_uuid(&mut self, uuid: Uuid) -> &mut Self {

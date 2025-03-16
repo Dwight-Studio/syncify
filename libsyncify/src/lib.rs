@@ -1,7 +1,7 @@
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
-use crate::SyncifyError::{AlreadyShared, InvalidPath, NotShared, ReadOnly};
+use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use log::info;
@@ -10,7 +10,6 @@ use std::cmp::PartialEq;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
-use iroh::NodeId;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -97,6 +96,9 @@ impl Syncify {
         // Check if the dir exists
         if abs_path.exists() {
             // Check if the user has write access in the directory
+            if !abs_path.is_dir() {
+                return Err(NotADirectory(abs_path))
+            }
             let md = abs_path.metadata().map_err(InvalidPath)?;
             if md.permissions().readonly() {
                 return Err(ReadOnly(abs_path));
@@ -179,8 +181,64 @@ impl Syncify {
     }
 
     /// Join a shared directory
-    pub async fn join_shared_directory(&self, link: Link) -> Result<(), SyncifyError> {
-        todo!()
+    pub async fn join_shared_directory(&mut self, link: Link, path: PathBuf) -> Result<SharedDirectory, SyncifyError> {
+        let abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
+
+        // Check if the dir exists
+        if abs_path.exists() {
+            // Check if abs_path is a directory
+            if !abs_path.is_dir() {
+                return Err(NotADirectory(abs_path))
+            }
+            // Check if the directory is empty
+            if abs_path.read_dir().iter().next().is_some() {
+                return Err(DirectoryNotEmpty(abs_path))
+            }
+            // Check if the user has write access in the directory
+            let md = abs_path.metadata().map_err(InvalidPath)?;
+            if md.permissions().readonly() {
+                return Err(ReadOnly(abs_path));
+            }
+        } else {
+            // Create the dir and its parent
+            tokio::fs::create_dir_all(&get_app_dir())
+                .await.map_err(|e| match e.kind() {
+                ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
+                _ => InvalidPath(e)
+            })?
+        }
+
+        // Add the directory to the store
+        let sign_key = if link.permission == SharedDirPermission::Write { Some(SigningKey::from_bytes(&link.key)) } else { None };
+
+        let dir = SharedDirectory {
+            uuid: link.uuid,
+            path: abs_path.clone(),
+            inner: Arc::new(RwLock::new(InnerSharedDirectory{
+                state: State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()),
+                neighbors: link.neighbors
+            })),
+            sign_key: sign_key.clone(),
+            verif_key: if let Some(key) = sign_key { key.verifying_key() } else { VerifyingKey::from_bytes(&link.key).unwrap() },
+        };
+
+        info!(
+            "Added shared directory {} at \"{}\"",
+            dir.uuid(),
+            dir.path().display()
+        );
+
+        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::StoreKeyring)?;
+
+        // If the engine is available, add the directory to watched directory
+        if let Some(engine) = &mut self.engine {
+            engine
+                .add_watched_directory(self.store.clone(), &dir)
+                .await
+                .map_err(SyncifyError::Watcher)?;
+        }
+
+        Ok(dir)
     }
 }
 
@@ -209,7 +267,7 @@ impl SharedDirectory {
 
 pub struct InnerSharedDirectory {
     state: State,
-    neighbors: Vec<NodeId>
+    neighbors: Vec<[u8; 32]>
 }
 
 #[derive(Error, Debug)]
@@ -249,4 +307,10 @@ pub enum SyncifyError {
     
     #[error("Error while parsing link: {0}")]
     LinkParseError(String),
+    
+    #[error("Directory is not empty: {0}")]
+    DirectoryNotEmpty(PathBuf),
+    
+    #[error("{0} is not a directory")]
+    NotADirectory(PathBuf),
 }
