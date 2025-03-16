@@ -9,7 +9,7 @@ pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, gossip_e
             match event {
                 GossipEvent::Joined(_) => {}
                 GossipEvent::NeighborUp(node_id) => { dir.inner.write().await.neighbors.push(*node_id.as_bytes()) }
-                GossipEvent::NeighborDown(node_id) => { dir.inner.write().await.neighbors.retain(|&e| e != *node_id.as_bytes()) }
+                GossipEvent::NeighborDown(_) => { }
                 GossipEvent::Received(_) => {}
             }
         }
