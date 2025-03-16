@@ -1,14 +1,14 @@
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::NotADirectory;
+use crate::SharedDirectory;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
-use log::{error, warn};
+use log::{error, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::iter::Peekable;
-use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -67,14 +67,14 @@ impl State {
     }
 
     /// Get file hash tree.
-    pub async fn hash_tree(&mut self) -> Result<HashTree, StateError> {
+    pub fn hash_tree(&mut self) -> Result<HashTree, StateError> {
         let mut head = self.head.write().unwrap();
         head.compute_hash_tree()?;
         Ok(head.hash_tree_cache.clone().unwrap())
     }
 
     // TODO: Add optimisation: Detect if the same file is modified in the last delta and fuse
-    pub async fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
+    pub fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
             hash: Hash::from_bytes([0; 32]),
@@ -125,21 +125,24 @@ impl State {
 
     pub fn iter(&self) -> StateIterator {
         StateIterator {
-            head_ref: Some(self.head.clone())
+            head_ref: Some(self.head.clone()),
         }
     }
 }
 
 impl Display for State {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "Timestamp: {}\n", self.timestamp)?;
-        
+        writeln!(f, "State")?;
+        writeln!(f, "Timestamp: {}", self.timestamp)?;
+        writeln!(f)?;
+        writeln!(f, "■ Current")?;
+
         for head_ref in self.iter() {
             let head = head_ref.read().unwrap();
 
             let mut prefix = "│";
             writeln!(f, "{prefix}")?;
-            
+
             if head.parent.is_some() {
                 writeln!(f, "├─ {}", head.hash)?;
             } else {
@@ -150,8 +153,6 @@ impl Display for State {
             writeln!(f, "{prefix}  Timestamp: {}", head.timestamp)?;
             writeln!(f, "{prefix}  {}", head.action)?;
         }
-
-        writeln!(f)?;
 
         Ok(())
     }
@@ -174,7 +175,7 @@ impl Iterator for StateIterator {
 
                 Some(rtn)
             }
-            None => None
+            None => None,
         }
     }
 }
@@ -240,10 +241,12 @@ impl Display for Mutation {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             Mutation::Init => write!(f, "Initialized directory"),
-            Mutation::Merge { other_head, .. } => write!(f, "Merged branch {}", Hash::from_bytes(*other_head)),
+            Mutation::Merge { other_head, .. } => {
+                write!(f, "Merged branch {}", Hash::from_bytes(*other_head))
+            }
             Mutation::Modify { file_path, .. } => write!(f, "Modified file \"{}\"", file_path),
             Mutation::Move { from, to, .. } => write!(f, "Moved file \"{from}\" to \"{to}\""),
-            Mutation::Remove { file_path, .. } => write!(f, "Removed file \"{}\"", file_path)
+            Mutation::Remove { file_path, .. } => write!(f, "Removed file \"{}\"", file_path),
         }
     }
 }
@@ -265,22 +268,23 @@ pub enum HashTree {
     File {
         name: String,
         hash: [u8; 32],
+        timestamp: i64,
     },
     Directory {
         name: String,
         #[rkyv(omit_bounds)]
         content: Vec<HashTree>,
         hash: [u8; 32],
-    },
+    }
 }
 
 impl HashTree {
     /// Generate a vec of references of the file/directory at given path, and its parent in reverse
     /// hierarchical order.
-    pub fn goto<'a>(
-        &self,
-        mut file_path_iter: impl Iterator<Item = &'a str> + Clone,
-    ) -> Option<Vec<&HashTree>> {
+    pub fn goto<'a, A>(&self, file_path_iter: &mut A) -> Option<Vec<&HashTree>>
+    where
+        A: Iterator<Item = &'a str> + Clone,
+    {
         let dir_name = file_path_iter.next()?;
         match self {
             Void => None,
@@ -288,7 +292,7 @@ impl HashTree {
             Directory { name, content, .. } => {
                 if name.eq(&dir_name) {
                     for tree in content {
-                        let opt = tree.goto(file_path_iter.clone());
+                        let opt = tree.goto(file_path_iter);
                         if opt.is_some() {
                             let mut parent = opt.unwrap();
                             parent.push(self);
@@ -315,12 +319,13 @@ impl HashTree {
                     File {
                         name: file_path.split("/").last().unwrap().to_string(),
                         hash: *file_hash,
+                        timestamp: Utc::now().timestamp(),
                     }
                 },
                 file_path.split("/").peekable(),
             ),
             Mutation::Move { from, to } => {
-                let extracted = self.goto(from.split("/")).unwrap()[0];
+                let extracted = self.goto(&mut from.split("/")).unwrap()[0];
                 let tree = Self::apply_and_update_parents(
                     self.clone(),
                     &mut |_: HashTree| -> HashTree { Void },
@@ -352,85 +357,82 @@ impl HashTree {
         // Check if it reaches the end of the iterator
         if let Some(elem) = next {
             // If not, check if the current parent is a directory
-            if let Directory {
-                name,
-                content,
-                hash,
-            } = parent
-            {
-                // If so, construct new content
-                let mut new_content: Vec<HashTree> = Vec::new();
-                let mut elem_pos: i64 = -1;
-                for (pos, tree) in content.into_iter().enumerate() {
-                    match &tree {
-                        Void => {}
-                        File { name, .. } | Directory { name, .. } => {
-                            if name == elem {
-                                elem_pos = pos as i64;
+            match parent {
+                Directory {
+                    name,
+                    content,
+                    hash,
+                } => {
+                    // If so, construct new content by searching for the elem
+                    let mut new_content: Vec<HashTree> = Vec::new();
+                    let mut elem_pos: i64 = -1;
+                    for (pos, tree) in content.into_iter().enumerate() {
+                        match &tree {
+                            Void => {}
+                            File { name, .. } | Directory { name, .. } => {
+                                if name == elem {
+                                    elem_pos = pos as i64;
+                                }
                             }
                         }
-                    }
-                    new_content.push(tree);
-                }
-
-                let result;
-
-                // Check if the parent contains the next elem
-                if elem_pos == -1 {
-                    // If not, let the function construct the object
-                    let new_tree = if has_next {
-                        Directory {
-                            name: elem.to_string(),
-                            content: Vec::new(),
-                            hash: [0; 32],
-                        }
-                    } else {
-                        File {
-                            name: elem.to_string(),
-                            hash: [0; 32],
-                        }
-                    };
-
-                    result = Self::apply_and_update_parents(new_tree, mut_fn, path);
-                } else {
-                    // If so, call recursively
-                    result = Self::apply_and_update_parents(
-                        new_content.remove(elem_pos.try_into().unwrap()),
-                        mut_fn,
-                        path,
-                    );
-                }
-
-                // Check if there is an error
-                if let Ok(mut tree) = result {
-                    // If not, apply function, update hash and push
-                    // If the
-                    if !has_next {
-                        tree = mut_fn(tree);
-                    }
-
-                    // Check if the fonction didn't return Empty
-                    if tree != Void {
-                        // If not, update and push
-                        tree.update_hash();
                         new_content.push(tree);
                     }
 
-                    Ok(Directory {
-                        name,
-                        content: new_content,
-                        hash,
-                    })
-                } else {
-                    result
+                    // Check if the parent contains the next elem
+                    let result = if elem_pos == -1 {
+                        // If not, let the function construct the object
+                        let new_tree = if has_next {
+                            Directory {
+                                name: elem.to_string(),
+                                content: Vec::new(),
+                                hash: [0; 32],
+                            }
+                        } else {
+                            File {
+                                name: elem.to_string(),
+                                hash: [0; 32],
+                                timestamp: 0,
+                            }
+                        };
+
+                        Self::apply_and_update_parents(new_tree, mut_fn, path)
+                    } else {
+                        // If so, call recursively
+                        Self::apply_and_update_parents(
+                            new_content.remove(elem_pos.try_into().unwrap()),
+                            mut_fn,
+                            path,
+                        )
+                    };
+
+                    // Check if there is an error
+                    if let Ok(mut tree) = result {
+                        // If not, apply function, update hash and push
+                        // If the
+                        if !has_next {
+                            tree = mut_fn(tree);
+                        }
+
+                        // Check if the fonction didn't return Empty
+                        if tree != Void {
+                            // If not, update and push
+                            tree.update_hash();
+                            new_content.push(tree);
+                        }
+
+                        Ok(Directory {
+                            name,
+                            content: new_content,
+                            hash,
+                        })
+                    } else {
+                        result
+                    }
                 }
-            } else {
-                // If not, there is an error (next is not None, and it reached a File)
-                match parent {
-                    File { name, .. } => Err(NotADirectory(name)),
-                    Void => Err(NotADirectory("Void".to_string())),
-                    _ => unreachable!(),
-                }
+
+                File { name, .. } => Err(NotADirectory(name)),
+
+                Void => Err(NotADirectory("Void".to_string())),
             }
         } else {
             // If so, return parent
@@ -476,14 +478,14 @@ impl HashTree {
     }
 
     /// Generate [`HashTree`] from disk.
-    pub fn from_disk(path: &Path) -> Result<Self, std::io::Error> {
+    pub fn from_disk(dir: &SharedDirectory) -> Result<Self, std::io::Error> {
         let mut rtn = Directory {
-            name: path.file_name().unwrap().to_string_lossy().to_string(),
+            name: dir.path.file_name().unwrap().to_string_lossy().to_string(),
             content: vec![],
             hash: [0; 32],
         };
 
-        let files_iter = WalkDir::new(path)
+        let files_iter = WalkDir::new(dir.path())
             .follow_links(false)
             .same_file_system(true)
             .into_iter();
@@ -501,13 +503,15 @@ impl HashTree {
                     hasher
                         .update_mmap(file.path())
                         .inspect_err(|_| error!("Invalid path: {}", file.path().display()))?;
+
+                    let relative_path = crate::engine::fs::relative(dir, file.path());
+
+                    if relative_path.is_none() {
+                        continue;
+                    }
+                    
                     match rtn.apply(&Mutation::Modify {
-                        file_path: file
-                            .path()
-                            .file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_string(),
+                        file_path: relative_path.unwrap().to_string_lossy().to_string(),
                         file_hash: *hasher.finalize().as_bytes(),
                     }) {
                         Ok(new_rtn) => {
@@ -548,6 +552,66 @@ impl PartialEq<HashTree> for HashTree {
     }
 }
 
+impl Display for HashTree {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Void => Ok(()),
+            File {
+                name,
+                hash,
+                timestamp,
+                ..
+            } => {
+                writeln!(f, "{}", Hash::from_bytes(*hash))?;
+                writeln!(
+                    f,
+                    "Timestamp: {}",
+                    DateTime::<Utc>::from_timestamp(*timestamp, 0).unwrap()
+                )?;
+                writeln!(f, "Name: {}", name)?;
+
+                Ok(())
+            }
+            Directory {
+                name,
+                hash,
+                content,
+                ..
+            } => {
+                writeln!(f, "{}", Hash::from_bytes(*hash))?;
+                writeln!(f, "Directory name: {}", name)?;
+
+                if content.is_empty() {
+                    return Ok(());
+                } else {
+                    writeln!(f, "│")?;
+                }
+
+                let last = content.len() - 1;
+
+                for (i, tree) in content.iter().enumerate() {
+                    let display = tree.to_string();
+                    let mut iter = display.split('\n');
+
+                    let mut prefix = "│";
+
+                    if i == last {
+                        writeln!(f, "└─{}", iter.next().unwrap())?;
+                        prefix = " "
+                    } else {
+                        writeln!(f, "├─{}", iter.next().unwrap())?;
+                    }
+
+                    for line in iter {
+                        writeln!(f, "{prefix} {}", line)?;
+                    }
+                }
+                Ok(())
+            },
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum StateError {
     #[error("Invalid path: {0}")]
@@ -560,5 +624,5 @@ pub enum StateError {
     Hashing(std::io::Error),
 
     #[error("Root node has no tree: {0}")]
-    InvalidRoot(Hash)
+    InvalidRoot(Hash),
 }

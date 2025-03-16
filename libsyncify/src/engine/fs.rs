@@ -22,17 +22,12 @@ pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event
                         }
                     };
 
-                    match dir
-                        .inner
-                        .write()
-                        .await
-                        .state
-                        .mutate(Mutation::Modify {
-                            file_path: path.to_string_lossy().to_string(),
-                            file_hash,
-                        })
-                        .await
-                    {
+                    let mutation = Mutation::Modify {
+                        file_path: path.to_string_lossy().to_string(),
+                        file_hash,
+                    };
+
+                    match dir.inner.write().await.state.mutate(mutation) {
                         Ok(_) => {}
                         Err(e) => {
                             error!("Failed to modify file {:?} in {} ({e})", path, dir.uuid());
@@ -40,23 +35,18 @@ pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event
                     }
                 }
             }
-        },
+        }
         // TODO: Check if the file exists in db
         Remove(RemoveKind::File) | Modify(ModifyKind::Name(RenameMode::From)) => {
             for abs_path in fs_event.paths {
                 if let Some(path) = relative(dir, &abs_path) {
                     info!("File {:?} removed in {}", path, dir.uuid());
 
-                    match dir
-                        .inner
-                        .write()
-                        .await
-                        .state
-                        .mutate(Mutation::Remove {
-                            file_path: path.to_string_lossy().to_string(),
-                        })
-                        .await
-                    {
+                    let mutation = Mutation::Remove {
+                        file_path: path.to_string_lossy().to_string(),
+                    };
+
+                    match dir.inner.write().await.state.mutate(mutation) {
                         Ok(_) => {}
                         Err(e) => {
                             error!("Failed to remove file {:?} in {} ({e})", path, dir.uuid());
@@ -69,8 +59,8 @@ pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event
     }
 }
 
-fn relative<'a>(dir: &SharedDirectory, file: &'a PathBuf) -> Option<&'a Path> {
-    match file.strip_prefix(dir.path.parent()?) {
+pub fn relative<'a>(dir: &SharedDirectory, file: &'a Path) -> Option<&'a Path> {
+    match file.strip_prefix(dir.path.as_path()) {
         Ok(path) => Some(path),
         Err(_) => {
             error!("Cannot get relative path: {:?} in {:?}", file, dir.path);
