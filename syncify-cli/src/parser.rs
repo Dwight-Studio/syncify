@@ -102,7 +102,7 @@ impl Commands {
 
                     let dir_choice = utils::number_choice(
                         dirs.iter()
-                            .map(|dir| dir.path().canonicalize().unwrap().display().to_string())
+                            .map(|dir| dir.path().display().to_string())
                             .collect(),
                         Some("Choose a directory to share:"),
                     )
@@ -195,9 +195,17 @@ impl Commands {
             }
             Subcommands::Join { link, path } => match Link::from_str(link) {
                 Ok(o_link) => {
-                    match syncify.join_shared_directory(o_link, PathBuf::from(path)).await {
-                        Ok(dir) => { utils::print_success(format!("Joined shared directory '{}'", dir.uuid())) }
-                        Err(e) => { utils::print_error(format!("{e}")); }
+                    match syncify
+                        .join_shared_directory(o_link, PathBuf::from(path))
+                        .await
+                    {
+                        Ok(dir) => utils::print_success(format!(
+                            "Joined shared directory '{}'",
+                            dir.uuid()
+                        )),
+                        Err(e) => {
+                            utils::print_error(format!("{e}"));
+                        }
                     }
                 }
                 Err(e) => {
