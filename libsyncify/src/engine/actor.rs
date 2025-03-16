@@ -60,7 +60,7 @@ impl DirectoryManager {
         topic: GossipSender,
     ) {
         // First, verify that the current state correspond to the what's in memory
-        let old_tree = match dir.state.write().await.hash_tree().await {
+        let old_tree = match dir.inner.write().await.state.hash_tree().await {
             Ok(tree) => tree,
             Err(e) => {
                 error!("Unable to create hash tree from saved state: {e}");
@@ -69,7 +69,7 @@ impl DirectoryManager {
             }
         };
         
-        info!("{}", dir.state.read().await.deref());
+        info!("{}", dir.inner.read().await.state);
 
         // TODO: Add fast-forward sync
         match HashTree::from_disk(dir.path().as_path()) {

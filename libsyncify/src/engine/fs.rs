@@ -23,9 +23,10 @@ pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event
                     };
 
                     match dir
-                        .state
+                        .inner
                         .write()
                         .await
+                        .state
                         .mutate(Mutation::Modify {
                             file_path: path.to_string_lossy().to_string(),
                             file_hash,
@@ -47,9 +48,10 @@ pub async fn handle_events(dir: &SharedDirectory, topic: &GossipSender, fs_event
                     info!("File {:?} removed in {}", path, dir.uuid());
 
                     match dir
-                        .state
+                        .inner
                         .write()
                         .await
+                        .state
                         .mutate(Mutation::Remove {
                             file_path: path.to_string_lossy().to_string(),
                         })

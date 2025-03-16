@@ -7,13 +7,14 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use log::info;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
-use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
+use iroh::NodeId;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::store::link::Link;
 
 pub mod engine;
 pub mod store;
@@ -116,7 +117,10 @@ impl Syncify {
         let dir = SharedDirectory {
             uuid,
             path: abs_path.clone(),
-            state: Arc::new(RwLock::new(State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()))),
+            inner: Arc::new(RwLock::new(InnerSharedDirectory{
+                state: State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()),
+                neighbors: Vec::new()
+            })),
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
         };
@@ -174,27 +178,9 @@ impl Syncify {
         self.store.read().await.get_all_dirs()
     }
 
-    pub async fn build_link(
-        &self,
-        uuid: Uuid,
-        permission: SharedDirPermission,
-    ) -> Result<String, SyncifyError> {
-        let dir = self.get_shared_directory(&uuid).await.unwrap();
-        let key = {
-            if permission == SharedDirPermission::Write {
-                if let Some(tmp) = dir.sign_key {
-                    String::from_utf8_lossy(tmp.as_bytes()).to_string()
-                } else {
-                    return Err(SyncifyError::DirectoryReadOnly());
-                }
-            } else {
-                String::from_utf8_lossy(dir.verif_key.as_bytes()).to_string()
-            }
-        };
-
-        //let link = format!("syncify://?key={}&payload={}", key);
-
-        Ok(String::new())
+    /// Join a shared directory
+    pub async fn join_shared_directory(&self, link: Link) -> Result<(), SyncifyError> {
+        todo!()
     }
 }
 
@@ -202,7 +188,7 @@ impl Syncify {
 pub struct SharedDirectory {
     uuid: Uuid,
     path: PathBuf,
-    state: Arc<RwLock<State>>,
+    inner: Arc<RwLock<InnerSharedDirectory>>,
     sign_key: Option<SigningKey>,
     verif_key: VerifyingKey,
 }
@@ -219,6 +205,11 @@ impl SharedDirectory {
     pub fn is_read_only(&self) -> bool {
         self.sign_key.is_none()
     }
+}
+
+pub struct InnerSharedDirectory {
+    state: State,
+    neighbors: Vec<NodeId>
 }
 
 #[derive(Error, Debug)]

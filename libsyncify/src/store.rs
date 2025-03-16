@@ -1,7 +1,6 @@
 use crate::engine::serial_state::{SerialDelta, SerialState};
-use crate::engine::{serial_state, state};
 use crate::store::keyring::{Keyring, Keys};
-use crate::{get_app_dir, SharedDirectory};
+use crate::{get_app_dir, InnerSharedDirectory, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use chacha20poly1305::aead::OsRng;
@@ -9,9 +8,8 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use ::keyring::Error;
 use log::{error, info, warn};
-use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError};
+use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TableHandle, TransactionError};
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
@@ -174,7 +172,10 @@ impl StoreManager {
                                 cache.insert(uuid, SharedDirectory {
                                     uuid,
                                     path: PathBuf::from(path.value()),
-                                    state: Arc::new(RwLock::new(state)),
+                                    inner: Arc::new(RwLock::new(InnerSharedDirectory {
+                                        state,
+                                        neighbors: Vec::new()
+                                    })),
                                     sign_key,
                                     verif_key,
                                 });
@@ -253,24 +254,24 @@ impl StoreManager {
             // Save each SharedDirectory
             for (uuid, dir) in &self.cache {
                 info!("Saving state for {}", uuid);
-                let mut state = dir.state.write().await;
+                let mut inner = dir.inner.write().await;
 
                 // Update index tables
                 base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
-                head_table.insert(uuid.as_bytes(), state.head().hash().as_bytes()).map_err(StoreError::Storage)?;
+                head_table.insert(uuid.as_bytes(), inner.state.head().hash().as_bytes()).map_err(StoreError::Storage)?;
 
                 let uuid_string = uuid.to_string();
 
                 let state_table_def: TableDefinition<[u8; 32], SerialDelta> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
 
-                let serial_state = SerialState::from(state.deref());
+                let serial_state = SerialState::from(&inner.state);
 
                 for (hash, serial_delta) in serial_state.pool() {
                     state_table.insert(hash, serial_delta).map_err(StoreError::Storage)?;
                 }
 
-                if state.prune() {
+                if inner.state.prune() {
                     info!("Pruned state {}", uuid_string);
                 }
             }
