@@ -1,4 +1,4 @@
-use crate::engine::state::Mutation;
+use crate::engine::state::{HashTree, Mutation};
 use crate::SharedDirectory;
 use chrono::Utc;
 use iroh_gossip::net::GossipSender;
@@ -11,14 +11,16 @@ pub struct FileSystemManager {
     topic: GossipSender,
     dir: SharedDirectory,
     mutations_buffer: Vec<Mutation>,
+    last_tree: HashTree,
 }
 
 impl FileSystemManager {
-    pub(crate) fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
+    pub(crate) fn new(topic: GossipSender, dir: SharedDirectory, last_tree: HashTree) -> Self {
         Self {
             topic,
             dir,
             mutations_buffer: Vec::new(),
+            last_tree,
         }
     }
 
@@ -83,58 +85,65 @@ impl FileSystemManager {
                     }
                 }
             }
-            _ => (),
+            _ => return,
         }
 
-        //deduplicate_buffer(mutations_buffer)
+        self.clean_mutation_buffer()
     }
 
-    async fn deduplicate_buffer(&mut self, dir: &SharedDirectory) {
-        //let tree = dir.inner.read().await.state.hash_tree();
+    fn clean_mutation_buffer(&mut self) {
+        let mut working_buffer = Vec::new();
 
-        let mut modified = Vec::new();
-        let mut removed = Vec::new();
-        let mut moved = Vec::new();
-
-        // Classify each mutation
-        for mutation in &self.mutations_buffer {
-            match mutation {
-                Mutation::Modify { .. } => modified.push(mutation.clone()),
-                Mutation::Move { .. } => moved.push(mutation.clone()),
-                Mutation::Remove { .. } => removed.push(mutation.clone()),
-                _ => {}
-            }
-        }
-
-        // TODO: Drop the remove for a file that doesn't exist
-
-        // TODO: Drop the remove/modify if it is in fact a move
-
-        // Drop every modified if removed after modification
-        for rm in &removed {
-            if let Mutation::Remove {
-                file_path: r_path,
-                timestamp: r_time,
-                ..
-            } = rm
-            {
-                modified.retain(|mm| {
-                    if let Mutation::Modify {
-                        file_path: m_path,
-                        timestamp: m_time,
+        for n_mut in &self.mutations_buffer {
+            
+            // Fuse Mod+Mod and Rem+Mod
+            working_buffer.retain(|o_mut| match (n_mut, o_mut) {
+                (
+                    Mutation::Modify {
+                        file_path: n_path,
+                        timestamp: n_time,
                         ..
-                    } = mm
-                    {
-                        // If the remove is after the modification, and has the same path
-                        if *r_time > *m_time && r_path == m_path {
-                            return false;
-                        }
-                    }
+                    },
+                    Mutation::Modify {
+                        file_path: o_path,
+                        timestamp: o_time,
+                        ..
+                    },
+                ) | (
+                    Mutation::Remove {
+                        file_path: n_path,
+                        timestamp: n_time,
+                        ..
+                    },
+                    Mutation::Modify {
+                        file_path: o_path,
+                        timestamp: o_time,
+                        ..
+                    },
+                ) => {
+                    // Retain if the path is different, or it's more recent
+                    n_path != o_path || n_time < o_time
+                }
+                _ => true,
+            });
 
-                    // By default, keep
-                    true
-                })
+            // Drop remove if about a file that doesn't exist
+            if let Mutation::Remove { file_path, .. } = n_mut {
+                if self.last_tree.get(file_path).is_none() {
+                    continue;
+                }
             }
+            
+            // TODO: Add move
+            
+            working_buffer.push(n_mut.clone());
+        }
+        
+        // Copy the new buffer
+        self.mutations_buffer = working_buffer;
+
+        for mutation in &self.mutations_buffer {
+            info!("{mutation}")
         }
     }
 }

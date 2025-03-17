@@ -102,7 +102,7 @@ impl DirectoryManager {
             }
         }
 
-        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone());
+        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone(), old_tree);
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone());
         let mut sync_manager = SyncManager::new(topic.clone(), dir.clone());
 

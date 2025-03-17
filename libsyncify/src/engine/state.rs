@@ -26,8 +26,6 @@ pub struct State {
 }
 
 // TODO: Add optimization
-//  -> Fuse unshared changes if possible
-//  -> Add a mutation buffer?
 //  -> Compute when last modified date is > than the last save date (for fastforward sync)
 impl State {
     pub fn new(directory_name: String) -> Self {
@@ -73,8 +71,7 @@ impl State {
         head.compute_hash_tree()?;
         Ok(head.hash_tree_cache.clone().unwrap())
     }
-
-    // TODO: Add optimisation: Detect if the same file is modified in the last delta and fuse
+    
     pub fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
@@ -219,7 +216,7 @@ impl Delta {
 }
 
 /// Mutation action of a [`Delta`].
-#[derive(Clone, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub enum Mutation {
     Init {
         timestamp: i64
@@ -286,28 +283,40 @@ pub enum HashTree {
 }
 
 impl HashTree {
-    /// Generate a vec of references of the file/directory at given path, and its parent in reverse
-    /// hierarchical order.
-    pub fn goto<'a, A>(&self, file_path_iter: &mut A) -> Option<Vec<&HashTree>>
+    /// Get a reference to the hash tree at the path.
+    pub fn get(&self, file_path: &str) -> Option<&HashTree> {
+        self.get_recursive(&mut file_path.split("/"))
+    }
+
+    fn get_recursive<'a, A>(&self, file_path_iter: &mut A) -> Option<&HashTree>
     where
         A: Iterator<Item = &'a str> + Clone,
     {
-        let dir_name = file_path_iter.next()?;
-        match self {
+        let path = file_path_iter.next()?;
+        
+        match &self {
             Void => None,
-            File { .. } => Some(vec![self]),
-            Directory { name, content, .. } => {
-                if name.eq(&dir_name) {
-                    for tree in content {
-                        let opt = tree.goto(file_path_iter);
-                        if opt.is_some() {
-                            let mut parent = opt.unwrap();
-                            parent.push(self);
-                            return Some(parent);
-                        }
-                    }
+            File { name, .. } => {
+                if name == path {
+                    Some(self)
+                } else {
+                    None
                 }
-                None
+            }
+            Directory { name, content, .. } => {
+                if name == path {
+                    Some(self)
+                } else {
+                    for tree in content.iter() {
+                        let mut iter = file_path_iter.clone();
+                        
+                        if let Some(tree) = tree.get_recursive(&mut iter) {
+                            return Some(tree)
+                        } 
+                    }
+                    
+                    None
+                }
             }
         }
     }
@@ -333,7 +342,7 @@ impl HashTree {
                 file_path.split("/").peekable(),
             ),
             Mutation::Move { from, to, .. } => {
-                let extracted = self.goto(&mut from.split("/")).unwrap()[0];
+                let extracted = self.get(from).unwrap();
                 let tree = Self::apply_and_update_parents(
                     self.clone(),
                     &mut |_: HashTree| -> HashTree { Void },
