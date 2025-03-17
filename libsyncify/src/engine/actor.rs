@@ -2,7 +2,7 @@ use crate::engine::fs::FileSystemManager;
 use crate::engine::gossip::GossipManager;
 use crate::engine::state::HashTree;
 use crate::engine::sync::SyncManager;
-use crate::engine::{fs, gossip, sync, EngineError};
+use crate::engine::{fs, gossip, sync};
 use crate::SharedDirectory;
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
@@ -11,11 +11,13 @@ use notify::{EventHandler, Watcher};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
+const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Actor responsible to handle all filesystem events for a [`SharedDirectory`].
 pub struct DirectoryManager {
@@ -106,19 +108,45 @@ impl DirectoryManager {
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone());
         let mut sync_manager = SyncManager::new(topic.clone(), dir.clone());
 
-        // Then, process the events
-        while let Some(result) = rx.recv().await {
-            match result {
-                Event::FileSystem(fs_event) => fs_manager.handle_events(fs_event).await,
-
-                Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
-
-                Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
-
-                Event::Shutdown => {
-                    rx.close();
-                    debug!("Closing event channel for {}", dir.uuid())
+        // Process the event
+        loop {
+            // Check if the mutation buffer is empty,
+            let result = if fs_manager.mutations_buffer.is_empty() {
+                // If so, wait for event
+                rx.recv().await
+            } else {
+                // If not, wait for event with a timeout
+                match tokio::time::timeout(MUTATIONS_FLUSH_TIMEOUT, rx.recv()).await {
+                    // Return if there's an event
+                    Ok(result) => result,
+                    // Flush if not
+                    Err(_) => {
+                        fs_manager.apply_mutations().await;
+                        continue;
+                    }
                 }
+            };
+
+            if let Some(event) = result {
+                match event {
+                    // FileSystem
+                    Event::FileSystem(fs_event) => fs_manager.handle_events(fs_event).await,
+                    Event::ApplyMutations => fs_manager.apply_mutations().await,
+
+                    // Gossip
+                    Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
+
+                    // Protocole
+                    Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
+
+                    // Actor
+                    Event::Shutdown => {
+                        rx.close();
+                        debug!("Closing event channel for {}", dir.uuid())
+                    }
+                }
+            } else {
+                break;
             }
         }
         info!("Finished event processing for {}", dir.uuid());
@@ -185,9 +213,17 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
 
 /// Event to control the [`DirectoryManager`] actor.
 pub enum Event {
+    // FileSystem
     FileSystem(notify::Event),
+    ApplyMutations,
+
+    // Gossip
     Gossip(iroh_gossip::net::Event),
+
+    // Protocole
     Sync(SyncEvent),
+
+    // Actor
     Shutdown,
 }
 

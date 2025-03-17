@@ -10,7 +10,7 @@ use std::path::Path;
 pub struct FileSystemManager {
     topic: GossipSender,
     dir: SharedDirectory,
-    mutations_buffer: Vec<Mutation>,
+    pub(super) mutations_buffer: Vec<Mutation>,
     last_tree: HashTree,
 }
 
@@ -95,7 +95,7 @@ impl FileSystemManager {
         let mut working_buffer = Vec::new();
 
         for n_mut in &self.mutations_buffer {
-            
+
             // Fuse Mod+Mod and Rem+Mod
             working_buffer.retain(|o_mut| match (n_mut, o_mut) {
                 (
@@ -127,24 +127,47 @@ impl FileSystemManager {
                 _ => true,
             });
 
+            // FIXME: HashTree::get seems to be broken
             // Drop remove if about a file that doesn't exist
             if let Mutation::Remove { file_path, .. } = n_mut {
                 if self.last_tree.get(file_path).is_none() {
                     continue;
                 }
             }
-            
+
             // TODO: Add move
-            
+
             working_buffer.push(n_mut.clone());
         }
-        
+
         // Copy the new buffer
         self.mutations_buffer = working_buffer;
 
         for mutation in &self.mutations_buffer {
             info!("{mutation}")
         }
+    }
+
+    pub(crate) async fn apply_mutations(&mut self) {
+        let mut inner = self.dir.inner.write().await;  
+        
+        info!("Applying mutations for {}", self.dir.uuid());
+        
+        for mutation in &self.mutations_buffer {
+            match inner.state.mutate(mutation.clone()) {
+                Ok(_) => {
+                    info!("Applied: {mutation}");
+                }
+                Err(e) => {
+                    error!("Cannot apply mutation: {mutation} ({e}");
+                }
+            }
+        }
+        
+        self.mutations_buffer.clear();
+        
+        self.last_tree = inner.state.hash_tree().unwrap();
+        info!("\n{}", self.last_tree)
     }
 }
 

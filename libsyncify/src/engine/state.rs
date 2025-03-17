@@ -71,7 +71,7 @@ impl State {
         head.compute_hash_tree()?;
         Ok(head.hash_tree_cache.clone().unwrap())
     }
-    
+
     pub fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
@@ -293,7 +293,7 @@ impl HashTree {
         A: Iterator<Item = &'a str> + Clone,
     {
         let path = file_path_iter.next()?;
-        
+
         match &self {
             Void => None,
             File { name, .. } => {
@@ -305,18 +305,16 @@ impl HashTree {
             }
             Directory { name, content, .. } => {
                 if name == path {
-                    Some(self)
-                } else {
                     for tree in content.iter() {
                         let mut iter = file_path_iter.clone();
-                        
+
                         if let Some(tree) = tree.get_recursive(&mut iter) {
                             return Some(tree)
-                        } 
+                        }
                     }
-                    
-                    None
                 }
+                
+                None
             }
         }
     }
