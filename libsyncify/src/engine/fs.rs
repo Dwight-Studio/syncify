@@ -15,7 +15,10 @@ pub struct FileSystemManager {
 }
 
 impl FileSystemManager {
-    pub(crate) fn new(topic: GossipSender, dir: SharedDirectory, last_tree: HashTree) -> Self {
+    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
+        // TODO: Let handle errors here
+        let last_tree = dir.inner.write().await.state.hash_tree().unwrap();
+        
         Self {
             topic,
             dir,

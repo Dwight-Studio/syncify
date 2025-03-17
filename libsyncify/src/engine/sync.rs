@@ -12,7 +12,7 @@ pub(crate) struct SyncManager {
 }
 
 impl SyncManager {
-    pub(crate) fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
+    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
         Self { topic, dir }
     }
 

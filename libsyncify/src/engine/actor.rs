@@ -74,40 +74,9 @@ impl DirectoryManager {
         dir: SharedDirectory,
         topic: GossipSender,
     ) {
-        // First, verify that the current state correspond to the what's in memory
-        let old_tree = match dir.inner.write().await.state.hash_tree() {
-            Ok(tree) => tree,
-            Err(e) => {
-                error!("Unable to create hash tree from saved state: {e}");
-                rx.close();
-                return;
-            }
-        };
-
-        //info!("{}", dir.inner.read().await.state);
-
-        // TODO: Add fast-forward sync
-        match HashTree::from_disk(&dir) {
-            Ok(tree) => {
-                info!("\n{}", old_tree);
-                info!("\n{}", tree);
-
-                if tree == old_tree {
-                    info!("State is up-to-date");
-                } else {
-                    info!("State is out-of-date");
-                }
-            }
-            Err(e) => {
-                error!("Unable to create hash tree: {e}");
-                rx.close();
-                return;
-            }
-        }
-
-        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone(), old_tree);
-        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone());
-        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone());
+        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone()).await;
+        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone()).await;
+        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone()).await;
 
         // Process the event
         loop {
