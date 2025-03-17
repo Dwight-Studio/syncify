@@ -1,3 +1,4 @@
+use crate::engine::actor::DirectoryManagerHandle;
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::link::Link;
@@ -122,10 +123,10 @@ impl Syncify {
         let dir = SharedDirectory {
             uuid,
             path: abs_path.clone(),
-            inner: Arc::new(RwLock::new(InnerSharedDirectory{
-                state: State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()),
-                neighbors: Vec::new()
-            })),
+            inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
+                State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()),
+                Vec::new()
+            ))),
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
         };
@@ -220,10 +221,10 @@ impl Syncify {
         let dir = SharedDirectory {
             uuid: link.uuid,
             path: abs_path.clone(),
-            inner: Arc::new(RwLock::new(InnerSharedDirectory{
-                state: State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()),
-                neighbors: link.neighbors
-            })),
+            inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
+                State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()),
+                link.neighbors
+            ))),
             sign_key: sign_key.clone(),
             verif_key: if let Some(key) = sign_key { key.verifying_key() } else { VerifyingKey::from_bytes(&link.key).unwrap() },
         };
@@ -271,9 +272,20 @@ impl SharedDirectory {
     }
 }
 
-pub struct InnerSharedDirectory {
-    state: State,
-    neighbors: Vec<[u8; 32]>
+pub(crate) struct InnerSharedDirectory {
+    pub(crate) state: State,
+    pub(crate) neighbors: Vec<[u8; 32]>,
+    pub(crate) handle: Option<DirectoryManagerHandle>
+}
+
+impl InnerSharedDirectory {
+    pub(crate) fn new(state: State, neighbors: Vec<[u8; 32]>) -> Self {
+        Self {
+            state,
+            neighbors,
+            handle: None,
+        }
+    }
 }
 
 #[derive(Error, Debug)]

@@ -22,6 +22,7 @@ pub mod state;
 pub mod fs;
 pub mod gossip;
 pub mod serial_state;
+pub mod sync;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 
@@ -128,6 +129,9 @@ impl Engine {
             // Create manager
             let manager =
                 DirectoryManager::new(dir.clone(), topic).map_err(EngineError::CannotWatch)?;
+
+            // Store the handle in the inner
+            dir.inner.write().await.handle = Some(manager.clone());
 
             self.managers.insert(dir.uuid, manager);
             Ok(())

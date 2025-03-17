@@ -175,10 +175,10 @@ impl StoreManager {
                                 cache.insert(uuid, SharedDirectory {
                                     uuid,
                                     path: PathBuf::from(path.value()),
-                                    inner: Arc::new(RwLock::new(InnerSharedDirectory {
+                                    inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                                         state,
-                                        neighbors: neighbors.value()
-                                    })),
+                                        neighbors.value()
+                                    ))),
                                     sign_key,
                                     verif_key,
                                 });

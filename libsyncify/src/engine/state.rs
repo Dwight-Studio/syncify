@@ -27,7 +27,8 @@ pub struct State {
 
 // TODO: Add optimization
 //  -> Fuse unshared changes if possible
-//  -> Compute when last modified date is > than the last save date
+//  -> Add a mutation buffer?
+//  -> Compute when last modified date is > than the last save date (for fastforward sync)
 impl State {
     pub fn new(directory_name: String) -> Self {
         let timestamp = Utc::now();
@@ -40,7 +41,7 @@ impl State {
                     content: vec![],
                     hash: [0; 32],
                 }),
-                action: Mutation::Init,
+                action: Mutation::Init { timestamp: Utc::now().timestamp() },
                 timestamp,
             })),
             timestamp,
@@ -220,27 +221,33 @@ impl Delta {
 /// Mutation action of a [`Delta`].
 #[derive(Clone, Debug, Archive, Serialize, Deserialize)]
 pub enum Mutation {
-    Init,
+    Init {
+        timestamp: i64
+    },
     Merge {
         other_head: [u8; 32],
+        timestamp: i64
     },
     Modify {
         file_path: String,
         file_hash: [u8; 32],
+        timestamp: i64
     },
     Move {
         from: String,
         to: String,
+        timestamp: i64
     },
     Remove {
         file_path: String,
+        timestamp: i64
     },
 }
 
 impl Display for Mutation {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
-            Mutation::Init => write!(f, "Initialized directory"),
+            Mutation::Init { .. } => write!(f, "Initialized directory"),
             Mutation::Merge { other_head, .. } => {
                 write!(f, "Merged branch {}", Hash::from_bytes(*other_head))
             }
@@ -308,11 +315,12 @@ impl HashTree {
     /// Construct a mutated version of self.
     fn apply(&self, mutation: &Mutation) -> Result<HashTree, StateError> {
         match mutation {
-            Mutation::Init => Ok(self.clone()),
+            Mutation::Init { .. } => Ok(self.clone()),
             Mutation::Merge { .. } => Ok(self.clone()),
             Mutation::Modify {
                 file_path,
                 file_hash,
+                ..
             } => Self::apply_and_update_parents(
                 self.clone(),
                 &mut |_: HashTree| -> HashTree {
@@ -324,7 +332,7 @@ impl HashTree {
                 },
                 file_path.split("/").peekable(),
             ),
-            Mutation::Move { from, to } => {
+            Mutation::Move { from, to, .. } => {
                 let extracted = self.goto(&mut from.split("/")).unwrap()[0];
                 let tree = Self::apply_and_update_parents(
                     self.clone(),
@@ -337,7 +345,7 @@ impl HashTree {
                     to.split("/").peekable(),
                 )
             }
-            Mutation::Remove { file_path } => Self::apply_and_update_parents(
+            Mutation::Remove { file_path, .. } => Self::apply_and_update_parents(
                 self.clone(),
                 &mut |_: HashTree| -> HashTree { Void },
                 file_path.split("/").peekable(),
@@ -513,6 +521,7 @@ impl HashTree {
                     match rtn.apply(&Mutation::Modify {
                         file_path: relative_path.unwrap().to_string_lossy().to_string(),
                         file_hash: *hasher.finalize().as_bytes(),
+                        timestamp: Utc::now().timestamp(),
                     }) {
                         Ok(new_rtn) => {
                             rtn = new_rtn;

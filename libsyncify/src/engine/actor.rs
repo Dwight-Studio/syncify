@@ -1,5 +1,5 @@
 use crate::engine::state::HashTree;
-use crate::engine::{fs, gossip};
+use crate::engine::{fs, gossip, sync, EngineError};
 use crate::SharedDirectory;
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
@@ -9,13 +9,14 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
 /// Actor responsible to handle all filesystem events for a [`SharedDirectory`].
 pub struct DirectoryManager {
-    _watcher: notify::RecommendedWatcher,
+    _watcher: Option<notify::RecommendedWatcher>,
     join_handle: Option<JoinHandle<()>>,
     handle: DirectoryManagerHandle,
 }
@@ -38,11 +39,18 @@ impl DirectoryManager {
 
         // Spawn new thread
         let path = dir.path();
-        let join_handle = Some(tokio::spawn(Self::handle_event(rx, dir, gossip_tx)));
+        let join_handle = Some(tokio::spawn(Self::handle_event(rx, dir.clone(), gossip_tx)));
 
         // Create and configure watcher
-        let mut _watcher = notify::recommended_watcher(handle.clone())?;
-        _watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
+        let mut _watcher = None;
+        if dir.is_read_only() {
+            info!("{} is in read only", dir.uuid)
+        } else {
+            info!("{} is writable, attaching a file watcher...", dir.uuid);
+            let mut watcher = notify::recommended_watcher(handle.clone())?;
+            watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
+            _watcher = Some(watcher);
+        }
 
         Ok(Self { _watcher, join_handle, handle })
     }
@@ -89,16 +97,23 @@ impl DirectoryManager {
                 return
             }
         }
+        
+        // Create a buffer for the mutations
+        let mut mutation_buffer = Vec::new();
 
         // Then, process the events
         while let Some(result) = rx.recv().await {
             match result {
                 Event::FileSystem(fs_event) => {
-                    fs::handle_events(&dir, &topic, fs_event).await
+                    fs::handle_events(&dir, &topic, fs_event, &mut mutation_buffer).await
                 },
 
                 Event::Gossip(gossip_event) => {
                     gossip::handle_events(&dir, &topic, gossip_event).await
+                }
+                
+                Event::Sync(sync_event) => {
+                    sync::handle_events(&dir, &topic, sync_event).await
                 }
 
                 Event::Shutdown => {
@@ -123,6 +138,12 @@ impl Deref for DirectoryManager {
 #[derive(Clone)]
 pub struct DirectoryManagerHandle {
     tx: mpsc::Sender<Event>,
+}
+
+impl DirectoryManagerHandle {
+    pub async fn send(&self, event: Event) -> Result<(), SendError<Event>> {
+        self.tx.send(event).await
+    }
 }
 
 impl EventHandler for DirectoryManagerHandle {
@@ -165,5 +186,10 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
 pub enum Event {
     FileSystem(notify::Event),
     Gossip(iroh_gossip::net::Event),
+    Sync(SyncEvent),
     Shutdown
+}
+
+pub enum SyncEvent {
+    
 }
