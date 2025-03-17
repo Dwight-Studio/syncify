@@ -1,4 +1,7 @@
+use crate::engine::fs::FileSystemManager;
+use crate::engine::gossip::GossipManager;
 use crate::engine::state::HashTree;
+use crate::engine::sync::SyncManager;
 use crate::engine::{fs, gossip, sync, EngineError};
 use crate::SharedDirectory;
 use futures::{Sink, StreamExt};
@@ -22,10 +25,7 @@ pub struct DirectoryManager {
 }
 
 impl DirectoryManager {
-    pub fn new(
-        dir: SharedDirectory,
-        topic: GossipTopic,
-    ) -> Result<Self, notify::Error> {
+    pub fn new(dir: SharedDirectory, topic: GossipTopic) -> Result<Self, notify::Error> {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
@@ -52,7 +52,11 @@ impl DirectoryManager {
             _watcher = Some(watcher);
         }
 
-        Ok(Self { _watcher, join_handle, handle })
+        Ok(Self {
+            _watcher,
+            join_handle,
+            handle,
+        })
     }
 
     /// Gracefully shutdown.
@@ -73,10 +77,10 @@ impl DirectoryManager {
             Err(e) => {
                 error!("Unable to create hash tree from saved state: {e}");
                 rx.close();
-                return
+                return;
             }
         };
-        
+
         //info!("{}", dir.inner.read().await.state);
 
         // TODO: Add fast-forward sync
@@ -84,7 +88,7 @@ impl DirectoryManager {
             Ok(tree) => {
                 info!("\n{}", old_tree);
                 info!("\n{}", tree);
-                
+
                 if tree == old_tree {
                     info!("State is up-to-date");
                 } else {
@@ -94,32 +98,27 @@ impl DirectoryManager {
             Err(e) => {
                 error!("Unable to create hash tree: {e}");
                 rx.close();
-                return
+                return;
             }
         }
-        
-        // Create a buffer for the mutations
-        let mut mutation_buffer = Vec::new();
+
+        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone());
+        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone());
+        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone());
 
         // Then, process the events
         while let Some(result) = rx.recv().await {
             match result {
-                Event::FileSystem(fs_event) => {
-                    fs::handle_events(&dir, &topic, fs_event, &mut mutation_buffer).await
-                },
+                Event::FileSystem(fs_event) => fs_manager.handle_events(fs_event).await,
 
-                Event::Gossip(gossip_event) => {
-                    gossip::handle_events(&dir, &topic, gossip_event).await
-                }
-                
-                Event::Sync(sync_event) => {
-                    sync::handle_events(&dir, &topic, sync_event).await
-                }
+                Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
+
+                Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
 
                 Event::Shutdown => {
                     rx.close();
                     debug!("Closing event channel for {}", dir.uuid())
-                },
+                }
             }
         }
         info!("Finished event processing for {}", dir.uuid());
@@ -162,14 +161,16 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         if self.tx.is_closed() {
             Poll::Ready(Err(iroh_gossip::net::Error::ReceiverClosed))
-        } else { 
+        } else {
             Poll::Ready(Ok(()))
         }
     }
 
     fn start_send(self: Pin<&mut Self>, item: iroh_gossip::net::Event) -> Result<(), Self::Error> {
         let fut = self.tx.clone();
-        tokio::spawn(async move { fut.send(Event::Gossip(item)).await; } );
+        tokio::spawn(async move {
+            fut.send(Event::Gossip(item)).await;
+        });
         Ok(())
     }
 
@@ -187,9 +188,7 @@ pub enum Event {
     FileSystem(notify::Event),
     Gossip(iroh_gossip::net::Event),
     Sync(SyncEvent),
-    Shutdown
+    Shutdown,
 }
 
-pub enum SyncEvent {
-    
-}
+pub enum SyncEvent {}
