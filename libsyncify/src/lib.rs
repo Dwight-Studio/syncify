@@ -198,7 +198,7 @@ impl Syncify {
                 return Err(NotADirectory(abs_path))
             }
             // Check if the directory is empty
-            if abs_path.read_dir().iter().next().is_some() {
+            if abs_path.read_dir().iter().nth(1).is_some() {
                 return Err(DirectoryNotEmpty(abs_path))
             }
             // Check if the user has write access in the directory

@@ -285,10 +285,10 @@ pub enum HashTree {
 impl HashTree {
     /// Get a reference to the hash tree at the path.
     pub fn get(&self, file_path: &str) -> Option<&HashTree> {
-        self.get_recursive(&mut file_path.split("/"))
+        self.get_recursive(&mut file_path.split("/").peekable())
     }
 
-    fn get_recursive<'a, A>(&self, file_path_iter: &mut A) -> Option<&HashTree>
+    fn get_recursive<'a, A>(&self, file_path_iter: &mut Peekable<A>) -> Option<&HashTree>
     where
         A: Iterator<Item = &'a str> + Clone,
     {
@@ -297,7 +297,7 @@ impl HashTree {
         match &self {
             Void => None,
             File { name, .. } => {
-                if name == path {
+                if name == path && file_path_iter.peek().is_none() {
                     Some(self)
                 } else {
                     None

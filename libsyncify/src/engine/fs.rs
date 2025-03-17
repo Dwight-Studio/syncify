@@ -96,7 +96,7 @@ impl FileSystemManager {
 
         for n_mut in &self.mutations_buffer {
 
-            // Fuse Mod+Mod and Rem+Mod
+            // Fuse Mod then Mod, Mod then Rem and Rem then Mod
             working_buffer.retain(|o_mut| match (n_mut, o_mut) {
                 (
                     Mutation::Modify {
@@ -116,6 +116,17 @@ impl FileSystemManager {
                         ..
                     },
                     Mutation::Modify {
+                        file_path: o_path,
+                        timestamp: o_time,
+                        ..
+                    },
+                ) | (
+                    Mutation::Modify {
+                        file_path: n_path,
+                        timestamp: n_time,
+                        ..
+                    },
+                    Mutation::Remove {
                         file_path: o_path,
                         timestamp: o_time,
                         ..

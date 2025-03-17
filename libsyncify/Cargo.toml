@@ -30,6 +30,6 @@ base64 = "0.22.1"
 blake3 = { version = "1.6.1", features = ["std", "mmap", "rayon"] }
 futures = "0.3.31"
 walkdir = "2.5.0"
-rkyv = "0.8.10"
+rkyv = { version = "0.8.10", features = ["default", "unaligned"] }
 redb = "2.4.0"
 chrono = { version = "0.4.40", features = ["default", "rkyv-64", "rkyv-validation"] }

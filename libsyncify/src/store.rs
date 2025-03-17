@@ -3,7 +3,8 @@ use crate::store::keyring::{Keyring, Keys};
 use crate::{get_app_dir, InnerSharedDirectory, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use chacha20poly1305::aead::OsRng;
+use blake3::Hash;
+use chacha20poly1305::aead::{Buffer, OsRng};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use ::keyring::Error;
@@ -164,7 +165,7 @@ impl StoreManager {
                         let uuid_string = uuid.to_string();
 
                         // Reading state table
-                        let state_table_def: TableDefinition<[u8; 32], SerialDelta> = TableDefinition::new(uuid_string.as_str());
+                        let state_table_def: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new(uuid_string.as_str());
                         if transaction.list_tables().map_err(StoreError::Storage)?
                             .map(|e| e.name().to_string()).any(|e| e == uuid.to_string()) {
                             let state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
@@ -243,6 +244,7 @@ impl StoreManager {
         self.cache.values().cloned().collect()
     }
 
+    //noinspection RsTraitObligations
     /// Flush cache to database.
     pub async fn flush(&self) -> Result<(), StoreError> {
         info!("Saving store...");
@@ -267,13 +269,21 @@ impl StoreManager {
 
                 let uuid_string = uuid.to_string();
 
-                let state_table_def: TableDefinition<[u8; 32], SerialDelta> = TableDefinition::new(uuid_string.as_str());
+                let state_table_def: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
                 
                 let serial_state = SerialState::from(&inner.state);
 
                 for (hash, serial_delta) in serial_state.pool() {
-                    state_table.insert(hash, serial_delta).map_err(StoreError::Storage)?;
+                    match rkyv::to_bytes::<rkyv::rancor::Error>(&serial_delta) {
+                        Ok(value) => {
+                            state_table.insert(hash, value.as_slice()).map_err(StoreError::Storage)?
+                        },
+                        Err(e) => {
+                            error!("Could not serialize {} in {}", Hash::from_bytes(hash), uuid);
+                            return Err(StoreError::Serialize(e))
+                        },
+                    };
                 }
 
                 if inner.state.prune() {
@@ -310,5 +320,8 @@ pub enum StoreError {
     Storage(StorageError),
 
     #[error("{0}")]
-    Commit(CommitError)
+    Commit(CommitError),
+
+    #[error("{0}")]
+    Serialize(rkyv::rancor::Error)
 }

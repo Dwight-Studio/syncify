@@ -1,9 +1,12 @@
 use crate::engine::state::{Delta, HashTree, Mutation, State, MAX_LOADED_DELTAS};
 use blake3::Hash;
 use chrono::{DateTime, Utc};
+use log::{error, info};
 use redb::{ReadableTable, Table, TypeName, Value};
+use rkyv::rancor::{BoxedError, Error, Failure, Panic};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
 /// Serializable form of [`State`].
@@ -11,12 +14,16 @@ use std::sync::{Arc, RwLock};
 pub struct SerialState {
     head: [u8; 32],
     pool: HashMap<[u8; 32], SerialDelta>,
-    timestamp: i64
+    timestamp: i64,
 }
 
 impl SerialState {
     pub fn new(head: [u8; 32], pool: HashMap<[u8; 32], SerialDelta>, timestamp: i64) -> Self {
-        Self { head, pool, timestamp }
+        Self {
+            head,
+            pool,
+            timestamp,
+        }
     }
 
     pub fn head(&self) -> [u8; 32] {
@@ -27,72 +34,62 @@ impl SerialState {
         self.pool
     }
 
-    pub fn build_from_table(state_table: Table<[u8; 32], SerialDelta>, head_hash: [u8; 32]) -> Option<State> {
+    //noinspection RsTraitObligations
+    pub fn build_from_table(
+        state_table: Table<[u8; 32], &[u8]>,
+        head_hash: [u8; 32],
+    ) -> Option<State> {
         if let Ok(Some(head_access)) = state_table.get(&head_hash) {
-            let head = head_access.value();
-            let mut pool = HashMap::new();
+            match rkyv::from_bytes::<SerialDelta, Error>(head_access.value()) {
+                Ok(head) => {
+                    let mut pool = HashMap::new();
 
-            // Insert head into the pool
-            pool.insert(head_hash, head.clone());
+                    // Insert head into the pool
+                    pool.insert(head_hash, head.clone());
 
-            let mut parent_hash = head.parent;
+                    let mut parent_hash = head.parent;
 
-            for _ in 0..MAX_LOADED_DELTAS {
-                if let Ok(Some(parent_access)) = state_table.get(&parent_hash) {
-                    let parent = parent_access.value();
-                    pool.insert(parent_hash, parent.clone());
+                    for _ in 0..MAX_LOADED_DELTAS {
+                        if let Ok(Some(parent_access)) = state_table.get(&parent_hash) {
+                            match rkyv::from_bytes::<SerialDelta, Error>(parent_access.value()) {
+                                Ok(parent) => {
+                                    pool.insert(parent_hash, parent.clone());
 
-                    // Check if it reached the root
-                    if parent.hash != parent.parent {
-                        parent_hash = parent.parent;
-                    } else {
-                        break
+                                    // Check if it reached the root
+                                    if parent.hash != parent.parent {
+                                        parent_hash = parent.parent;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Could not deserialize delta {} ({})", Hash::from_bytes(parent_hash), e);
+                                    return None;
+                                }
+                            };
+                        } else {
+                            break;
+                        }
                     }
-                } else {
-                    break
-                }
-            }
 
-            if pool.len() != 0 {
-                Some(State::from(SerialState::new(head_hash, pool, Utc::now().timestamp())))
-            } else {
-                None
+                    if pool.len() != 0 {
+                        Some(State::from(SerialState::new(
+                            head_hash,
+                            pool,
+                            Utc::now().timestamp(),
+                        )))
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    error!("Could not deserialize head {} ({})", Hash::from_bytes(head_hash), e);
+                    None
+                }
             }
         } else {
             None
         }
-    }
-}
-
-impl Value for SerialState {
-    type SelfType<'a> = SerialState;
-    type AsBytes<'a> = &'a [u8];
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    //noinspection RsTraitObligations
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        let archived = rkyv::access::<ArchivedSerialState, rkyv::rancor::Error>(data).unwrap();
-        rkyv::deserialize::<SerialState, rkyv::rancor::Error>(archived).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-    where
-        Self: 'b,
-    {
-        rkyv::to_bytes::<rkyv::rancor::Error>(value)
-            .unwrap()
-            .to_vec()
-            .leak()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new("SerialState")
     }
 }
 
@@ -112,7 +109,7 @@ impl From<&State> for SerialState {
                         hash: *head.hash.as_bytes(),
                         hash_tree_cache: head.hash_tree_cache.clone(),
                         action: head.action.clone(),
-                        timestamp: head.timestamp.timestamp()
+                        timestamp: head.timestamp.timestamp(),
                     },
                 );
                 break;
@@ -125,7 +122,7 @@ impl From<&State> for SerialState {
                         hash: *head.hash.as_bytes(),
                         hash_tree_cache: head.hash_tree_cache.clone(),
                         action: head.action.clone(),
-                        timestamp: head.timestamp.timestamp()
+                        timestamp: head.timestamp.timestamp(),
                     },
                 );
             }
@@ -134,7 +131,7 @@ impl From<&State> for SerialState {
         Self {
             head: *value.head.read().unwrap().hash.as_bytes(),
             pool,
-            timestamp: value.timestamp.timestamp()
+            timestamp: value.timestamp.timestamp(),
         }
     }
 }
@@ -142,8 +139,10 @@ impl From<&State> for SerialState {
 impl From<SerialState> for State {
     fn from(value: SerialState) -> Self {
         State {
-            head: Arc::new(RwLock::new(from_recursive(value.head, &value.pool).unwrap())),
-            timestamp: DateTime::<Utc>::from_timestamp(value.timestamp, 0).unwrap()
+            head: Arc::new(RwLock::new(
+                from_recursive(value.head, &value.pool).unwrap(),
+            )),
+            timestamp: DateTime::<Utc>::from_timestamp(value.timestamp, 0).unwrap(),
         }
     }
 }
@@ -160,7 +159,7 @@ fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) ->
                 hash: Hash::from_bytes(head.hash),
                 hash_tree_cache: head.hash_tree_cache.clone(),
                 action: head.action.clone(),
-                timestamp: DateTime::<Utc>::from_timestamp(head.timestamp, 0).unwrap()
+                timestamp: DateTime::<Utc>::from_timestamp(head.timestamp, 0).unwrap(),
             });
         }
     }
@@ -170,7 +169,7 @@ fn from_recursive(head_hash: [u8; 32], pool: &HashMap<[u8; 32], SerialDelta>) ->
         hash: Hash::from_bytes(head.hash),
         hash_tree_cache: head.hash_tree_cache.clone(),
         action: head.action.clone(),
-        timestamp: DateTime::<Utc>::from_timestamp(head.timestamp, 0).unwrap()
+        timestamp: DateTime::<Utc>::from_timestamp(head.timestamp, 0).unwrap(),
     })
 }
 
@@ -181,37 +180,5 @@ pub struct SerialDelta {
     hash: [u8; 32],
     hash_tree_cache: Option<HashTree>,
     action: Mutation,
-    timestamp: i64
-}
-
-impl Value for SerialDelta {
-    type SelfType<'a> = SerialDelta;
-    type AsBytes<'a> = &'a [u8];
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    //noinspection RsTraitObligations
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        let archived = rkyv::access::<ArchivedSerialDelta, rkyv::rancor::Error>(data).unwrap();
-        rkyv::deserialize::<SerialDelta, rkyv::rancor::Error>(archived).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-    where
-        Self: 'b,
-    {
-        rkyv::to_bytes::<rkyv::rancor::Error>(value)
-            .unwrap()
-            .to_vec()
-            .leak()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new("SerialDelta")
-    }
+    timestamp: i64,
 }
