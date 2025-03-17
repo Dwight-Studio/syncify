@@ -5,6 +5,7 @@ use crate::engine::sync::SyncManager;
 use crate::engine::{fs, gossip, sync};
 use crate::SharedDirectory;
 use futures::{Sink, StreamExt};
+use iroh::endpoint::SendStream;
 use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info};
 use notify::{EventHandler, Watcher};
@@ -227,4 +228,6 @@ pub enum Event {
     Shutdown,
 }
 
-pub enum SyncEvent {}
+pub enum SyncEvent {
+    RequestHashes(SendStream)
+}

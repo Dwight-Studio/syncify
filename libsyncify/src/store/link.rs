@@ -8,13 +8,12 @@ use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use uuid::{Bytes, Uuid};
+use uuid::Uuid;
 
 const LINK_PREFIX: &str = "syncify://";
 
 #[derive(Archive, Serialize, Deserialize)]
 pub struct Link {
-    #[rkyv(with = UuidDef)]
     pub(crate) uuid: Uuid,
     pub(crate) permission: SharedDirPermission,
     pub(crate) key: [u8; 32],
@@ -100,22 +99,5 @@ impl LinkBuilder {
     pub fn permission(&mut self, permission: SharedDirPermission) -> &mut Self {
         self.permission = permission;
         self
-    }
-}
-
-#[derive(Archive, Serialize, Deserialize)]
-#[rkyv(remote = uuid::Uuid)]
-struct UuidDef(
-    #[rkyv(getter = get_bytes)]
-    Bytes
-);
-
-fn get_bytes(uuid: &Uuid) -> Bytes {
-    uuid.into_bytes()
-}
-
-impl From<UuidDef> for Uuid {
-    fn from(value: UuidDef) -> Self {
-        Uuid::from_bytes(value.0)
     }
 }
