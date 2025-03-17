@@ -34,8 +34,9 @@ impl SyncManager {
         let inner_dir = self.dir.inner.read().await;
         for node in inner_dir.neighbors.clone() {
             if node.1 {
-                info!("Attempting to sync with {}", node.1);
-                match self.syncify_prot.connect(NodeId::from_bytes(&node.0).unwrap()).await {
+                let node_id = NodeId::from_bytes(&node.0).unwrap();
+                info!("Attempting to sync with {}", &node_id);
+                match self.syncify_prot.connect(node_id).await {
                     Ok(mut conn) => {
                         let request = SyncifyPacket::Request {
                             head: *inner_dir.state.head().hash.as_bytes()

@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-const HEADER_SIZE: usize = 48;
+const HEADER_SIZE: usize = 48 + 1;
 
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize)]
@@ -72,6 +72,7 @@ impl ProtocolHandler for SyncifyProtocol {
                     Some(dir) => match dir.inner.write().await.handle.clone() {
                         None => { conn.close(1, SyncifyProtocolError::ProcessingError) }
                         Some(handle) => {
+                            info!("Sending event RequestDeltas");
                             handle.send(Sync(SyncEvent::RequestDeltas(conn))).await?;
                         }
                     },
@@ -100,6 +101,8 @@ impl SyncifyConnection {
     pub async fn open_new(node_id: NodeId, endpoint: Endpoint) -> Result<Self, anyhow::Error> {
         let connection = endpoint.connect(NodeAddr::new(node_id), SYNCIFY_ALPN).await?;
         let (tx, rx) = connection.open_bi().await?;
+
+        info!("Opening request to {}", node_id);
         
         Ok(Self{connection, tx, rx})
     }
@@ -107,13 +110,12 @@ impl SyncifyConnection {
     pub async fn accept_new(connecting: Connecting) -> Result<Self, anyhow::Error> {
         let connection = connecting.await?;
         let (tx, rx) = connection.accept_bi().await?;
-        info!("Incomming sync request from {}", connection.remote_node_id()?);
+        info!("Incoming sync request from {}", connection.remote_node_id()?);
 
         Ok(Self{connection, tx, rx})
     }
 
     pub async fn send_packet(&mut self, dir: SharedDirectory, packet: SyncifyPacket) {
-        info!("Sending packet...");
         let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
         
@@ -122,14 +124,14 @@ impl SyncifyConnection {
 
         let header = SyncifyPacket::Header {packet_size: crypted_bytes.len() as u64, nonce: <[u8; 24]>::try_from(nonce.as_slice()).unwrap(), uuid: dir.uuid};
         let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
-
+        
         self.tx.write(header_bytes.as_slice()).await.unwrap();
         self.tx.write(crypted_bytes.as_slice()).await.unwrap();
+        self.tx.stopped().await;
     }
 
     //noinspection RsTraitObligations
     pub async fn receive_packet(&mut self, store: &Arc<RwLock<StoreManager>>) -> Result<(Uuid, SyncifyPacket), SyncifyProtocolError> {
-        info!("Receiving packet...");
         let mut header_data = [0u8; HEADER_SIZE];
         self.rx.read_exact(&mut header_data).await.map_err(SyncifyProtocolError::ReadError)?;
 
@@ -163,7 +165,7 @@ impl SyncifyConnection {
 impl Drop for SyncifyConnection {
     fn drop(&mut self) {
         if self.connection.close_reason().is_none() {
-            self.connection.close(VarInt::from_u32(1), b"Closed");
+            self.connection.close(VarInt::from_u32(1), b"Connection dropped!");
         }
     }
 }
