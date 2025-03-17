@@ -1,13 +1,11 @@
 use crate::engine::fs::FileSystemManager;
 use crate::engine::gossip::GossipManager;
-use crate::engine::state::HashTree;
+use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
 use crate::engine::sync::SyncManager;
-use crate::engine::{fs, gossip, sync};
 use crate::SharedDirectory;
 use futures::{Sink, StreamExt};
-use iroh::endpoint::SendStream;
 use iroh_gossip::net::{GossipSender, GossipTopic};
-use log::{debug, error, info};
+use log::{debug, info};
 use notify::{EventHandler, Watcher};
 use std::ops::Deref;
 use std::pin::Pin;
@@ -28,7 +26,7 @@ pub struct DirectoryManager {
 }
 
 impl DirectoryManager {
-    pub fn new(dir: SharedDirectory, topic: GossipTopic) -> Result<Self, notify::Error> {
+    pub fn new(dir: SharedDirectory, topic: GossipTopic, syncify_prot: SyncifyProtocol) -> Result<Self, notify::Error> {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
@@ -42,7 +40,7 @@ impl DirectoryManager {
 
         // Spawn new thread
         let path = dir.path();
-        let join_handle = Some(tokio::spawn(Self::handle_event(rx, dir.clone(), gossip_tx)));
+        let join_handle = Some(tokio::spawn(Self::handle_event(rx, dir.clone(), gossip_tx, syncify_prot, handle.clone())));
 
         // Create and configure watcher
         let mut _watcher = None;
@@ -73,10 +71,12 @@ impl DirectoryManager {
         mut rx: mpsc::Receiver<Event>,
         dir: SharedDirectory,
         topic: GossipSender,
+        syncify_prot: SyncifyProtocol,
+        handle: DirectoryManagerHandle
     ) {
         let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone()).await;
-        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone()).await;
-        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone()).await;
+        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), handle.clone()).await;
+        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), syncify_prot).await;
 
         // Process the event
         loop {
@@ -198,5 +198,6 @@ pub enum Event {
 }
 
 pub enum SyncEvent {
-    RequestHashes(SendStream)
+    TriggerInitialSync,
+    RequestDeltas(SyncifyConnection)
 }

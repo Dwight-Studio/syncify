@@ -1,10 +1,10 @@
-use crate::engine::serial_state::{SerialDelta, SerialState};
+use crate::engine::serial_state::SerialState;
 use crate::store::keyring::{Keyring, Keys};
 use crate::{get_app_dir, InnerSharedDirectory, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use blake3::Hash;
-use chacha20poly1305::aead::{Buffer, OsRng};
+use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use ::keyring::Error;
@@ -178,7 +178,7 @@ impl StoreManager {
                                     path: PathBuf::from(path.value()),
                                     inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                                         state,
-                                        neighbors.value()
+                                        neighbors.value().iter().map(|e| (*e, false)).collect()
                                     ))),
                                     sign_key,
                                     verif_key,
@@ -265,7 +265,7 @@ impl StoreManager {
                 // Update index tables
                 base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
                 head_table.insert(uuid.as_bytes(), inner.state.head().hash().as_bytes()).map_err(StoreError::Storage)?;
-                neighbor_table.insert(uuid.as_bytes(), inner.neighbors.clone()).map_err(StoreError::Storage)?;
+                neighbor_table.insert(uuid.as_bytes(), inner.neighbors.keys().map(|e| *e).collect::<Vec<[u8; 32]>>()).map_err(StoreError::Storage)?;
 
                 let uuid_string = uuid.to_string();
 

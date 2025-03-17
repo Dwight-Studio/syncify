@@ -3,7 +3,7 @@ use crate::engine::state::StateError::NotADirectory;
 use crate::SharedDirectory;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
-use log::{error, info, warn};
+use log::{error, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::fmt::{Display, Formatter};

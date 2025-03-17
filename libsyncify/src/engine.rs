@@ -30,6 +30,7 @@ pub struct Engine {
     router: Router,
     gossip: Gossip,
     blobs: Blobs<iroh_blobs::store::fs::Store>,
+    syncify_prot: SyncifyProtocol,
     managers: HashMap<Uuid, DirectoryManager>,
 }
 
@@ -72,11 +73,12 @@ impl Engine {
 
         let syncify_prot = SyncifyProtocol {
             store: store.clone(),
+            endpoint: builder.endpoint().clone()
         };
 
         let mut engine = Self {
             router: builder
-                .accept(protocol::SYNCIFY_ALPN, syncify_prot)
+                .accept(protocol::SYNCIFY_ALPN, syncify_prot.clone())
                 .accept(iroh_blobs::ALPN, blobs.clone())
                 .accept(iroh_gossip::ALPN, gossip.clone())
                 .spawn()
@@ -84,6 +86,7 @@ impl Engine {
                 .map_err(EngineError::Router)?,
             blobs,
             gossip,
+            syncify_prot,
             managers: HashMap::new(),
         };
 
@@ -123,12 +126,12 @@ impl Engine {
                 TopicId::from_bytes(
                     <[u8; 32]>::try_from(dir.uuid().as_simple().to_string().as_bytes()).unwrap()
                 ),
-                dir.inner.read().await.neighbors.iter().map(|n| { NodeId::from_bytes(n).unwrap() }).collect(),
+                dir.inner.read().await.neighbors.keys().map(|n| { NodeId::from_bytes(n).unwrap() }).collect(),
             ).map_err(EngineError::Gossip)?;
 
             // Create manager
             let manager =
-                DirectoryManager::new(dir.clone(), topic).map_err(EngineError::CannotWatch)?;
+                DirectoryManager::new(dir.clone(), topic, self.syncify_prot.clone()).map_err(EngineError::CannotWatch)?;
 
             // Store the handle in the inner
             dir.inner.write().await.handle = Some(manager.clone());

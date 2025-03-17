@@ -1,36 +1,52 @@
 use crate::engine::actor::SyncEvent;
-use crate::engine::protocol::SyncifyPacket;
+use crate::engine::protocol::{SyncifyPacket, SyncifyProtocol};
 use crate::SharedDirectory;
-use chacha20poly1305::aead::{Aead, OsRng};
-use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305};
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
-use rkyv::rancor::Error;
+use log::{error, info};
 
 pub(crate) struct SyncManager {
-    topic: GossipSender,
-    dir: SharedDirectory,
+    pub(crate) topic: GossipSender,
+    pub(crate) dir: SharedDirectory,
+    pub(crate) syncify_prot: SyncifyProtocol
 }
 
 impl SyncManager {
-    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
-        Self { topic, dir }
+    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory, syncify_prot: SyncifyProtocol) -> Self {
+        Self { topic, dir, syncify_prot }
     }
 
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
         match sync_event { 
-            SyncEvent::RequestHashes(mut tx) => {
-                let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.verif_key.to_bytes()));
-                let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-
+            SyncEvent::RequestDeltas(mut conn) => {
                 let packet = SyncifyPacket::Failed;
-                let packet_bytes = rkyv::to_bytes::<Error>(&packet).unwrap();
-                let crypted_bytes = cipher.encrypt(&nonce, &*packet_bytes).unwrap();
                 
-                let header = SyncifyPacket::Header {packet_size: packet_bytes.len() as u64, nonce: <[u8; 24]>::try_from(nonce.as_slice()).unwrap(), uuid: self.dir.uuid};
-                let header_bytes = rkyv::to_bytes::<Error>(&header).unwrap();
-                
-                tx.write(header_bytes.as_slice()).await.unwrap();
-                tx.write(crypted_bytes.as_slice()).await.unwrap();
+                conn.send_packet(self.dir.clone(), packet).await;
+            },
+            SyncEvent::TriggerInitialSync => {
+                self.initial_sync().await;
+            }
+        }
+    }
+    
+    pub(crate) async fn initial_sync(&self) {
+        let inner_dir = self.dir.inner.read().await;
+        for node in inner_dir.neighbors.clone() {
+            if node.1 {
+                info!("Attempting to sync with {}", node.1);
+                match self.syncify_prot.connect(NodeId::from_bytes(&node.0).unwrap()).await {
+                    Ok(mut conn) => {
+                        let request = SyncifyPacket::Request {
+                            head: *inner_dir.state.head().hash.as_bytes()
+                        };
+                        conn.send_packet(self.dir.clone(), request).await;
+                    }
+                    Err(err) => {
+                        error!("{}", err);
+                    }
+                }
+                break;
             }
         }
     }

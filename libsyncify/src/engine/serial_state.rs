@@ -1,12 +1,11 @@
 use crate::engine::state::{Delta, HashTree, Mutation, State, MAX_LOADED_DELTAS};
 use blake3::Hash;
 use chrono::{DateTime, Utc};
-use log::{error, info};
-use redb::{ReadableTable, Table, TypeName, Value};
-use rkyv::rancor::{BoxedError, Error, Failure, Panic};
+use log::error;
+use redb::{ReadableTable, Table};
+use rkyv::rancor::{Error, Panic};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
 /// Serializable form of [`State`].

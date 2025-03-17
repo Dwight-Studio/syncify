@@ -9,6 +9,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use log::info;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -125,7 +126,7 @@ impl Syncify {
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                 State::new(abs_path.file_name().unwrap().to_string_lossy().to_string()),
-                Vec::new()
+                HashMap::new()
             ))),
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
@@ -274,12 +275,12 @@ impl SharedDirectory {
 
 pub(crate) struct InnerSharedDirectory {
     pub(crate) state: State,
-    pub(crate) neighbors: Vec<[u8; 32]>,
+    pub(crate) neighbors: HashMap<[u8; 32], bool>,
     pub(crate) handle: Option<DirectoryManagerHandle>
 }
 
 impl InnerSharedDirectory {
-    pub(crate) fn new(state: State, neighbors: Vec<[u8; 32]>) -> Self {
+    pub(crate) fn new(state: State, neighbors: HashMap<[u8; 32], bool>) -> Self {
         Self {
             state,
             neighbors,
