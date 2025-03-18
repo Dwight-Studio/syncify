@@ -26,7 +26,7 @@ use blake3::Hash;
 use chrono::{DateTime, Utc};
 use log::error;
 use redb::{ReadableTable, Table};
-use rkyv::rancor::{Error, Panic};
+use rkyv::rancor::Error;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

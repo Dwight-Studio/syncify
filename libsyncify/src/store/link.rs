@@ -34,9 +34,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// The prefix used for invitation link generation
 const LINK_PREFIX: &str = "syncify://";
 
 #[derive(Archive, Serialize, Deserialize)]
+/// The structure representing an invitation Link 
 pub struct Link {
     pub(crate) uuid: Uuid,
     pub(crate) permission: SharedDirPermission,
@@ -45,6 +47,10 @@ pub struct Link {
 }
 
 impl Link {
+    /// This function returns a builder to generate invitation link
+    /// The default values are :
+    ///  - permission = SharedDirPermission::Write
+    ///  - uuid = Default of Uuid struct
     pub fn builder(syncify: Syncify) -> LinkBuilder {
         LinkBuilder {
             store: syncify.store,
@@ -80,6 +86,7 @@ impl FromStr for Link {
     }
 }
 
+/// Builder structure to generate invitation links
 pub struct LinkBuilder {
     store: Arc<RwLock<StoreManager>>,
     uuid: Uuid,
@@ -87,6 +94,7 @@ pub struct LinkBuilder {
 }
 
 impl LinkBuilder {
+    /// Build the invitation link
     pub async fn build(&self) -> Result<Link, SyncifyError> {
         let dir = self.store.read().await.get_shared_dir(&self.uuid);
 
@@ -115,11 +123,13 @@ impl LinkBuilder {
         }
     }
 
+    /// Sets the uuid that will be used in the invitation link
     pub fn dir_uuid(&mut self, uuid: Uuid) -> &mut Self {
         self.uuid = uuid;
         self
     }
 
+    /// Sets the shared directory permission (SharedDirPermission::Write or SharedDirPermission::ReadOnly)
     pub fn permission(&mut self, permission: SharedDirPermission) -> &mut Self {
         self.permission = permission;
         self

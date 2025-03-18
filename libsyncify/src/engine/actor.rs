@@ -119,8 +119,9 @@ impl DirectoryManager {
                     }
                 }
             };
-
+            
             if let Some(event) = result {
+                info!("Event!");
                 match event {
                     // FileSystem
                     Event::FileSystem(fs_event) => fs_manager.handle_events(fs_event).await,
@@ -129,7 +130,7 @@ impl DirectoryManager {
                     // Gossip
                     Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
 
-                    // Protocole
+                    // Protocol
                     Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
 
                     // Actor
@@ -213,7 +214,7 @@ pub enum Event {
     // Gossip
     Gossip(iroh_gossip::net::Event),
 
-    // Protocole
+    // Protocol
     Sync(SyncEvent),
 
     // Actor

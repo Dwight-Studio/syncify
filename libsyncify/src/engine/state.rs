@@ -32,7 +32,7 @@ use std::cmp::PartialEq;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::iter::Peekable;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
 use walkdir::WalkDir;
 

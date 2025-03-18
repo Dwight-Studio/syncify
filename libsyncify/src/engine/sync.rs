@@ -24,9 +24,8 @@
 use crate::engine::actor::SyncEvent;
 use crate::engine::protocol::{SyncifyPacket, SyncifyProtocol};
 use crate::engine::serial_state::SerialState;
-use crate::engine::state::{State, MAX_LOADED_DELTAS};
+use crate::engine::state::MAX_LOADED_DELTAS;
 use crate::SharedDirectory;
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
 use log::{error, info};
@@ -44,9 +43,10 @@ impl SyncManager {
     }
 
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
-        match sync_event { 
+        match sync_event {
             SyncEvent::RequestDeltas(mut conn, hash) => {
                 let packet = {
+                    info!("Requested: Hash from Requester is {:?}. Hash from Requested is: {:?}", hash, self.dir.inner.read().await.state.hash());
                     if self.dir.inner.read().await.state.hash() == hash {
                         SyncifyPacket::Success {
                             pool: HashMap::new()
@@ -63,8 +63,9 @@ impl SyncManager {
                         }
                     }
                 };
-
-                conn.send_packet(self.dir.clone(), packet).await;
+                info!("Requested: Handled RequestDeltas event! Sending success/failed response...");
+                conn.send_packet(self.dir.clone(), packet).await.unwrap();
+                info!("Requested: Sent success/failed response!");
             },
             SyncEvent::TriggerInitialSync => {
                 self.initial_sync().await;
@@ -77,16 +78,27 @@ impl SyncManager {
         for node in inner_dir.neighbors.clone() {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                info!("Attempting to sync with {}", &node_id);
-                match self.syncify_prot.connect(node_id).await {
+                info!("Requester: Attempting to sync with {}", &node_id);
+                match self.syncify_prot.connect(node_id, self.dir.uuid).await {
                     Ok(mut conn) => {
                         let request = SyncifyPacket::Request {
                             head: *inner_dir.state.hash().as_bytes()
                         };
-                        conn.send_packet(self.dir.clone(), request).await;
+                        let dir = self.dir.clone();
+                        tokio::spawn(async move {
+                            info!("Requester: Sending request...");
+                            conn.send_packet(dir.clone(), request).await.unwrap();
+                            info!("Requester: Finished sending request!");
+                            match conn.receive_packet(dir.clone()).await {
+                                Ok(packet) => {info!("Requester: {:?}: {:?}", packet.0, packet.1)}
+                                Err(err) => { error!("{}", err); }
+                            }
+                            info!("Requester: Received success/failed response!");
+                        });
+                        
                     }
                     Err(err) => {
-                        error!("{}", err);
+                        error!("Requester: Error while connecting {}", err);
                     }
                 }
                 break;
