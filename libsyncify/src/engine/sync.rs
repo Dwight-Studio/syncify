@@ -29,6 +29,8 @@ use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
 use log::{error, info};
 use std::collections::HashMap;
+use std::time::Duration;
+use tokio::time::sleep;
 
 pub(crate) struct SyncManager {
     pub(crate) topic: GossipSender,
@@ -44,6 +46,7 @@ impl SyncManager {
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
         match sync_event {
             SyncEvent::RequestDeltas(mut conn, hash) => {
+                self.dir.inner.write().await.set_received_init();
                 let packet = {
                     info!("Requested: Hash from Requester is {:?}. Hash from Requested is: {:?}", hash, self.dir.inner.read().await.state.hash());
                     if self.dir.inner.read().await.state.hash() == hash {
@@ -76,30 +79,50 @@ impl SyncManager {
         for node in inner_dir.neighbors.clone() {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                info!("Requester: Attempting to sync with {}", &node_id);
-                match self.syncify_prot.connect(node_id).await {
-                    Ok(mut conn) => {
-                        let request = SyncifyPacket::Request {
-                            head: *inner_dir.state.hash().as_bytes()
-                        };
-                        let dir = self.dir.clone();
-                        tokio::spawn(async move {
-                            info!("Requester: Sending request...");
-                            conn.send_packet(dir.clone(), request).await.unwrap();
-                            info!("Requester: Finished sending request!");
-                            match conn.receive_packet(dir.clone()).await {
-                                Ok(packet) => {info!("Requester: {:?}: {:?}", packet.0, packet.1)}
-                                Err(err) => { error!("{}", err); }
-                            }
-                            info!("Requester: Received success/failed response!");
-                        });
-                        
-                    }
-                    Err(err) => {
-                        error!("Requester: Error while connecting {}", err);
-                    }
+                let dir = self.dir.clone();
+                let syncify_prot = self.syncify_prot.clone();
+                
+                if self.syncify_prot.endpoint.node_id() > node_id {
+                    Self::start_sync(node_id, syncify_prot, dir).await;
+                } else {
+                    tokio::spawn(async move {
+                        sleep(Duration::from_secs(2)).await; // Wait 2 seconds for RequestDeltas
+                        let received_request = dir.inner.read().await.received_init();
+
+                        if !received_request {
+                            info!("Requester: No sync request received. Initiating sync myself.");
+                            Self::start_sync(node_id, syncify_prot, dir).await;
+                        } else {
+                            info!("Requester: Sync request received. No need to start sync.");
+                        }
+                    });
                 }
                 break;
+            }
+        }
+    }
+    
+    async fn start_sync(node_id: NodeId, syncify_prot: SyncifyProtocol, dir: SharedDirectory) {
+        info!("Requester: Attempting to sync with {}", &node_id);
+        match syncify_prot.connect(node_id).await {
+            Ok(mut conn) => {
+                let request = SyncifyPacket::Request {
+                    head: *dir.inner.read().await.state.hash().as_bytes()
+                };
+                let dir = dir.clone();
+                tokio::spawn(async move {
+                    info!("Requester: Sending request...");
+                    conn.send_packet(dir.clone(), request).await.unwrap();
+                    info!("Requester: Finished sending request!");
+                    match conn.receive_packet(dir.clone()).await {
+                        Ok(packet) => { info!("Requester: {:?}: {:?}", packet.0, packet.1) }
+                        Err(err) => { error!("{}", err); }
+                    }
+                    info!("Requester: Received success/failed response!");
+                });
+            }
+            Err(err) => {
+                error!("Requester: Error while connecting {}", err);
             }
         }
     }

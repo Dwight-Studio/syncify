@@ -208,6 +208,10 @@ impl SyncifyConnection {
 
         Ok((header.uuid, packet))
     }
+    
+    pub fn is_closed(&self) -> bool {
+        self.connection.close_reason().is_some()
+    }
 
     /// Close the connection
     pub fn close(&self, err_code: u32, err: SyncifyProtocolError) {
