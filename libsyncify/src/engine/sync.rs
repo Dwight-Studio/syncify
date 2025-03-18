@@ -1,10 +1,13 @@
 use crate::engine::actor::SyncEvent;
 use crate::engine::protocol::{SyncifyPacket, SyncifyProtocol};
+use crate::engine::serial_state::SerialState;
+use crate::engine::state::{State, MAX_LOADED_DELTAS};
 use crate::SharedDirectory;
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
 use log::{error, info};
+use std::collections::HashMap;
 
 pub(crate) struct SyncManager {
     pub(crate) topic: GossipSender,
@@ -19,9 +22,25 @@ impl SyncManager {
 
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
         match sync_event { 
-            SyncEvent::RequestDeltas(mut conn) => {
-                let packet = SyncifyPacket::Failed;
-                
+            SyncEvent::RequestDeltas(mut conn, hash) => {
+                let packet = {
+                    if self.dir.inner.read().await.state.hash() == hash {
+                        SyncifyPacket::Success {
+                            pool: HashMap::new()
+                        }
+                    } else {
+                        match self.dir.inner.read().await.state.after(hash, MAX_LOADED_DELTAS) {
+                            None => { SyncifyPacket::Failed }
+                            Some(state) => {
+                                let serial_state = SerialState::from(&state);
+                                SyncifyPacket::Success {
+                                    pool: serial_state.pool()
+                                }
+                            }
+                        }
+                    }
+                };
+
                 conn.send_packet(self.dir.clone(), packet).await;
             },
             SyncEvent::TriggerInitialSync => {

@@ -199,5 +199,5 @@ pub enum Event {
 
 pub enum SyncEvent {
     TriggerInitialSync,
-    RequestDeltas(SyncifyConnection)
+    RequestDeltas(SyncifyConnection, blake3::Hash)
 }
