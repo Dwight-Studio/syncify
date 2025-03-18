@@ -21,7 +21,6 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::engine::serial_state::SerialState;
 use crate::store::keyring::{Keyring, Keys};
 use crate::{get_app_dir, InnerSharedDirectory, SharedDirectory};
 use base64::prelude::BASE64_STANDARD;
@@ -34,11 +33,13 @@ use ::keyring::Error;
 use log::{error, info, warn};
 use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TableHandle, TransactionError};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::engine::state::State;
 
 pub mod keyring;
 pub mod link;
@@ -177,12 +178,12 @@ impl StoreManager {
 
             for range in base_table.iter().map_err(StoreError::Storage)? {
                 let (path, uuid_bytes) = range.unwrap();
-                let opt_head = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
-                let opt_neighbors = neighbors_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let head_opt = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let neighbors_opt = neighbors_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
 
                 let uuid = Uuid::from_bytes(uuid_bytes.value());
 
-                if let (Some(head), Some(neighbors)) = (opt_head, opt_neighbors) {
+                if let (Some(head), Some(neighbors)) = (head_opt, neighbors_opt) {
                     if let Some((sign_key, verif_key)) = Self::get_keys(&keyring, uuid) {
 
                         let uuid_string = uuid.to_string();
@@ -195,7 +196,7 @@ impl StoreManager {
 
                             // Build state
                             info!("Building state for {}", uuid);
-                            if let Some(state) = SerialState::build_from_table(state_table, head.value()) {
+                            if let Some(state) = State::from_table(state_table, head.value()) {
                                 cache.insert(uuid, SharedDirectory {
                                     uuid,
                                     path: PathBuf::from(path.value()),
@@ -288,28 +289,26 @@ impl StoreManager {
                 // Update index tables
                 base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
                 head_table.insert(uuid.as_bytes(), inner.state.hash().as_bytes()).map_err(StoreError::Storage)?;
-                neighbor_table.insert(uuid.as_bytes(), inner.neighbors.keys().map(|e| *e).collect::<Vec<[u8; 32]>>()).map_err(StoreError::Storage)?;
+                neighbor_table.insert(uuid.as_bytes(), inner.neighbors.keys().copied().collect::<Vec<[u8; 32]>>()).map_err(StoreError::Storage)?;
 
                 let uuid_string = uuid.to_string();
 
                 let state_table_def: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
-                
-                let serial_state = SerialState::from(&inner.state);
 
-                for (hash, serial_delta) in serial_state.pool() {
-                    match rkyv::to_bytes::<rkyv::rancor::Error>(&serial_delta) {
+                for (hash, delta) in inner.state.pool().iter() {
+                    match rkyv::to_bytes::<rkyv::rancor::Error>(delta.deref()) {
                         Ok(value) => {
                             state_table.insert(hash, value.as_slice()).map_err(StoreError::Storage)?
                         },
                         Err(e) => {
-                            error!("Could not serialize {} in {}", Hash::from_bytes(hash), uuid);
+                            error!("Could not serialize {} in {}", Hash::from_bytes(*hash), uuid);
                             return Err(StoreError::Serialize(e))
                         },
                     };
                 }
 
-                if inner.state.prune() {
+                if inner.state.trim() {
                     info!("Pruned state {}", uuid_string);
                 }
             }

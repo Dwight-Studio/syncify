@@ -21,6 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use blake3::Hash;
 use crate::engine::state::{HashTree, Mutation};
 use crate::SharedDirectory;
 use chrono::Utc;
@@ -39,8 +40,7 @@ pub struct FileSystemManager {
 
 impl FileSystemManager {
     pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
-        // TODO: Let handle errors here
-        let last_tree = dir.inner.write().await.state.hash_tree().unwrap();
+        let last_tree = dir.inner.read().await.state.hash_tree().clone();
         
         Self {
             topic,
@@ -89,7 +89,7 @@ impl FileSystemManager {
 
                         let mutation = Mutation::Modify {
                             file_path: path.to_string_lossy().to_string(),
-                            file_hash,
+                            file_hash: Hash::from(file_hash),
                             timestamp: Utc::now().timestamp(),
                         };
 
@@ -203,7 +203,7 @@ impl FileSystemManager {
         
         self.mutations_buffer.clear();
         
-        self.last_tree = inner.state.hash_tree().unwrap();
+        self.last_tree = inner.state.hash_tree().clone();
         info!("\n{}", self.last_tree)
     }
 }

@@ -121,7 +121,6 @@ impl DirectoryManager {
             };
             
             if let Some(event) = result {
-                info!("Event!");
                 match event {
                     // FileSystem
                     Event::FileSystem(fs_event) => fs_manager.handle_events(fs_event).await,

@@ -29,153 +29,252 @@ use chrono::{DateTime, Utc};
 use log::{error, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::iter::Peekable;
 use std::sync::{Arc, RwLock};
+use redb::{ReadableTable, Table};
 use thiserror::Error;
+use uuid::Uuid;
 use walkdir::WalkDir;
 
-pub const MAX_LOADED_DELTAS: u32 = 16384;
+pub const MAX_LOADED_DELTAS: u32 = 2048;
 pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
 
 /// Tree containing the synchronisation information for a [`SharedDirectory`].
-#[derive(Clone, Debug)]
+#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
 pub struct State {
-    pub(crate) head: Arc<RwLock<Delta>>,
+    #[rkyv(with = crate::util::HashDef)]
+    head: Hash,
+    pool: HashMap<[u8; 32], Arc<Delta>>,
     /// The timestamp is dated from last time it was "seen" out of the cache
     /// i.e. last time it was saved, loaded or synced.
-    pub(crate) timestamp: DateTime<Utc>,
+    #[rkyv(with = crate::util::DateTimeDef)]
+    timestamp: DateTime<Utc>,
 }
 
 // TODO: Add optimization
 //  -> Compute when last modified date is > than the last save date (for fastforward sync)
 impl State {
-    pub fn new(directory_name: String) -> Self {
+    pub fn new(directory_name: String, uuid: Uuid) -> Self {
         let timestamp = Utc::now();
-        Self {
-            head: Arc::new(RwLock::new(Delta {
-                parent: None,
-                hash: blake3::hash(&timestamp.timestamp().to_be_bytes()),
-                hash_tree_cache: Some(Directory {
-                    name: directory_name,
-                    content: vec![],
-                    hash: [0; 32],
-                }),
-                action: Mutation::Init { timestamp: Utc::now().timestamp() },
-                timestamp,
-            })),
+        let mut pool = HashMap::new();
+        let hash = blake3::hash(uuid.as_bytes());
+
+        pool.insert(*hash.as_bytes(), Arc::new(Delta {
+            parent: None,
+            hash,
             timestamp,
+            action: Mutation::Init { timestamp: Utc::now().timestamp() },
+            hash_tree: Directory {
+                name: directory_name,
+                content: vec![],
+                hash: Hash::from_bytes([0; 32]),
+            }}));
+
+        Self {
+            head: hash,
+            pool,
+            timestamp
         }
     }
 
-    /// Get parent state.
-    pub fn parent(&self) -> Option<Self> {
-        let head = self.head.read().unwrap();
-        if head.parent.is_some() {
-            let parent = head.parent.clone().unwrap();
+    //noinspection RsTraitObligations
+    pub fn from_table(
+        state_table: Table<[u8; 32], &[u8]>,
+        head_hash: [u8; 32],
+    ) -> Option<State> {
+        if let Ok(Some(head_access)) = state_table.get(&head_hash) {
+            match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(head_access.value()) {
+                Ok(head) => {
+                    let mut pool = HashMap::new();
+                    
+                    let mut parent_opt = head.parent;
+                    
+                    // Insert head into the pool
+                    pool.insert(head_hash, Arc::new(head));
 
-            Some(Self {
-                head: parent.clone(),
-                timestamp: parent.read().unwrap().timestamp,
-            })
+                    for _ in 0..MAX_LOADED_DELTAS {
+                        if let Some(parent_hash) = parent_opt {
+                            if let Ok(Some(parent_access)) = state_table.get(parent_hash.as_bytes()) {
+                                match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(parent_access.value()) {
+                                    Ok(parent) => {
+                                        parent_opt = parent.parent;
+                                        pool.insert(*parent_hash.as_bytes(), Arc::new(parent));
+                                    }
+                                    Err(e) => {
+                                        error!("Could not deserialize delta {} ({})", parent_hash, e);
+                                        return None;
+                                    }
+                                };
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if pool.len() != 0 {
+                        Some(State {
+                            head: Hash::from_bytes(head_hash),
+                            pool,
+                            timestamp: Utc::now(),
+                        })
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    error!("Could not deserialize head {} ({})", Hash::from_bytes(head_hash), e);
+                    None
+                }
+            }
+        } else {
+            error!("Unable to find head {}", Hash::from_bytes(head_hash));
+            None
+        }
+    }
+
+    /// Get head's [`Delta`].
+    pub fn head(&self) -> &Arc<Delta> {
+        self.get(&self.head).unwrap()
+    }
+    
+    pub fn pool(&self) -> &HashMap<[u8; 32], Arc<Delta>> {
+        &self.pool
+    }
+
+    /// Get a [`Delta`].
+    fn get(&self, hash: &Hash) -> Option<&Arc<Delta>> {
+        self.pool.get(hash.as_bytes())
+    }
+
+    /// Get parent [`State`].
+    pub fn parent(&self) -> Option<Self> {
+        let head = self.head();
+        if let Some(parent_hash) = head.parent {
+            self.get(&parent_hash).map(|parent| Self {
+                    head: parent.hash,
+                    pool: self.pool.clone(),
+                    timestamp: self.timestamp,
+                })
         } else {
             None
         }
     }
 
+    /// Get head's hash.
     pub fn hash(&self) -> Hash {
-        self.head.read().unwrap().hash
+        self.head().hash
     }
 
-    /// Get file hash tree.
-    pub fn hash_tree(&mut self) -> Result<HashTree, StateError> {
-        let mut head = self.head.write().unwrap();
-        head.compute_hash_tree()?;
-        Ok(head.hash_tree_cache.clone().unwrap())
+    /// Get [`State`]'s files hash tree.
+    pub fn hash_tree(&self) -> &HashTree {
+        &self.head().hash_tree
     }
 
+    /// Apply a mutation on the [`State`].
     pub fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
             hash: Hash::from_bytes([0; 32]),
-            hash_tree_cache: None,
-            action: mutation,
             timestamp: Utc::now(),
+            action: mutation.clone(),
+            hash_tree: self.head().hash_tree.apply(&mutation)?,
         };
 
-        // Compute hash tree
-        delta.compute_hash_tree()?;
         delta.hash = {
-            match &delta.hash_tree_cache {
-                Some(tree) => {
-                    let mut data = Vec::new();
+            let mut data = Vec::new();
 
-                    // Parent
-                    data.extend(self.head.read().unwrap().hash.as_bytes());
+            // Parent
+            data.extend(self.head.as_bytes());
 
-                    // Tree
-                    data.extend(tree.get_hash().as_bytes());
-                    blake3::hash(data.leak())
-                }
-                None => Hash::from_bytes([0; 32]),
-            }
+            // Tree
+            data.extend(delta.hash_tree.hash().as_bytes());
+            blake3::hash(data.leak())
         };
 
-        self.head = Arc::new(RwLock::new(delta));
+        // Modify head and insert into pool
+        self.head = delta.hash;
+        self.pool.insert(*delta.hash.as_bytes(), Arc::new(delta));
 
         Ok(())
     }
 
-    /// Prune tree if over the limit of loaded deltas.
-    pub fn prune(&mut self) -> bool {
-        let mut head = self.head.clone();
+    /// Trim [`State`]'s tree of all deltas over the limit of loaded deltas.
+    ///
+    /// Return true if the State was pruned.
+    pub fn trim(&mut self) -> bool {
+        if self.pool.len() > MAX_LOADED_DELTAS as usize {
+            let mut new_pool = HashMap::new();
 
-        for i in 0..MAX_LOADED_DELTAS {
-            if let Some(parent) = head.clone().read().unwrap().parent.clone() {
-                head = parent;
-            } else {
-                return false;
+            let mut head = self.head();
+
+            for i in 0..MAX_LOADED_DELTAS {
+                new_pool.insert(head.hash, head.clone());
+
+                if let Some(parent_hash) = head.parent {
+                    if let Some(parent) = self.get(&parent_hash) {
+                        head = parent
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
             }
+
+            let mut new_head = head.as_ref().clone();
+            new_head.parent = None;
+            new_pool.insert(new_head.hash, Arc::new(new_head));
+
+            true
+        } else {
+            false
         }
-
-        head.write().unwrap().parent = None;
-
-        true
     }
 
     pub fn iter(&self) -> StateIterator {
         StateIterator {
-            head_ref: Some(self.head.clone()),
+            pool: self.pool.clone(),
+            head_opt: Some(self.head().clone()),
         }
     }
 
-    pub fn after(&self, root: Hash, max_depth: u32) -> Option<State> {
-        if max_depth - 1 == 0 {
-            return None;
+    pub fn clone_after(&self, root: Hash, max_depth: u32) -> Option<State> {
+        let mut pool = HashMap::new();
+        let mut head = self.head();
+        
+        for i in 0..max_depth {
+            // Check if we reached the root
+            if self.head == root {
+                let mut delta = head.as_ref().clone();
+                delta.parent = None;
+                pool.insert(*head.hash.as_bytes(), Arc::new(delta));
+                
+                return Some(State {
+                    head: self.head,
+                    pool,
+                    timestamp: self.timestamp,
+                });
+            } else {
+                pool.insert(*head.hash.as_bytes(), head.clone());
+                
+                if let Some(parent_hash) = head.parent {
+                    if let Some(parent) = self.get(&parent_hash) {
+                        head = parent
+                    } else {
+                        break
+                    }
+                } else {
+                    break
+                }
+            }
         }
         
-        if root == self.hash() {
-            let mut delta = self.head.read().unwrap().clone();
-            delta.parent = None;
-            Some(Self {
-                head: Arc::new(RwLock::new(delta)),
-                ..*self
-            })
-        } else if let Some(parent) = self.parent() {
-            if let Some(state) = parent.after(root, max_depth - 1) {
-                let mut delta = self.head.read().unwrap().clone();
-                delta.parent = Some(state.head.clone());
-                Some(Self {
-                    head: Arc::new(RwLock::new(delta)),
-                    ..*self
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        None
     }
 }
 
@@ -186,9 +285,7 @@ impl Display for State {
         writeln!(f)?;
         writeln!(f, "■ Current")?;
 
-        for head_ref in self.iter() {
-            let head = head_ref.read().unwrap();
-
+        for head in self.iter() {
             let mut prefix = "│";
             writeln!(f, "{prefix}")?;
 
@@ -208,19 +305,22 @@ impl Display for State {
 }
 
 pub struct StateIterator {
-    head_ref: Option<Arc<RwLock<Delta>>>,
+    pool: HashMap<[u8; 32], Arc<Delta>>,
+    head_opt: Option<Arc<Delta>>,
 }
 
 impl Iterator for StateIterator {
-    type Item = Arc<RwLock<Delta>>;
+    type Item = Arc<Delta>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.head_ref.clone() {
-            Some(head_ref) => {
-                let rtn = head_ref.clone();
+        match &self.head_opt {
+            Some(head) => {
+                let rtn = head.clone();
 
-                let head = head_ref.read().unwrap();
-                self.head_ref = head.parent.clone();
+                self.head_opt = match head.parent {
+                    Some(parent) => self.pool.get(parent.as_bytes()).cloned(),
+                    None => None
+                };
 
                 Some(rtn)
             }
@@ -230,64 +330,48 @@ impl Iterator for StateIterator {
 }
 
 /// Node describing a modification of a [`State`].
-#[derive(Clone, Debug)]
+#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
 pub struct Delta {
-    pub(super) parent: Option<Arc<RwLock<Delta>>>,
-    pub(super) hash: Hash,
-    pub(super) hash_tree_cache: Option<HashTree>,
-    pub(super) action: Mutation,
-    pub(super) timestamp: DateTime<Utc>,
-}
-
-impl Delta {
-    /// Recursively compute hash tree if the cache is empty.
-    fn compute_hash_tree(&mut self) -> Result<(), StateError> {
-        if self.hash_tree_cache.is_some() {
-            Ok(())
-        } else {
-            if let Some(parent_ref) = &self.parent {
-                let mut parent = parent_ref.write().unwrap();
-                parent.compute_hash_tree()?;
-                match &parent.hash_tree_cache {
-                    None => {}
-                    Some(cache) => {
-                        self.hash_tree_cache = Some(cache.apply(&self.action)?);
-                    }
-                }
-            } else {
-                return Err(StateError::InvalidRoot(self.hash));
-            }
-            Ok(())
-        }
-    }
-
-    pub fn hash(&self) -> Hash {
-        self.hash
-    }
+    #[rkyv(with = crate::util::OptionHashDef)]
+    parent: Option<Hash>,
+    #[rkyv(with = crate::util::HashDef)]
+    hash: Hash,
+    /// Timestamp is dated from when the mutation was applied.
+    #[rkyv(with = crate::util::DateTimeDef)]
+    timestamp: DateTime<Utc>,
+    action: Mutation,
+    hash_tree: HashTree,
 }
 
 /// Mutation action of a [`Delta`].
-#[derive(Clone, Debug, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Mutation {
     Init {
+        /// Timestamp is dated from when the mutation was detected.
         timestamp: i64
     },
     Merge {
-        other_head: [u8; 32],
+        #[rkyv(with = crate::util::HashDef)]
+        other_head: Hash,
+        /// Timestamp is dated from when the mutation was detected.
         timestamp: i64
     },
     Modify {
         file_path: String,
-        file_hash: [u8; 32],
+        #[rkyv(with = crate::util::HashDef)]
+        file_hash: Hash,
+        /// Timestamp is dated from when the mutation was detected.
         timestamp: i64
     },
     Move {
         from: String,
         to: String,
+        /// Timestamp is dated from when the mutation was detected.
         timestamp: i64
     },
     Remove {
         file_path: String,
+        /// Timestamp is dated from when the mutation was detected.
         timestamp: i64
     },
 }
@@ -297,7 +381,7 @@ impl Display for Mutation {
         match self {
             Mutation::Init { .. } => write!(f, "Initialized directory"),
             Mutation::Merge { other_head, .. } => {
-                write!(f, "Merged branch {}", Hash::from_bytes(*other_head))
+                write!(f, "Merged branch {}", *other_head)
             }
             Mutation::Modify { file_path, .. } => write!(f, "Modified file \"{}\"", file_path),
             Mutation::Move { from, to, .. } => write!(f, "Moved file \"{from}\" to \"{to}\""),
@@ -322,14 +406,16 @@ pub enum HashTree {
     Void,
     File {
         name: String,
-        hash: [u8; 32],
+        #[rkyv(with = crate::util::HashDef)]
+        hash: Hash,
         timestamp: i64,
     },
     Directory {
         name: String,
         #[rkyv(omit_bounds)]
         content: Vec<HashTree>,
-        hash: [u8; 32],
+        #[rkyv(with = crate::util::HashDef)]
+        hash: Hash,
     }
 }
 
@@ -451,12 +537,12 @@ impl HashTree {
                             Directory {
                                 name: elem.to_string(),
                                 content: Vec::new(),
-                                hash: [0; 32],
+                                hash: Hash::from_bytes([0; 32]),
                             }
                         } else {
                             File {
                                 name: elem.to_string(),
-                                hash: [0; 32],
+                                hash: Hash::from_bytes([0; 32]),
                                 timestamp: 0,
                             }
                         };
@@ -513,34 +599,35 @@ impl HashTree {
             content.retain(|e| !matches!(e, Void));
 
             if content.is_empty() {
-                *hash = [0; 32];
+                *hash = Hash::from_bytes([0; 32]);
             } else {
                 *hash = Self::compute_content_hash(content);
             }
         }
     }
 
-    pub fn get_hash(&self) -> Hash {
+    /// Get node hash.
+    pub fn hash(&self) -> Hash {
         match self {
             Void => Hash::from_bytes([0; 32]),
-            File { hash, .. } => Hash::from(*hash),
-            Directory { hash, .. } => Hash::from(*hash),
+            File { hash, .. } => *hash,
+            Directory { hash, .. } => *hash,
         }
     }
 
     /// Non-recursively compute the hash of content (computed only with direct children)
-    fn compute_content_hash(content: &Vec<HashTree>) -> [u8; 32] {
+    fn compute_content_hash(content: &Vec<HashTree>) -> Hash {
         let mut data: Vec<u8> = Vec::new();
         for item in content {
             match item {
                 Void => {}
                 File { name, hash, .. } | Directory { name, hash, .. } => {
                     data.extend(name.as_bytes());
-                    data.extend(hash);
+                    data.extend(hash.as_bytes());
                 }
             }
         }
-        *blake3::hash(data.as_slice()).as_bytes()
+        blake3::hash(data.as_slice())
     }
 
     /// Generate [`HashTree`] from disk.
@@ -548,7 +635,7 @@ impl HashTree {
         let mut rtn = Directory {
             name: dir.path.file_name().unwrap().to_string_lossy().to_string(),
             content: vec![],
-            hash: [0; 32],
+            hash: Hash::from_bytes([0; 32]),
         };
 
         let files_iter = WalkDir::new(dir.path())
@@ -578,7 +665,7 @@ impl HashTree {
                     
                     match rtn.apply(&Mutation::Modify {
                         file_path: relative_path.unwrap().to_string_lossy().to_string(),
-                        file_hash: *hasher.finalize().as_bytes(),
+                        file_hash: hasher.finalize(),
                         timestamp: Utc::now().timestamp(),
                     }) {
                         Ok(new_rtn) => {
@@ -599,6 +686,7 @@ impl HashTree {
         Ok(rtn)
     }
 
+    /// Return true if empty ([`Void`] or empty [`Directory`]).
     pub fn is_empty(&self) -> bool {
         match self {
             Void => true,
@@ -629,7 +717,7 @@ impl Display for HashTree {
                 timestamp,
                 ..
             } => {
-                writeln!(f, "{}", Hash::from_bytes(*hash))?;
+                writeln!(f, "{}", *hash)?;
                 writeln!(
                     f,
                     "Timestamp: {}",
@@ -645,7 +733,7 @@ impl Display for HashTree {
                 content,
                 ..
             } => {
-                writeln!(f, "{}", Hash::from_bytes(*hash))?;
+                writeln!(f, "{}", *hash)?;
                 writeln!(f, "Directory name: {}", name)?;
 
                 if content.is_empty() {

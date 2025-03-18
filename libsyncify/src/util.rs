@@ -20,5 +20,54 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use crate::engine::state::Delta;
+use crate::Arc;
+use crate::HashMap;
+use blake3::Hash;
+use chrono::{DateTime, Utc};
+use rkyv::{Archive, Deserialize, Serialize};
 
+#[derive(Archive, Serialize, Deserialize)]
+#[rkyv(remote = blake3::Hash)]
+#[rkyv(archived = ArchivedHash)]
+pub struct HashDef (
+    #[rkyv(getter = blake3::Hash::as_bytes)]
+    [u8; 32]
+);
 
+impl From<HashDef> for Hash {
+    fn from(hash_def: HashDef) -> Self {
+        Hash::from_bytes(hash_def.0)
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+#[rkyv(remote = DateTime::<Utc>)]
+#[rkyv(archived = ArchivedDateTime)]
+pub struct DateTimeDef (
+    #[rkyv(getter = DateTime::timestamp)]
+    i64
+);
+
+impl From<DateTimeDef> for DateTime<Utc> {
+    fn from(date_time_def: DateTimeDef) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(date_time_def.0, 0).unwrap()
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+#[rkyv(remote = Option::<Hash>)]
+#[rkyv(archived = ArchivedOptionHash)]
+pub enum OptionHashDef {
+    Some(#[rkyv(with = HashDef)] Hash),
+    None
+}
+
+impl From<OptionHashDef> for Option<Hash> {
+    fn from(hash_def: OptionHashDef) -> Option<Hash> {
+        match hash_def {
+            OptionHashDef::Some(hash) => Option::Some(hash),
+            OptionHashDef::None => Option::None
+        }
+    }
+}

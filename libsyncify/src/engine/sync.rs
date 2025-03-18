@@ -23,7 +23,6 @@
 
 use crate::engine::actor::SyncEvent;
 use crate::engine::protocol::{SyncifyPacket, SyncifyProtocol};
-use crate::engine::serial_state::SerialState;
 use crate::engine::state::MAX_LOADED_DELTAS;
 use crate::SharedDirectory;
 use iroh::NodeId;
@@ -52,12 +51,11 @@ impl SyncManager {
                             pool: HashMap::new()
                         }
                     } else {
-                        match self.dir.inner.read().await.state.after(hash, MAX_LOADED_DELTAS) {
+                        match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
                             None => { SyncifyPacket::Failed }
                             Some(state) => {
-                                let serial_state = SerialState::from(&state);
                                 SyncifyPacket::Success {
-                                    pool: serial_state.pool()
+                                    pool: state.pool().clone()
                                 }
                             }
                         }

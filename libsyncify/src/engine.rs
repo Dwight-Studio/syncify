@@ -44,7 +44,6 @@ pub mod protocol;
 pub mod state;
 pub mod fs;
 pub mod gossip;
-pub mod serial_state;
 pub mod sync;
 
 const DOWNLOAD_DIRNAME: &str = "download";

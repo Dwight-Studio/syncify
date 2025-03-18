@@ -23,7 +23,6 @@
 
 use crate::engine::actor::Event::Sync;
 use crate::engine::actor::SyncEvent;
-use crate::engine::serial_state::SerialDelta;
 use crate::store::StoreManager;
 use crate::SharedDirectory;
 use chacha20poly1305::aead::{Aead, OsRng};
@@ -41,6 +40,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::engine::state::Delta;
 
 /// The size in bytes of the SyncifyPacket::Header packet variant
 const HEADER_SIZE: usize = 48;
@@ -65,7 +65,7 @@ pub enum SyncifyPacket {
         head: [u8; 32]
     } = 0,
     Success {
-        pool: HashMap<[u8; 32], SerialDelta>
+        pool: HashMap<[u8; 32], Arc::<Delta>>
     } = 1,
     Failed = 2,
 }
