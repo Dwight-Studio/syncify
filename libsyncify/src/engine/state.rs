@@ -21,12 +21,13 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::SharedDirectory;
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::NotADirectory;
-use crate::SharedDirectory;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
-use log::{error, warn};
+use log::{error, info, warn};
+use redb::{ReadableTable, Table};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
@@ -34,7 +35,6 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::iter::Peekable;
 use std::sync::{Arc, RwLock};
-use redb::{ReadableTable, Table};
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -62,49 +62,58 @@ impl State {
         let mut pool = HashMap::new();
         let hash = blake3::hash(uuid.as_bytes());
 
-        pool.insert(*hash.as_bytes(), Arc::new(Delta {
-            parent: None,
-            hash,
-            timestamp,
-            action: Mutation::Init { timestamp: Utc::now().timestamp() },
-            hash_tree: Directory {
-                name: directory_name,
-                content: vec![],
-                hash: Hash::from_bytes([0; 32]),
-            }}));
+        pool.insert(
+            *hash.as_bytes(),
+            Arc::new(Delta {
+                parent: None,
+                hash,
+                timestamp,
+                action: Mutation::Init {
+                    timestamp: Utc::now(),
+                },
+                hash_tree: Directory {
+                    name: directory_name,
+                    content: vec![],
+                    hash: Hash::from_bytes([0; 32]),
+                },
+            }),
+        );
 
         Self {
             head: hash,
             pool,
-            timestamp
+            timestamp,
         }
     }
 
     //noinspection RsTraitObligations
-    pub fn from_table(
-        state_table: Table<[u8; 32], &[u8]>,
-        head_hash: [u8; 32],
-    ) -> Option<State> {
+    pub fn from_table(state_table: Table<[u8; 32], &[u8]>, head_hash: [u8; 32]) -> Option<State> {
         if let Ok(Some(head_access)) = state_table.get(&head_hash) {
             match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(head_access.value()) {
                 Ok(head) => {
                     let mut pool = HashMap::new();
-                    
+
                     let mut parent_opt = head.parent;
-                    
+
                     // Insert head into the pool
                     pool.insert(head_hash, Arc::new(head));
 
                     for _ in 0..MAX_LOADED_DELTAS {
                         if let Some(parent_hash) = parent_opt {
-                            if let Ok(Some(parent_access)) = state_table.get(parent_hash.as_bytes()) {
-                                match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(parent_access.value()) {
+                            if let Ok(Some(parent_access)) = state_table.get(parent_hash.as_bytes())
+                            {
+                                match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(
+                                    parent_access.value(),
+                                ) {
                                     Ok(parent) => {
                                         parent_opt = parent.parent;
                                         pool.insert(*parent_hash.as_bytes(), Arc::new(parent));
                                     }
                                     Err(e) => {
-                                        error!("Could not deserialize delta {} ({})", parent_hash, e);
+                                        error!(
+                                            "Could not deserialize delta {} ({})",
+                                            parent_hash, e
+                                        );
                                         return None;
                                     }
                                 };
@@ -127,7 +136,11 @@ impl State {
                     }
                 }
                 Err(e) => {
-                    error!("Could not deserialize head {} ({})", Hash::from_bytes(head_hash), e);
+                    error!(
+                        "Could not deserialize head {} ({})",
+                        Hash::from_bytes(head_hash),
+                        e
+                    );
                     None
                 }
             }
@@ -141,7 +154,7 @@ impl State {
     pub fn head(&self) -> &Arc<Delta> {
         self.get(&self.head).unwrap()
     }
-    
+
     pub fn pool(&self) -> &HashMap<[u8; 32], Arc<Delta>> {
         &self.pool
     }
@@ -156,10 +169,10 @@ impl State {
         let head = self.head();
         if let Some(parent_hash) = head.parent {
             self.get(&parent_hash).map(|parent| Self {
-                    head: parent.hash,
-                    pool: self.pool.clone(),
-                    timestamp: self.timestamp,
-                })
+                head: parent.hash,
+                pool: self.pool.clone(),
+                timestamp: self.timestamp,
+            })
         } else {
             None
         }
@@ -246,14 +259,14 @@ impl State {
     pub fn clone_after(&self, root: Hash, max_depth: u32) -> Option<State> {
         let mut pool = HashMap::new();
         let mut head = self.head();
-        
+
         for i in 0..max_depth {
             // Check if we reached the root
             if self.head == root {
                 let mut delta = head.as_ref().clone();
                 delta.parent = None;
                 pool.insert(*head.hash.as_bytes(), Arc::new(delta));
-                
+
                 return Some(State {
                     head: self.head,
                     pool,
@@ -261,19 +274,19 @@ impl State {
                 });
             } else {
                 pool.insert(*head.hash.as_bytes(), head.clone());
-                
+
                 if let Some(parent_hash) = head.parent {
                     if let Some(parent) = self.get(&parent_hash) {
                         head = parent
                     } else {
-                        break
+                        break;
                     }
                 } else {
-                    break
+                    break;
                 }
             }
         }
-        
+
         None
     }
 }
@@ -319,7 +332,7 @@ impl Iterator for StateIterator {
 
                 self.head_opt = match head.parent {
                     Some(parent) => self.pool.get(parent.as_bytes()).cloned(),
-                    None => None
+                    None => None,
                 };
 
                 Some(rtn)
@@ -348,31 +361,36 @@ pub struct Delta {
 pub enum Mutation {
     Init {
         /// Timestamp is dated from when the mutation was detected.
-        timestamp: i64
+        #[rkyv(with = crate::util::DateTimeDef)]
+        timestamp: DateTime<Utc>,
     },
     Merge {
         #[rkyv(with = crate::util::HashDef)]
         other_head: Hash,
         /// Timestamp is dated from when the mutation was detected.
-        timestamp: i64
+        #[rkyv(with = crate::util::DateTimeDef)]
+        timestamp: DateTime<Utc>,
     },
     Modify {
         file_path: String,
         #[rkyv(with = crate::util::HashDef)]
         file_hash: Hash,
         /// Timestamp is dated from when the mutation was detected.
-        timestamp: i64
+        #[rkyv(with = crate::util::DateTimeDef)]
+        timestamp: DateTime<Utc>,
     },
     Move {
         from: String,
         to: String,
         /// Timestamp is dated from when the mutation was detected.
-        timestamp: i64
+        #[rkyv(with = crate::util::DateTimeDef)]
+        timestamp: DateTime<Utc>,
     },
     Remove {
         file_path: String,
         /// Timestamp is dated from when the mutation was detected.
-        timestamp: i64
+        #[rkyv(with = crate::util::DateTimeDef)]
+        timestamp: DateTime<Utc>,
     },
 }
 
@@ -408,7 +426,8 @@ pub enum HashTree {
         name: String,
         #[rkyv(with = crate::util::HashDef)]
         hash: Hash,
-        timestamp: i64,
+        #[rkyv(with = crate::util::DateTimeDef)]
+        timestamp: DateTime<Utc>,
     },
     Directory {
         name: String,
@@ -416,7 +435,7 @@ pub enum HashTree {
         content: Vec<HashTree>,
         #[rkyv(with = crate::util::HashDef)]
         hash: Hash,
-    }
+    },
 }
 
 impl HashTree {
@@ -429,34 +448,31 @@ impl HashTree {
     where
         A: Iterator<Item = &'a str> + Clone,
     {
-        let path = file_path_iter.next()?;
-
         match &self {
             Void => None,
-            File { name, .. } => {
-                if name == path && file_path_iter.peek().is_none() {
-                    Some(self)
-                } else {
-                    None
-                }
-            }
-            Directory { name, content, .. } => {
-                if name == path {
+            File { .. } => Some(self),
+            Directory { content, .. } => {
+                if let Some(path) = file_path_iter.next() {
                     for tree in content.iter() {
-                        let mut iter = file_path_iter.clone();
-
-                        if let Some(tree) = tree.get_recursive(&mut iter) {
-                            return Some(tree)
+                        match tree {
+                            Void => {}
+                            File { name, .. } | Directory { name, .. } => {
+                                if name == path {
+                                    return tree.get_recursive(file_path_iter);
+                                }
+                            }
                         }
                     }
+                } else {
+                    return Some(self)
                 }
-                
+
                 None
             }
         }
     }
 
-    /// Construct a mutated version of self.
+    /// Construct a mutated version of the [`HashTree`].
     fn apply(&self, mutation: &Mutation) -> Result<HashTree, StateError> {
         match mutation {
             Mutation::Init { .. } => Ok(self.clone()),
@@ -471,7 +487,7 @@ impl HashTree {
                     File {
                         name: file_path.split("/").last().unwrap().to_string(),
                         hash: *file_hash,
-                        timestamp: Utc::now().timestamp(),
+                        timestamp: Utc::now(),
                     }
                 },
                 file_path.split("/").peekable(),
@@ -497,7 +513,7 @@ impl HashTree {
         }
     }
 
-    /// Apply a function on a file/folder provided with path, and update parents.
+    /// Apply a function on a file/folder provided with path, and update parents' hash.
     fn apply_and_update_parents<'a>(
         parent: HashTree,
         mut_fn: &mut dyn FnMut(HashTree) -> HashTree,
@@ -509,7 +525,7 @@ impl HashTree {
         // Check if it reaches the end of the iterator
         if let Some(elem) = next {
             // If not, check if the current parent is a directory
-            match parent {
+            let rtn = match parent {
                 Directory {
                     name,
                     content,
@@ -543,7 +559,7 @@ impl HashTree {
                             File {
                                 name: elem.to_string(),
                                 hash: Hash::from_bytes([0; 32]),
-                                timestamp: 0,
+                                timestamp: Utc::now(),
                             }
                         };
 
@@ -560,18 +576,22 @@ impl HashTree {
                     // Check if there is an error
                     if let Ok(mut tree) = result {
                         // If not, apply function, update hash and push
-                        // If the
+
                         if !has_next {
                             tree = mut_fn(tree);
                         }
 
                         // Check if the fonction didn't return Empty
-                        if tree != Void {
-                            // If not, update and push
-                            tree.update_hash();
-                            new_content.push(tree);
+                        match tree {
+                            Void => {}
+                            File { .. } => new_content.push(tree),
+                            Directory { ref content, .. } => {
+                                if !content.is_empty() {
+                                    new_content.push(tree);
+                                }
+                            }
                         }
-
+                        
                         Ok(Directory {
                             name,
                             content: new_content,
@@ -585,6 +605,16 @@ impl HashTree {
                 File { name, .. } => Err(NotADirectory(name)),
 
                 Void => Err(NotADirectory("Void".to_string())),
+            };
+
+            match rtn {
+                Ok(mut result) => {
+                    result.update_hash();
+                    Ok(result)
+                }
+                Err(e) => {
+                    Err(e)
+                }
             }
         } else {
             // If so, return parent
@@ -630,6 +660,38 @@ impl HashTree {
         blake3::hash(data.as_slice())
     }
 
+    fn flatten(&self) -> Vec<String> {
+        match self {
+            Void | File { .. } => Vec::new(),
+            Directory { content, .. } => {
+                let mut rtn = Vec::new();
+
+                for tree in content {
+                    rtn.extend(tree.flatten_recursive("".to_string()));
+                }
+
+                rtn
+            }
+        }
+    }
+
+    fn flatten_recursive(&self, prefix: String) -> Vec<String> {
+        match self {
+            Void => Vec::new(),
+            File { name, .. } => vec![prefix + name.as_str()],
+            Directory { name, content, .. } => {
+                let new_prefix = prefix + name.as_str() + "/";
+                let mut rtn = Vec::new();
+
+                for tree in content {
+                    rtn.extend(tree.flatten_recursive(new_prefix.clone()));
+                }
+
+                rtn
+            }
+        }
+    }
+
     /// Generate [`HashTree`] from disk.
     pub fn from_disk(dir: &SharedDirectory) -> Result<Self, std::io::Error> {
         let mut rtn = Directory {
@@ -649,8 +711,13 @@ impl HashTree {
             match file_result {
                 Ok(file) => {
                     // Ignore if it is a directory
-                    if !fs::metadata(file.path()).is_ok_and(|e| e.is_file()) {
-                        continue;
+                    if let Ok(metadata) = file.path().metadata() {
+                        if !metadata.is_file() {
+                            continue;
+                        }
+                    } else {
+                        warn!("Cannot retrieve metatdata of '{}'", file.path().display());
+                        continue
                     }
 
                     hasher
@@ -662,17 +729,17 @@ impl HashTree {
                     if relative_path.is_none() {
                         continue;
                     }
-                    
+
                     match rtn.apply(&Mutation::Modify {
                         file_path: relative_path.unwrap().to_string_lossy().to_string(),
                         file_hash: hasher.finalize(),
-                        timestamp: Utc::now().timestamp(),
+                        timestamp: Utc::now(),
                     }) {
                         Ok(new_rtn) => {
                             rtn = new_rtn;
                         }
                         Err(e) => {
-                            warn!("Unable to add `{}` into hash tree", file.path().display())
+                            warn!("Unable to add '{}' into hash tree ({e})", file.path().display())
                         }
                     }
                 }
@@ -684,6 +751,80 @@ impl HashTree {
 
         rtn.update_hash();
         Ok(rtn)
+    }
+
+    /// Generate all [`Mutation`] detected from current [`HashTree`].
+    pub fn mutations_from_disk(&self, dir: &SharedDirectory) -> Vec<Mutation> {
+        let mut current_files = self.flatten();
+        let mut rtn = Vec::new();
+
+        let files_iter = WalkDir::new(dir.path())
+            .follow_links(false)
+            .same_file_system(true)
+            .into_iter();
+
+        let mut hasher = blake3::Hasher::new();
+
+        for file_result in files_iter {
+            match file_result {
+                Ok(file) => {
+                    if let Ok(metadata) = file.path().metadata() {
+                        if metadata.is_dir() {
+                            continue;
+                        }
+
+                        if let Some(relative_path) = crate::engine::fs::relative(dir, file.path()) {
+                            let relative_path_string = relative_path.to_string_lossy().to_string();
+
+                            // Remove the file from the current file
+                            current_files.retain(|e| e != &relative_path_string);
+
+                            // Check if the file is in the hash tree
+                            if let Some(File { timestamp, .. }) = self.get(&relative_path_string) {
+                                // If so, check the timestamp
+                                if let Ok(modified) = metadata.modified() {
+                                    let new_timestamp: DateTime<Utc> = DateTime::from(modified);
+
+                                    // Check if the saved timestamp is more recent
+                                    if *timestamp >= new_timestamp {
+                                        // If so, continue
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // If we can't verify the file, re-hash it
+                            if let Err(e) = hasher.update_mmap(file.path()) {
+                                warn!("Unable to hash: '{}' ({})", file.path().display(), e);
+                            }
+
+                            // Push the mutation
+                            rtn.push(Mutation::Modify {
+                                file_path: relative_path_string.clone(),
+                                file_hash: hasher.finalize(),
+                                timestamp: Utc::now(),
+                            })
+                        }
+                    } else {
+                        warn!("Cannot retrieve metatdata of '{}'", file.path().display());
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    warn!("Unable to scan file: {e}")
+                }
+            }
+        }
+
+        // Add all file that were removed
+        for missing in current_files {
+            rtn.push(Mutation::Remove {
+                file_path: missing,
+                timestamp: Utc::now(),
+            })
+        }
+
+        rtn
     }
 
     /// Return true if empty ([`Void`] or empty [`Directory`]).
@@ -718,11 +859,7 @@ impl Display for HashTree {
                 ..
             } => {
                 writeln!(f, "{}", *hash)?;
-                writeln!(
-                    f,
-                    "Timestamp: {}",
-                    DateTime::<Utc>::from_timestamp(*timestamp, 0).unwrap()
-                )?;
+                writeln!(f, "Timestamp: {}", *timestamp)?;
                 writeln!(f, "Name: {}", name)?;
 
                 Ok(())
@@ -762,7 +899,7 @@ impl Display for HashTree {
                     }
                 }
                 Ok(())
-            },
+            }
         }
     }
 }

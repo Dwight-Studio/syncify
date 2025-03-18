@@ -40,14 +40,18 @@ pub struct FileSystemManager {
 
 impl FileSystemManager {
     pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
-        let last_tree = dir.inner.read().await.state.hash_tree().clone();
+        let inner = dir.inner.read().await;
         
-        Self {
+        let mut instance = Self {
             topic,
-            dir,
-            mutations_buffer: Vec::new(),
-            last_tree,
-        }
+            dir: dir.clone(),
+            mutations_buffer: inner.state.hash_tree().mutations_from_disk(&dir),
+            last_tree: inner.state.hash_tree().clone(),
+        };
+        
+        instance.clean_mutation_buffer();
+        
+        instance
     }
 
     pub(crate) async fn handle_events(&mut self, fs_event: notify::Event) {
@@ -69,7 +73,7 @@ impl FileSystemManager {
                     let mutation = Mutation::Move {
                         from: path_from.to_string_lossy().to_string(),
                         to: path_to.to_string_lossy().to_string(),
-                        timestamp: Utc::now().timestamp(),
+                        timestamp: Utc::now(),
                     };
 
                     self.mutations_buffer.push(mutation);
@@ -78,7 +82,7 @@ impl FileSystemManager {
             Modify(ModifyKind::Data(_)) | Modify(ModifyKind::Name(RenameMode::To)) => {
                 for abs_path in fs_event.paths {
                     if let Some(path) = relative(&self.dir, &abs_path) {
-                        info!("File {:?} modified in {}", path, self.dir.uuid());
+                        info!("File '{:?}' modified in {}", path.display(), self.dir.uuid());
                         let file_hash = match hasher.update_mmap(&abs_path) {
                             Ok(hash) => *hash.finalize().as_bytes(),
                             Err(e) => {
@@ -90,7 +94,7 @@ impl FileSystemManager {
                         let mutation = Mutation::Modify {
                             file_path: path.to_string_lossy().to_string(),
                             file_hash: Hash::from(file_hash),
-                            timestamp: Utc::now().timestamp(),
+                            timestamp: Utc::now(),
                         };
 
                         self.mutations_buffer.push(mutation);
@@ -100,11 +104,11 @@ impl FileSystemManager {
             Remove(RemoveKind::File) | Modify(ModifyKind::Name(RenameMode::From)) => {
                 for abs_path in fs_event.paths {
                     if let Some(path) = relative(&self.dir, &abs_path) {
-                        info!("File {:?} removed in {}", path, self.dir.uuid());
+                        info!("File '{:?}' removed in {}", path.display(), self.dir.uuid());
 
                         let mutation = Mutation::Remove {
                             file_path: path.to_string_lossy().to_string(),
-                            timestamp: Utc::now().timestamp(),
+                            timestamp: Utc::now(),
                         };
 
                         self.mutations_buffer.push(mutation);
@@ -163,8 +167,7 @@ impl FileSystemManager {
                 }
                 _ => true,
             });
-
-            // FIXME: HashTree::get seems to be broken
+            
             // Drop remove if about a file that doesn't exist
             if let Mutation::Remove { file_path, .. } = n_mut {
                 if self.last_tree.get(file_path).is_none() {
@@ -212,7 +215,7 @@ pub fn relative<'a>(dir: &SharedDirectory, file: &'a Path) -> Option<&'a Path> {
     match file.strip_prefix(dir.path.as_path()) {
         Ok(path) => Some(path),
         Err(_) => {
-            error!("Cannot get relative path: {:?} in {:?}", file, dir.path);
+            error!("Cannot get relative path: '{:?}' in '{:?}'", file.display(), dir.path.display());
             None
         }
     }
