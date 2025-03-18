@@ -126,6 +126,34 @@ impl State {
             head_ref: Some(self.head.clone()),
         }
     }
+
+    pub fn after(&self, root: Hash, max_depth: u32) -> Option<State> {
+        if max_depth - 1 == 0 {
+            return None;
+        }
+        
+        if root == self.hash() {
+            let mut delta = self.head.read().unwrap().clone();
+            delta.parent = None;
+            Some(Self {
+                head: Arc::new(RwLock::new(delta)),
+                ..*self
+            })
+        } else if let Some(parent) = self.parent() {
+            if let Some(state) = parent.after(root, max_depth - 1) {
+                let mut delta = self.head.read().unwrap().clone();
+                delta.parent = Some(state.head.clone());
+                Some(Self {
+                    head: Arc::new(RwLock::new(delta)),
+                    ..*self
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 impl Display for State {
