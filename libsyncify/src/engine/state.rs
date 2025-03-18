@@ -283,9 +283,10 @@ impl State {
 
         for i in 0..max_depth {
             // Check if we reached the root
-            if self.head == root {
+            if head.hash == root {
                 let mut delta = head.as_ref().clone();
                 delta.parent = None;
+                
                 pool.insert(*head.hash.as_bytes(), Arc::new(delta));
 
                 return Some(State {
