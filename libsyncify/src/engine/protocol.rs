@@ -20,6 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+mod outgoing_sync;
 
 use crate::engine::actor::Event::Sync;
 use crate::engine::actor::SyncEvent;
@@ -28,7 +29,7 @@ use crate::SharedDirectory;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
-use iroh::endpoint::{ClosedStream, Connecting, Connection, ReadError, RecvStream, VarInt, WriteError};
+use iroh::endpoint::{ClosedStream, Connection, ReadError, RecvStream, VarInt, WriteError};
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeAddr, NodeId};
 use log::{info, warn};
@@ -93,11 +94,10 @@ impl Debug for SyncifyProtocol {
 impl ProtocolHandler for SyncifyProtocol {
     //noinspection RsTraitObligations
     /// Manages incoming SyncifyProtocol connections
-    fn accept(&self, conn: Connecting) -> Boxed<anyhow::Result<()>> {
+    fn accept(&self, connection: Connection) -> Boxed<anyhow::Result<()>> {
         let store = self.store.clone();
         Box::pin(async move {
             
-            let connection = conn.await?;
             let (_tx, mut rx) = connection.accept_bi().await.unwrap();
             
             let mut header_buffer = [0u8; HEADER_SIZE];

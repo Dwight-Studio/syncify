@@ -12,9 +12,9 @@ categories = ["filesystem", "gui", "command-line-interface"]
 publish = false
 
 [dependencies]
-iroh = { version = "0.33.0", features = ["discovery-local-network"] }
-iroh-gossip = { version = "0.33.0" }
-iroh-blobs = { version = "0.33.0", features = ["downloader", "fs-store"] }
+iroh = { version = "0.34.0", features = ["discovery-local-network"] }
+iroh-gossip = { version = "0.34.0" }
+iroh-blobs = { version = "0.34.0", features = ["downloader", "fs-store"] }
 anyhow = "1.0.97"
 directories = "6.0.0"
 log = "0.4.26"
@@ -33,3 +33,4 @@ walkdir = "2.5.0"
 rkyv = { version = "0.8.10", features = ["default", "unaligned", "uuid-1"] }
 redb = "2.4.0"
 chrono = { version = "0.4.40", features = ["default", "rkyv-64", "rkyv-validation"] }
+sfsm = "0.4.3"

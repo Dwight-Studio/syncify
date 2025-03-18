@@ -21,10 +21,11 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::SharedDirectory;
 use crate::engine::actor::SyncEvent;
 use crate::engine::protocol::{SyncifyPacket, SyncifyProtocol};
 use crate::engine::state::MAX_LOADED_DELTAS;
-use crate::SharedDirectory;
+use blake3::Hash;
 use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
 use log::{error, info};
@@ -35,45 +36,60 @@ use tokio::time::sleep;
 pub(crate) struct SyncManager {
     pub(crate) topic: GossipSender,
     pub(crate) dir: SharedDirectory,
-    pub(crate) syncify_prot: SyncifyProtocol
+    pub(crate) syncify_prot: SyncifyProtocol,
 }
 
 impl SyncManager {
     pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory, syncify_prot: SyncifyProtocol) -> Self {
-        Self { topic, dir, syncify_prot }
+        Self {
+            topic,
+            dir,
+            syncify_prot,
+        }
     }
 
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
         match sync_event {
             SyncEvent::RequestDeltas(mut conn, hash) => {
                 self.dir.inner.write().await.set_received_init();
-                let packet = {
-                    info!("Requested: Hash from Requester is {:?}. Hash from Requested is: {:?}", hash, self.dir.inner.read().await.state.hash());
-                    if self.dir.inner.read().await.state.hash() == hash {
-                        SyncifyPacket::Success {
-                            pool: HashMap::new()
-                        }
-                    } else {
-                        match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
-                            None => { SyncifyPacket::Failed }
-                            Some(state) => {
-                                SyncifyPacket::Success {
-                                    pool: state.pool().clone()
-                                }
-                            }
-                        }
-                    }
-                };
+                let packet = self.request_deltas(hash).await;
+
                 info!("Requested: Handled RequestDeltas event! Sending success/failed response...");
                 conn.send_packet(self.dir.clone(), packet).await.unwrap();
                 info!("Requested: Sent success/failed response!");
-            },
+                
+                /*let request = SyncifyPacket::Request {
+                    head: *self.dir.inner.read().await.state.hash().as_bytes(),
+                };
+                conn.send_packet(self.dir.clone(), request).await.unwrap();*/
+            }
             SyncEvent::TriggerInitialSync => {
                 self.initial_sync().await;
             }
         }
     }
-    
+
+    async fn request_deltas(&mut self, hash: Hash) -> SyncifyPacket {
+        let packet = {
+            info!(
+                "Requested: Hash from Requester is {:?}. Hash from Requested is: {:?}",
+                hash,
+                self.dir.inner.read().await.state.hash()
+            );
+            if self.dir.inner.read().await.state.hash() == hash {
+                SyncifyPacket::Success { pool: HashMap::new() }
+            } else {
+                match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
+                    None => SyncifyPacket::Failed,
+                    Some(state) => SyncifyPacket::Success {
+                        pool: state.pool().clone(),
+                    },
+                }
+            }
+        };
+        packet
+    }
+
     pub(crate) async fn initial_sync(&self) {
         let inner_dir = self.dir.inner.read().await;
         for node in inner_dir.neighbors.clone() {
@@ -81,7 +97,7 @@ impl SyncManager {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
                 let dir = self.dir.clone();
                 let syncify_prot = self.syncify_prot.clone();
-                
+
                 if self.syncify_prot.endpoint.node_id() > node_id {
                     Self::start_sync(node_id, syncify_prot, dir).await;
                 } else {
@@ -101,25 +117,32 @@ impl SyncManager {
             }
         }
     }
-    
+
     async fn start_sync(node_id: NodeId, syncify_prot: SyncifyProtocol, dir: SharedDirectory) {
         info!("Requester: Attempting to sync with {}", &node_id);
         match syncify_prot.connect(node_id).await {
             Ok(mut conn) => {
                 let request = SyncifyPacket::Request {
-                    head: *dir.inner.read().await.state.hash().as_bytes()
+                    head: *dir.inner.read().await.state.hash().as_bytes(),
                 };
-                let dir = dir.clone();
-                tokio::spawn(async move {
-                    info!("Requester: Sending request...");
-                    conn.send_packet(dir.clone(), request).await.unwrap();
-                    info!("Requester: Finished sending request!");
-                    match conn.receive_packet(dir.clone()).await {
-                        Ok(packet) => { info!("Requester: {:?}: {:?}", packet.0, packet.1) }
-                        Err(err) => { error!("{}", err); }
+                info!("Requester: Sending request...");
+                conn.send_packet(dir.clone(), request).await.unwrap();
+                info!("Requester: Finished sending request!");
+                match conn.receive_packet(dir.clone()).await {
+                    Ok(packet) => {
+                        info!("Requester: {:?}: {:?}", packet.0, packet.1);
+                        /*match conn.receive_packet(dir.clone()).await {
+                            Ok(packet) => {}
+                            Err(err) => {
+                                error!("{}", err)
+                            }
+                        }*/
                     }
-                    info!("Requester: Received success/failed response!");
-                });
+                    Err(err) => {
+                        error!("{}", err);
+                    }
+                }
+                info!("Requester: Received success/failed response!");
             }
             Err(err) => {
                 error!("Requester: Error while connecting {}", err);
