@@ -32,7 +32,6 @@ use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::fs;
 use std::iter::Peekable;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
@@ -57,7 +56,7 @@ pub struct State {
 // TODO: Add optimization
 //  -> Compute when last modified date is > than the last save date (for fastforward sync)
 impl State {
-    pub fn new(directory_name: String, uuid: Uuid) -> Self {
+    pub fn new(uuid: Uuid) -> Self {
         let timestamp = Utc::now();
         let mut pool = HashMap::new();
         let hash = blake3::hash(uuid.as_bytes());
@@ -72,7 +71,7 @@ impl State {
                     timestamp: Utc::now(),
                 },
                 hash_tree: Directory {
-                    name: directory_name,
+                    name: uuid.to_string(),
                     content: vec![],
                     hash: Hash::from_bytes([0; 32]),
                 },
