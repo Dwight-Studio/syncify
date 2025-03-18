@@ -42,10 +42,16 @@ impl FileSystemManager {
     pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
         let inner = dir.inner.read().await;
         
+        let mutations_buffer = if dir.is_read_only() {
+            Vec::new()
+        } else {
+            inner.state.hash_tree().mutations_from_disk(&dir)
+        };
+        
         let mut instance = Self {
             topic,
             dir: dir.clone(),
-            mutations_buffer: inner.state.hash_tree().mutations_from_disk(&dir),
+            mutations_buffer,
             last_tree: inner.state.hash_tree().clone(),
         };
         
@@ -191,7 +197,7 @@ impl FileSystemManager {
     pub(crate) async fn apply_mutations(&mut self) {
         let write_key = match &self.dir.sign_key {
             Some(key) => key,
-            None => panic!("Trying to mutate a read-only directory"),
+            None => return return,
         };
         
         let mut inner = self.dir.inner.write().await;  
