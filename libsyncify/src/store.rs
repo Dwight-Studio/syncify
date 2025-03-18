@@ -264,7 +264,7 @@ impl StoreManager {
 
                 // Update index tables
                 base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
-                head_table.insert(uuid.as_bytes(), inner.state.head().hash().as_bytes()).map_err(StoreError::Storage)?;
+                head_table.insert(uuid.as_bytes(), inner.state.hash().as_bytes()).map_err(StoreError::Storage)?;
                 neighbor_table.insert(uuid.as_bytes(), inner.neighbors.keys().map(|e| *e).collect::<Vec<[u8; 32]>>()).map_err(StoreError::Storage)?;
 
                 let uuid_string = uuid.to_string();

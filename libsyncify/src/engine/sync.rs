@@ -39,7 +39,7 @@ impl SyncManager {
                 match self.syncify_prot.connect(node_id).await {
                     Ok(mut conn) => {
                         let request = SyncifyPacket::Request {
-                            head: *inner_dir.state.head().hash.as_bytes()
+                            head: *inner_dir.state.hash().as_bytes()
                         };
                         conn.send_packet(self.dir.clone(), request).await;
                     }

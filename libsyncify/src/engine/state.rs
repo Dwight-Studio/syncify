@@ -61,8 +61,8 @@ impl State {
         }
     }
 
-    pub fn head(&self) -> RwLockReadGuard<'_, Delta> {
-        self.head.read().unwrap()
+    pub fn hash(&self) -> Hash {
+        self.head.read().unwrap().hash
     }
 
     /// Get file hash tree.
