@@ -79,7 +79,7 @@ pub struct SyncifyProtocol {
 
 impl SyncifyProtocol {
     /// Used to connect a node to node_id and returns a SyncifyConnection if successful
-    pub async fn connect(&self, node_id: NodeId, uuid: Uuid) -> Result<SyncifyConnection, anyhow::Error> {
+    pub async fn connect(&self, node_id: NodeId) -> Result<SyncifyConnection, anyhow::Error> {
         SyncifyConnection::open_new(node_id, self.endpoint.clone()).await
     }
 }

@@ -79,7 +79,7 @@ impl SyncManager {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
                 info!("Requester: Attempting to sync with {}", &node_id);
-                match self.syncify_prot.connect(node_id, self.dir.uuid).await {
+                match self.syncify_prot.connect(node_id).await {
                     Ok(mut conn) => {
                         let request = SyncifyPacket::Request {
                             head: *inner_dir.state.hash().as_bytes()
