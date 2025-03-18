@@ -189,12 +189,17 @@ impl FileSystemManager {
     }
 
     pub(crate) async fn apply_mutations(&mut self) {
+        let write_key = match &self.dir.sign_key {
+            Some(key) => key,
+            None => panic!("Trying to mutate a read-only directory"),
+        };
+        
         let mut inner = self.dir.inner.write().await;  
         
         info!("Applying mutations for {}", self.dir.uuid());
         
         for mutation in &self.mutations_buffer {
-            match inner.state.mutate(mutation.clone()) {
+            match inner.state.mutate(mutation.clone(), write_key) {
                 Ok(_) => {
                     info!("Applied: {mutation}");
                 }

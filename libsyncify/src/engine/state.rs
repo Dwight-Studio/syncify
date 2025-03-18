@@ -26,14 +26,16 @@ use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::NotADirectory;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
-use log::{error, info, warn};
-use redb::{ReadableTable, Table};
+use log::{error, warn};
+use redb::{ReadableTable, Table, Value};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::iter::Peekable;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
+use ed25519_dalek::{Signature, Signer, SigningKey};
+use ed25519_dalek::ed25519::SignatureBytes;
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -66,6 +68,7 @@ impl State {
             Arc::new(Delta {
                 parent: None,
                 hash,
+                signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
                 timestamp,
                 action: Mutation::Init {
                     timestamp: Utc::now(),
@@ -188,15 +191,17 @@ impl State {
     }
 
     /// Apply a mutation on the [`State`].
-    pub fn mutate(&mut self, mutation: Mutation) -> Result<(), StateError> {
+    pub fn mutate(&mut self, mutation: Mutation, write_key: &SigningKey) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
             hash: Hash::from_bytes([0; 32]),
+            signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
             timestamp: Utc::now(),
             action: mutation.clone(),
             hash_tree: self.head().hash_tree.apply(&mutation)?,
         };
 
+        // Compute hash
         delta.hash = {
             let mut data = Vec::new();
 
@@ -205,7 +210,24 @@ impl State {
 
             // Tree
             data.extend(delta.hash_tree.hash().as_bytes());
+            
             blake3::hash(data.leak())
+        };
+        
+        // Compute signature
+        delta.signature = {
+            let mut data = Vec::new();
+            
+            // Hash
+            data.extend(delta.hash.as_bytes());
+            
+            // Parent
+            data.extend(self.head.as_bytes());
+            
+            // Tree
+            data.extend(delta.hash_tree.hash().as_bytes());
+            
+            write_key.sign(data.leak())
         };
 
         // Modify head and insert into pool
@@ -348,6 +370,8 @@ pub struct Delta {
     parent: Option<Hash>,
     #[rkyv(with = crate::util::HashDef)]
     hash: Hash,
+    #[rkyv(with = crate::util::SignatureDef)]
+    signature: Signature,
     /// Timestamp is dated from when the mutation was applied.
     #[rkyv(with = crate::util::DateTimeDef)]
     timestamp: DateTime<Utc>,
@@ -590,7 +614,7 @@ impl HashTree {
                                 }
                             }
                         }
-                        
+
                         Ok(Directory {
                             name,
                             content: new_content,

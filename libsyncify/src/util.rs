@@ -25,6 +25,7 @@ use crate::Arc;
 use crate::HashMap;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
+use ed25519_dalek::Signature;
 use rkyv::{Archive, Deserialize, Serialize};
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -69,5 +70,16 @@ impl From<OptionHashDef> for Option<Hash> {
             OptionHashDef::Some(hash) => Option::Some(hash),
             OptionHashDef::None => Option::None
         }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+#[rkyv(remote = ed25519_dalek::Signature)]
+#[rkyv(archived = ArchivedSignature)]
+pub struct SignatureDef (#[rkyv(getter = Signature::to_bytes)] [u8; 64]);
+
+impl From<SignatureDef> for Signature {
+    fn from(signature_def: SignatureDef) -> Signature {
+        Signature::from_bytes(&signature_def.0)
     }
 }

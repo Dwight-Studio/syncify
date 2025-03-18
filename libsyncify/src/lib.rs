@@ -148,7 +148,7 @@ impl Syncify {
             uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                State::new(abs_path.file_name().unwrap().to_string_lossy().to_string(), uuid),
+                State::new(uuid),
                 HashMap::new()
             ))),
             sign_key: Some(sign_key.clone()),
@@ -246,7 +246,7 @@ impl Syncify {
             uuid: link.uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                State::new(abs_path.file_name().unwrap().to_string_lossy().to_string(), link.uuid),
+                State::new(link.uuid),
                 link.neighbors
             ))),
             sign_key: sign_key.clone(),
