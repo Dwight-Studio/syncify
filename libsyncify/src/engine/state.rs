@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::iter::Peekable;
 use std::sync::{Arc};
-use ed25519_dalek::{Signature, Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use ed25519_dalek::ed25519::SignatureBytes;
 use thiserror::Error;
 use uuid::Uuid;
@@ -70,7 +70,7 @@ impl State {
                 hash,
                 signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
                 timestamp,
-                action: Mutation::Init {
+                mutation: Mutation::Init {
                     timestamp: Utc::now(),
                 },
                 hash_tree: Directory {
@@ -162,7 +162,7 @@ impl State {
     }
 
     /// Get a [`Delta`].
-    fn get(&self, hash: &Hash) -> Option<&Arc<Delta>> {
+    pub fn get(&self, hash: &Hash) -> Option<&Arc<Delta>> {
         self.pool.get(hash.as_bytes())
     }
 
@@ -197,7 +197,7 @@ impl State {
             hash: Hash::from_bytes([0; 32]),
             signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
             timestamp: Utc::now(),
-            action: mutation.clone(),
+            mutation: mutation.clone(),
             hash_tree: self.head().hash_tree.apply(&mutation)?,
         };
 
@@ -215,19 +215,10 @@ impl State {
         };
         
         // Compute signature
-        delta.signature = {
-            let mut data = Vec::new();
-            
-            // Hash
-            data.extend(delta.hash.as_bytes());
-            
-            // Parent
-            data.extend(self.head.as_bytes());
-            
-            // Tree
-            data.extend(delta.hash_tree.hash().as_bytes());
-            
+        delta.signature = if let Some(data) = delta.get_signature_data() {
             write_key.sign(data.leak())
+        } else {
+            Signature::from_bytes(&[0u8; 64])
         };
 
         // Modify head and insert into pool
@@ -332,7 +323,7 @@ impl Display for State {
             }
 
             writeln!(f, "{prefix}  Timestamp: {}", head.timestamp)?;
-            writeln!(f, "{prefix}  {}", head.action)?;
+            writeln!(f, "{prefix}  {}", head.mutation)?;
         }
 
         Ok(())
@@ -376,8 +367,63 @@ pub struct Delta {
     /// Timestamp is dated from when the mutation was applied.
     #[rkyv(with = crate::util::DateTimeDef)]
     timestamp: DateTime<Utc>,
-    action: Mutation,
+    mutation: Mutation,
     hash_tree: HashTree,
+}
+
+impl Delta {
+    
+    /// Get the data used to verify the authenticity of a [`Delta`].
+    /// 
+    /// # Return
+    /// 
+    /// Returns a [`Vec`] containing the hashes of self, the parent and the tree.
+    pub fn get_signature_data(&self) -> Option<Vec<u8>> {
+        if let Some(parent) = self.parent {
+            let mut data = Vec::new();
+
+            // Hash
+            data.extend(self.hash.as_bytes());
+
+            // Parent
+            data.extend(parent.as_bytes());
+
+            // Tree
+            data.extend(self.hash_tree.hash().as_bytes());
+
+            Some(data)
+        } else {
+            None
+        }
+    }
+
+    /// Verify embedded signature.
+    /// 
+    /// # Return
+    ///
+    /// Returns true if the signature is genuine, false otherwise.
+    pub fn verify_signature(&self, read_key: VerifyingKey) -> bool {
+        if let Some(data) = self.get_signature_data() {
+            read_key.verify_strict(data.leak(), &self.signature).is_ok()
+        } else {
+            self.signature == Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64]))
+        }
+    }
+    
+    /// Get the hash.
+    pub fn hash(&self) -> Hash {
+        self.hash
+    }
+
+    /// Get the hash of the parent (if present).
+    pub fn parent(&self) -> Option<Hash> {
+        self.parent 
+    }
+    
+    /// Get the timestamp (when the mutation was applied, i.e. the creation of the [`Delta]).
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        self.timestamp
+    }
 }
 
 /// Mutation action of a [`Delta`].

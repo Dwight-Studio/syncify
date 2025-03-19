@@ -46,6 +46,8 @@ pub trait FiniteStateMachine {
     
     /// Execute all steps until finished or timeout exceeded.
     /// 
+    /// # Return
+    /// 
     /// Returns true if finished, false if timed out.
     async fn step_until_finished(&mut self, timeout: Duration) -> bool {
         tokio::time::timeout(timeout, async move {

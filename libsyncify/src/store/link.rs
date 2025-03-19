@@ -47,7 +47,8 @@ pub struct Link {
 }
 
 impl Link {
-    /// This function returns a builder to generate invitation link
+    /// Get a builder to generate the invitation link.
+    ///
     /// The default values are :
     ///  - permission = SharedDirPermission::Write
     ///  - uuid = Default of Uuid struct
