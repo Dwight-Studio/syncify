@@ -29,11 +29,12 @@ use crate::SharedDirectory;
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, info};
-use notify::{EventHandler, Watcher};
+use notify::{EventHandler, RecommendedWatcher, Watcher};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
@@ -71,9 +72,9 @@ impl DirectoryManager {
         if dir.is_read_only() {
             info!("{} is in read only", dir.uuid)
         } else {
-            info!("{} is writable, attaching a file watcher...", dir.uuid);
             let mut watcher = notify::recommended_watcher(handle.clone())?;
             watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
+            info!("{} is writable, attached '{:?}' file watcher", dir.uuid, RecommendedWatcher::kind());
             _watcher = Some(watcher);
         }
 
@@ -124,7 +125,7 @@ impl DirectoryManager {
             if let Some(event) = result {
                 match event {
                     // FileSystem
-                    Event::FileSystem(fs_event) => fs_manager.handle_events(fs_event).await,
+                    Event::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp).await,
                     Event::ApplyMutations => fs_manager.apply_mutations().await,
 
                     // Gossip
@@ -170,7 +171,7 @@ impl DirectoryManagerHandle {
 impl EventHandler for DirectoryManagerHandle {
     fn handle_event(&mut self, raw_event: notify::Result<notify::Event>) {
         if let Ok(event) = raw_event {
-            if let Err(error) = self.tx.blocking_send(Event::FileSystem(event)) {
+            if let Err(error) = self.tx.blocking_send(Event::FileSystem(event, Utc::now())) {
                 log::error!("Failed to send event: {error}");
             };
         }
@@ -208,7 +209,7 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
 /// Event to control the [`DirectoryManager`] actor.
 pub enum Event {
     // FileSystem
-    FileSystem(notify::Event),
+    FileSystem(notify::Event, DateTime<Utc>),
     ApplyMutations,
 
     // Gossip

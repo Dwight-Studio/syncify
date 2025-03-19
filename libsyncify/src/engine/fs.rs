@@ -24,7 +24,7 @@
 use blake3::Hash;
 use crate::engine::state::{HashTree, Mutation};
 use crate::SharedDirectory;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use iroh_gossip::net::GossipSender;
 use log::{error, info};
 use notify::event::{ModifyKind, RemoveKind, RenameMode};
@@ -60,7 +60,7 @@ impl FileSystemManager {
         instance
     }
 
-    pub(crate) async fn handle_events(&mut self, fs_event: notify::Event) {
+    pub(crate) async fn handle_events(&mut self, fs_event: notify::Event, timestamp: DateTime<Utc>) {
         let mut hasher = blake3::Hasher::new();
 
         match fs_event.kind {
@@ -79,7 +79,7 @@ impl FileSystemManager {
                     let mutation = Mutation::Move {
                         from: path_from.to_string_lossy().to_string(),
                         to: path_to.to_string_lossy().to_string(),
-                        timestamp: Utc::now(),
+                        timestamp,
                     };
 
                     self.mutations_buffer.push(mutation);
@@ -100,7 +100,7 @@ impl FileSystemManager {
                         let mutation = Mutation::Modify {
                             file_path: path.to_string_lossy().to_string(),
                             file_hash: Hash::from(file_hash),
-                            timestamp: Utc::now(),
+                            timestamp,
                         };
 
                         self.mutations_buffer.push(mutation);
@@ -114,7 +114,7 @@ impl FileSystemManager {
 
                         let mutation = Mutation::Remove {
                             file_path: path.to_string_lossy().to_string(),
-                            timestamp: Utc::now(),
+                            timestamp,
                         };
 
                         self.mutations_buffer.push(mutation);
