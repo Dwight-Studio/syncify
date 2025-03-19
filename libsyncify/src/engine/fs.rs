@@ -43,23 +43,23 @@ impl FileSystemManager {
     pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
         let inner = dir.inner.read().await;
         
-        let mutations_buffer = if dir.is_read_only() {
+        let mut local_buffer = if dir.is_read_only() {
             Vec::new()
         } else {
             inner.state.hash_tree().mutations_from_disk(&dir)
         };
         
-        let mut instance = Self {
+        let last_tree = inner.state.hash_tree().clone();
+        
+        Self::clean_mutation_buffer(&mut local_buffer, Some(&last_tree));
+        
+        Self {
             topic,
             dir: dir.clone(),
             remote_buffer: Vec::new(),
-            local_buffer: mutations_buffer,
-            last_tree: inner.state.hash_tree().clone(),
-        };
-        
-        instance.clean_mutation_buffer();
-        
-        instance
+            local_buffer,
+            last_tree,
+        }
     }
 
     pub(crate) async fn handle_events(&mut self, fs_event: notify::Event, timestamp: DateTime<Utc>) {
@@ -126,13 +126,13 @@ impl FileSystemManager {
             _ => return,
         }
 
-        self.clean_mutation_buffer()
+        Self::clean_mutation_buffer(&mut self.local_buffer, Some(&self.last_tree));
     }
 
-    fn clean_mutation_buffer(&mut self) {
+    fn clean_mutation_buffer(buffer: &mut Vec<Mutation>, tree: Option<&HashTree>) {
         let mut working_buffer = Vec::new();
 
-        for n_mut in &self.local_buffer {
+        for n_mut in &*buffer {
 
             // Fuse Mod then Mod, Mod then Rem and Rem then Mod
             working_buffer.retain(|o_mut| match (n_mut, o_mut) {
@@ -177,9 +177,11 @@ impl FileSystemManager {
             });
             
             // Drop remove if about a file that doesn't exist
-            if let Mutation::Remove { file_path, .. } = n_mut {
-                if self.last_tree.get(file_path).is_none() {
-                    continue;
+            if let Some(last_tree) = tree {
+                if let Mutation::Remove { file_path, .. } = n_mut {
+                    if last_tree.get(file_path).is_none() {
+                        continue;
+                    }
                 }
             }
 
@@ -189,14 +191,15 @@ impl FileSystemManager {
         }
 
         // Copy the new buffer
-        self.local_buffer = working_buffer;
+        buffer.clear();
+        buffer.extend(working_buffer);
 
-        for mutation in &self.local_buffer {
+        for mutation in buffer {
             info!("{mutation}")
         }
     }
 
-    pub(crate) async fn apply_mutations(&mut self) {
+    pub(crate) async fn apply_local_mutations(&mut self) {
         let write_key = match &self.dir.sign_key {
             Some(key) => key,
             None => return,
@@ -221,6 +224,12 @@ impl FileSystemManager {
         
         self.last_tree = inner.state.hash_tree().clone();
         info!("\n{}", self.last_tree)
+    }
+    
+    pub(crate) async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
+        for mutation in mutations {
+            self.remote_buffer.insert(0, mutation);
+        }
     }
 }
 

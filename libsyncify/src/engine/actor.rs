@@ -39,6 +39,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
+use crate::engine::state::Mutation;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -116,7 +117,7 @@ impl DirectoryManager {
                     Ok(result) => result,
                     // Flush if not
                     Err(_) => {
-                        fs_manager.apply_mutations().await;
+                        fs_manager.apply_local_mutations().await;
                         continue;
                     }
                 }
@@ -126,7 +127,8 @@ impl DirectoryManager {
                 match event {
                     // FileSystem
                     Event::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp).await,
-                    Event::ApplyMutations => fs_manager.apply_mutations().await,
+                    Event::ApplyLocalMutations => fs_manager.apply_local_mutations().await,
+                    Event::ApplyRemoteMutations(mutations) => fs_manager.apply_remote_mutations(mutations).await,
 
                     // Gossip
                     Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
@@ -210,7 +212,8 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
 pub enum Event {
     // FileSystem
     FileSystem(notify::Event, DateTime<Utc>),
-    ApplyMutations,
+    ApplyLocalMutations,
+    ApplyRemoteMutations(Vec<Mutation>),
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
