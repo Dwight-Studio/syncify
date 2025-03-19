@@ -106,7 +106,7 @@ impl FiniteStateMachine for IncomingSync {
             }
             
             IncomingState::Failure(error) => {
-                warn!("Incoming: Error ({:?})", error);
+                warn!("Incoming: Failure ({:?})", error);
                 Ok(IncomingState::Failure(*error))
             }
         }

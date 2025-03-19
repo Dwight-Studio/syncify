@@ -105,8 +105,6 @@ impl SyncManager {
     }
 
     async fn start_sync(mut outgoing_sync: OutgoingSync) {
-        outgoing_sync.step_until_finished(FSM_TIMEOUT).await;
-
         if outgoing_sync.step_until_finished(FSM_TIMEOUT).await {
             outgoing_sync.step().await;
         } else {
