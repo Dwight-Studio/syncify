@@ -56,7 +56,7 @@ impl SyncManager {
                 
                 let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn.clone(), hash);
                 
-                if !incoming_sync.step_until_finished(FSM_TIMEOUT).await {
+                if incoming_sync.step_until_finished(FSM_TIMEOUT).await {
                     incoming_sync.step().await;
                 } else {
                     warn!("Timeout while processing sync event: RequestSync");
