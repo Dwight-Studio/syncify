@@ -106,7 +106,7 @@ impl DirectoryManager {
         // Process the event
         loop {
             // Check if the mutation buffer is empty,
-            let result = if fs_manager.mutations_buffer.is_empty() {
+            let result = if fs_manager.local_buffer.is_empty() {
                 // If so, wait for event
                 rx.recv().await
             } else {

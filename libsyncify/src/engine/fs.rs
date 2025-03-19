@@ -34,7 +34,8 @@ use std::path::Path;
 pub struct FileSystemManager {
     topic: GossipSender,
     dir: SharedDirectory,
-    pub(super) mutations_buffer: Vec<Mutation>,
+    pub(super) remote_buffer: Vec<Mutation>,
+    pub(super) local_buffer: Vec<Mutation>,
     last_tree: HashTree,
 }
 
@@ -51,7 +52,8 @@ impl FileSystemManager {
         let mut instance = Self {
             topic,
             dir: dir.clone(),
-            mutations_buffer,
+            remote_buffer: Vec::new(),
+            local_buffer: mutations_buffer,
             last_tree: inner.state.hash_tree().clone(),
         };
         
@@ -82,7 +84,7 @@ impl FileSystemManager {
                         timestamp,
                     };
 
-                    self.mutations_buffer.push(mutation);
+                    self.local_buffer.push(mutation);
                 }
             }
             Modify(ModifyKind::Data(_)) | Modify(ModifyKind::Name(RenameMode::To)) => {
@@ -103,7 +105,7 @@ impl FileSystemManager {
                             timestamp,
                         };
 
-                        self.mutations_buffer.push(mutation);
+                        self.local_buffer.push(mutation);
                     }
                 }
             }
@@ -117,7 +119,7 @@ impl FileSystemManager {
                             timestamp,
                         };
 
-                        self.mutations_buffer.push(mutation);
+                        self.local_buffer.push(mutation);
                     }
                 }
             }
@@ -130,7 +132,7 @@ impl FileSystemManager {
     fn clean_mutation_buffer(&mut self) {
         let mut working_buffer = Vec::new();
 
-        for n_mut in &self.mutations_buffer {
+        for n_mut in &self.local_buffer {
 
             // Fuse Mod then Mod, Mod then Rem and Rem then Mod
             working_buffer.retain(|o_mut| match (n_mut, o_mut) {
@@ -187,9 +189,9 @@ impl FileSystemManager {
         }
 
         // Copy the new buffer
-        self.mutations_buffer = working_buffer;
+        self.local_buffer = working_buffer;
 
-        for mutation in &self.mutations_buffer {
+        for mutation in &self.local_buffer {
             info!("{mutation}")
         }
     }
@@ -204,7 +206,7 @@ impl FileSystemManager {
         
         info!("Applying mutations for {}", self.dir.uuid());
         
-        for mutation in &self.mutations_buffer {
+        for mutation in &self.local_buffer {
             match inner.state.mutate(mutation.clone(), write_key) {
                 Ok(_) => {
                     info!("Applied: {mutation}");
@@ -215,7 +217,7 @@ impl FileSystemManager {
             }
         }
         
-        self.mutations_buffer.clear();
+        self.local_buffer.clear();
         
         self.last_tree = inner.state.hash_tree().clone();
         info!("\n{}", self.last_tree)
