@@ -21,18 +21,18 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use std::collections::HashMap;
-use log::info;
+use log::{info, warn};
 use crate::engine::protocol::{SyncifyConnection, SyncifyPacket};
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::state::MAX_LOADED_DELTAS;
 use crate::SharedDirectory;
 
-#[derive(PartialEq)]
+#[derive(Eq, PartialEq)]
 pub enum IncomingState {
     ReceivingRequest,
     SendingRequest,
     Finish,
-    Failure,
+    Failure(ProtocolError),
 }
 
 pub struct IncomingSync {
@@ -56,9 +56,8 @@ impl IncomingSync {
 impl FiniteStateMachine for IncomingSync {
     type State = IncomingState;
 
-    async fn step(&mut self) -> Result<(), ProtocolError> {
+    async fn execute_step(&mut self) -> Result<Self::State, ProtocolError> {
         match &self.state {
-
             IncomingState::ReceivingRequest => {
                 info!("Incoming sync request from {}", self.connection.remote());
                 let packet = {
@@ -75,11 +74,9 @@ impl FiniteStateMachine for IncomingSync {
                 };
 
                 if self.connection.send_packet(self.dir.clone(), packet).await.is_err() {
-                    self.state = IncomingState::Failure;
                     Err(ProtocolError::SendFailed)
                 } else {
-                    self.state = IncomingState::SendingRequest;
-                    Ok(())
+                    Ok(IncomingState::SendingRequest)
                 }
             }
             
@@ -93,22 +90,24 @@ impl FiniteStateMachine for IncomingSync {
                     if let Ok((uuid, packet)) = self.connection.receive_packet(self.dir.clone()).await {
 
                         // TODO: Process Success/Failed packet
-
-                        self.state = IncomingState::Finish;
-                        Ok(())
+                        
+                        Ok(IncomingState::Finish)
                     } else {
-                        self.state = IncomingState::Failure;
                         Err(ProtocolError::ReceiveFailed)
                     }
                 } else {
-                    self.state = IncomingState::Failure;
                     Err(ProtocolError::SendFailed)
                 }
             }
 
-            IncomingState::Finish | IncomingState::Failure => {
+            IncomingState::Finish => {
                 info!("Incoming: Finished");
-                Ok(())
+                Ok(IncomingState::Finish)
+            }
+            
+            IncomingState::Failure(error) => {
+                warn!("Incoming: Error ({:?})", error);
+                Ok(IncomingState::Failure(*error))
             }
         }
     }
@@ -116,11 +115,26 @@ impl FiniteStateMachine for IncomingSync {
     fn finished(&self) -> bool {
         match self.state {
             IncomingState::ReceivingRequest | IncomingState::SendingRequest => false,
-            IncomingState::Finish | IncomingState::Failure => true
+            IncomingState::Finish | IncomingState::Failure(_) => true
         }
     }
 
     fn current_state(&self) -> &Self::State {
         &self.state
+    }
+
+    fn error(&self) -> Option<ProtocolError> {
+        match self.state {
+            IncomingState::Failure(error) => Some(error),
+            _ => None
+        }
+    }
+
+    fn transition(&mut self, state: Self::State) {
+        self.state = state;
+    }
+
+    fn transition_error(&mut self, error: ProtocolError) {
+        self.state = IncomingState::Failure(error);
     }
 }

@@ -24,7 +24,7 @@ use crate::engine::state::MAX_LOADED_DELTAS;
 use std::collections::HashMap;
 use blake3::Hash;
 use iroh::NodeId;
-use log::info;
+use log::{info, warn};
 use crate::engine::protocol::{SyncifyConnection, SyncifyPacket, SyncifyProtocol};
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::SharedDirectory;
@@ -35,7 +35,7 @@ pub enum OutgoingState {
     Connected,
     WaitForRequest,
     Finish,
-    Failure,
+    Failure(ProtocolError),
 }
 
 pub struct OutgoingSync {
@@ -61,17 +61,15 @@ impl OutgoingSync {
 impl FiniteStateMachine for OutgoingSync {
     type State = OutgoingState;
 
-    async fn step(&mut self) -> Result<(), ProtocolError> {
+    async fn execute_step(&mut self) -> Result<Self::State, ProtocolError> {
         match &self.state {
 
             OutgoingState::Initialize => {
                 info!("Outgoing: Requesting sync to {}", self.node_id);
                 if let Ok(conn) = self.protocol.connect(self.node_id).await {
-                    self.state = OutgoingState::Connected;
                     self.connection = Some(conn);
-                    Ok(())
+                    Ok(OutgoingState::Connected)
                 } else {
-                    self.state = OutgoingState::Failure;
                     Err(ProtocolError::ConnectionFailed)
                 }
             }
@@ -89,14 +87,11 @@ impl FiniteStateMachine for OutgoingSync {
                         
                         // TODO: Process Success/Failed packet
                         
-                        self.state = OutgoingState::WaitForRequest;
-                        Ok(())
+                        Ok(OutgoingState::WaitForRequest)
                     } else {
-                        self.state = OutgoingState::Failure;
                         Err(ProtocolError::ReceiveFailed)
                     }
                 } else {
-                    self.state = OutgoingState::Failure;
                     Err(ProtocolError::SendFailed)
                 }
             }
@@ -109,11 +104,9 @@ impl FiniteStateMachine for OutgoingSync {
                     if let SyncifyPacket::Request { head } = request.1 {
                         Hash::from_bytes(head)
                     } else {
-                        self.state = OutgoingState::Failure;
                         return Err(ProtocolError::Unexpected)
                     }
                 } else {
-                    self.state = OutgoingState::Failure;
                     return Err(ProtocolError::ReceiveFailed)
                 };
                 let packet = {
@@ -130,17 +123,20 @@ impl FiniteStateMachine for OutgoingSync {
                 };
 
                 if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
-                    self.state = OutgoingState::Finish;
-                    Ok(())
+                    Ok(OutgoingState::Finish)
                 } else {
-                    self.state = OutgoingState::Failure;
                     Err(ProtocolError::SendFailed)
                 }
             }
 
-            OutgoingState::Finish | OutgoingState::Failure => {
+            OutgoingState::Finish => {
                 info!("Outgoing: Finished");
-                Ok(())
+                Ok(OutgoingState::Finish)
+            }
+            
+            OutgoingState::Failure(error) => {
+                warn!("Outgoing: Error ({:?})", error);
+                Ok(OutgoingState::Failure(*error))
             }
         }
     }
@@ -148,11 +144,26 @@ impl FiniteStateMachine for OutgoingSync {
     fn finished(&self) -> bool {
         match self.state {
             OutgoingState::Initialize | OutgoingState::Connected | OutgoingState::WaitForRequest => false,
-            OutgoingState::Finish | OutgoingState::Failure => true
+            OutgoingState::Finish | OutgoingState::Failure(_) => true
         }
     }
 
     fn current_state(&self) -> &Self::State {
         &self.state
+    }
+
+    fn error(&self) -> Option<ProtocolError> {
+        match self.state {
+            OutgoingState::Failure(error) => Some(error),
+            _ => None
+        }
+    }
+
+    fn transition(&mut self, state: Self::State) {
+        self.state = state;
+    }
+
+    fn transition_error(&mut self, error: ProtocolError) {
+        self.state = OutgoingState::Failure(error);
     }
 }

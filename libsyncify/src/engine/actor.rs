@@ -37,6 +37,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
+use crate::engine::protocol::outgoing_sync::OutgoingSync;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -131,7 +132,6 @@ impl DirectoryManager {
 
                     // Protocol
                     Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
-                    Event::TriggerSync => sync_manager.initial_sync().await,
 
                     // Actor
                     Event::Shutdown => {
@@ -216,12 +216,12 @@ pub enum Event {
 
     // Protocol
     Sync(SyncEvent),
-    TriggerSync,
 
     // Actor
     Shutdown,
 }
 
 pub enum SyncEvent {
-    RequestDeltas(SyncifyConnection, blake3::Hash)
+    RequestSync(SyncifyConnection, blake3::Hash),
+    TriggerSync(Option<OutgoingSync>)
 }

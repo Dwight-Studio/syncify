@@ -21,11 +21,11 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::actor::SyncEvent;
+use crate::engine::actor::{Event, SyncEvent};
 use crate::engine::protocol::SyncifyProtocol;
 use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
-use log::{info, warn};
+use log::{error, info, warn};
 use std::time::Duration;
 use tokio::time::sleep;
 use crate::engine::protocol::fsm::FiniteStateMachine;
@@ -37,7 +37,7 @@ const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) struct SyncManager {
     pub(crate) topic: GossipSender,
     pub(crate) dir: SharedDirectory,
-    pub(crate) syncify_prot: SyncifyProtocol,
+    pub(crate) prot: SyncifyProtocol,
 }
 
 impl SyncManager {
@@ -45,26 +45,28 @@ impl SyncManager {
         Self {
             topic,
             dir,
-            syncify_prot,
+            prot: syncify_prot,
         }
     }
 
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
-        match &sync_event {
-            SyncEvent::RequestDeltas(conn, hash) => {
+        match sync_event {
+            SyncEvent::RequestSync(conn, hash) => {
                 self.dir.inner.write().await.received_sync = true;
                 
-                let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn.clone(), *hash);
+                let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn.clone(), hash);
                 
-                while !incoming_sync.finished() {
-                    let timeout_result = tokio::time::timeout(FSM_TIMEOUT, incoming_sync.step()).await;
-
-                    if timeout_result.is_err() {
-                        warn!("Timeout while processing sync event: RequestDeltas");
-                        break;
-                    }
+                if !incoming_sync.step_until_finished(FSM_TIMEOUT).await {
+                    incoming_sync.step().await;
+                } else {
+                    warn!("Timeout while processing sync event: RequestSync");
                 }
-                incoming_sync.step().await;
+            }
+            SyncEvent::TriggerSync(outgoing_opt) => {
+                match outgoing_opt {
+                    None => self.initial_sync().await,
+                    Some(outgoing) => Self::start_sync(outgoing).await,
+                }
             }
         }
     }
@@ -73,22 +75,27 @@ impl SyncManager {
         for node in self.dir.inner.read().await.neighbors.clone() {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.syncify_prot.clone());
+                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.prot.clone());
 
-                if self.syncify_prot.endpoint.node_id() > node_id {
+                if self.prot.endpoint.node_id() > node_id {
                     Self::start_sync(outgoing).await;
                 } else {
                     let dir = self.dir.clone();
                     
                     tokio::spawn(async move {
                         sleep(Duration::from_secs(2)).await; // Wait 2 seconds for RequestDeltas
-                        let received_request = dir.inner.read().await.received_sync;
+                        let inner = dir.inner.read().await;
+                        let received_request = inner.received_sync;
 
                         if !received_request {
-                            info!("Outgoing: No sync request received. Initiating sync myself.");
-                            Self::start_sync(outgoing).await;
+                            info!("Initial sync: No sync request received. Initiating sync myself.");
+                            if let Some(handle) = &inner.handle {
+                                    handle.send(Event::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
+                            } else {
+                                error!("Initial sync: No handle available, aborting.");
+                            }
                         } else {
-                            info!("Outgoing: Sync request received. No need to start sync.");
+                            info!("Initial sync: Sync request received. No need to start sync.");
                         }
                     });
                 }
@@ -98,14 +105,12 @@ impl SyncManager {
     }
 
     async fn start_sync(mut outgoing_sync: OutgoingSync) {
-        while !outgoing_sync.finished() {
-            let timeout_result = tokio::time::timeout(FSM_TIMEOUT, outgoing_sync.step()).await;
-            
-            if timeout_result.is_err() {
-                warn!("Timeout while requesting sync");
-                break;
-            }
+        outgoing_sync.step_until_finished(FSM_TIMEOUT).await;
+
+        if outgoing_sync.step_until_finished(FSM_TIMEOUT).await {
+            outgoing_sync.step().await;
+        } else {
+            warn!("Timeout while requesting sync");
         }
-        outgoing_sync.step().await;
     }
 }

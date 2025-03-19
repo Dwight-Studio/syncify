@@ -133,7 +133,7 @@ impl ProtocolHandler for SyncifyProtocol {
             let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes).map_err(SyncifyProtocolError::DeserializeError)?;
             
             match packet {
-                SyncifyPacket::Request { head } => { handle.send(Sync(SyncEvent::RequestDeltas(conn.clone(), blake3::Hash::from(head)))).await?; }
+                SyncifyPacket::Request { head } => { handle.send(Sync(SyncEvent::RequestSync(conn.clone(), blake3::Hash::from(head)))).await?; }
                 SyncifyPacket::Success { .. } => { warn!("Success: Not implemented!"); }
                 SyncifyPacket::Failed => { warn!("Failed: Not implemented!") }
             }

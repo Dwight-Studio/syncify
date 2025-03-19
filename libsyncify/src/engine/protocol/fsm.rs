@@ -20,26 +20,65 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::time::Duration;
+
 /// Simple finite state machine (FSM) to handle protocols.
 pub trait FiniteStateMachine {
     type State;
     
     /// Execute a step.
-    async fn step(&mut self) -> Result<(), ProtocolError>;
+    async fn step(&mut self) {
+        match self.execute_step().await {
+            Ok(state) => {
+                self.transition(state);
+            }
+            Err(e) => {
+                self.transition_error(e);
+            }
+        }
+    }
+
+    /// Inner stepping execution.
+    async fn execute_step(&mut self) -> Result<Self::State, ProtocolError>;
     
     /// Test if the FSM reached a final state.
     fn finished(&self) -> bool;
     
+    /// Execute all steps until finished or timeout exceeded.
+    /// 
+    /// Returns true if finished, false if timed out.
+    async fn step_until_finished(&mut self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async move {
+            loop {
+                self.step().await;
+                
+                if self.finished() {
+                    break;
+                }
+            }
+        }).await.is_ok()
+    }
+    
     /// Get the current state.
     fn current_state(&self) -> &Self::State;
+    
+    /// Get error if on failure state.
+    fn error(&self) -> Option<ProtocolError>;
+
+    /* Internal methods */
+    
+    /// Transition to state. Meant to be called by the FSM.
+    fn transition(&mut self, state: Self::State);
+
+    /// Transition to failure state. Meant to be called by the FSM.
+    fn transition_error(&mut self, error: ProtocolError);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum ProtocolError {
     ConnectionFailed,
     ConnectionClosed,
     SendFailed,
     ReceiveFailed,
-    Timeout,
     Unexpected
 }
