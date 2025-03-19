@@ -49,7 +49,7 @@ impl GossipManager {
                         Self::update_neighbors(neighbors, node_id);
                     }
                     
-                    self.handle.send(Event::Sync(SyncEvent::TriggerSync(None))).await.expect("Unable to push a new event!");
+                    self.handle.send(Event::Sync(SyncEvent::TriggerSync(None))).await;
                 }
                 GossipEvent::NeighborUp(node_id) => {
                     let neighbors = &mut self.dir.inner.write().await.neighbors;

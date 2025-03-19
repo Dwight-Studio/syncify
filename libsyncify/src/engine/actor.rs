@@ -28,7 +28,7 @@ use crate::engine::sync::SyncManager;
 use crate::SharedDirectory;
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
-use log::{debug, info};
+use log::{debug, error, info};
 use notify::{EventHandler, RecommendedWatcher, Watcher};
 use std::ops::Deref;
 use std::pin::Pin;
@@ -165,8 +165,10 @@ pub struct DirectoryManagerHandle {
 }
 
 impl DirectoryManagerHandle {
-    pub async fn send(&self, event: Event) -> Result<(), SendError<Event>> {
-        self.tx.send(event).await
+    pub async fn send(&self, event: Event) {
+        if let Err(e) = self.tx.send(event).await {
+            error!("Error sending to actor: {e}");
+        }
     }
 }
 
