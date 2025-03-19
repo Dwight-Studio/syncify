@@ -440,6 +440,11 @@ impl Delta {
     pub fn timestamp(&self) -> DateTime<Utc> {
         self.timestamp
     }
+    
+    /// Get a copy of the [`Mutation`].
+    pub fn mutation(&self) -> Mutation {
+        self.mutation.clone()
+    }
 }
 
 /// Mutation action of a [`Delta`].
