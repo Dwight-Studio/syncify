@@ -21,86 +21,93 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use std::collections::HashMap;
-use iroh::NodeId;
 use log::info;
-use crate::engine::actor::SyncEvent;
-use crate::engine::protocol::{SyncifyConnection, SyncifyPacket, SyncifyProtocol};
+use crate::engine::protocol::{SyncifyConnection, SyncifyPacket};
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::state::MAX_LOADED_DELTAS;
 use crate::SharedDirectory;
 
-enum State {
-    Requested,
+#[derive(PartialEq)]
+pub enum IncomingState {
+    ReceivingRequest,
+    SendingRequest,
     Finish,
     Failure,
 }
 
 pub struct IncomingSync {
-    state: State,
+    state: IncomingState,
     dir: SharedDirectory,
-    protocole: SyncifyProtocol,
+    connection: SyncifyConnection,
+    hash: blake3::Hash
 }
 
 impl IncomingSync {
-    pub fn new(dir: SharedDirectory, protocole: SyncifyProtocol) -> Self {
+    pub fn new(dir: SharedDirectory, connection: SyncifyConnection, hash: blake3::Hash) -> Self {
         Self {
-            state: State::Requested,
-            protocole,
+            state: IncomingState::ReceivingRequest,
             dir,
+            connection,
+            hash
         }
     }
 }
 
 impl FiniteStateMachine for IncomingSync {
-    async fn step(&mut self, event: Option<SyncEvent>) -> Result<(), ProtocolError> {
+    type State = IncomingState;
+
+    async fn step(&mut self) -> Result<(), ProtocolError> {
         match &self.state {
 
-            State::Requested => {
-                if let Some(SyncEvent::RequestDeltas(mut conn, hash)) = event {
-                    info!("Incoming sync request from {}", conn.remote());
-                    let packet = {
-                        if self.dir.inner.read().await.state.hash() == hash {
-                            SyncifyPacket::Success { pool: HashMap::new() }
-                        } else {
-                            match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
-                                Some(state) => SyncifyPacket::Success {
-                                    pool: state.pool().clone(),
-                                },
-                                None => SyncifyPacket::Failed,
-                            }
-                        }
-                    };
-
-                    if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
-                        let packet = SyncifyPacket::Request {
-                            head: *self.dir.inner.read().await.state.hash().as_bytes()
-                        };
-
-                        if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
-                            if let Ok((uuid, packet)) = conn.receive_packet(self.dir.clone()).await {
-
-                                // TODO: Process Success/Failed packet
-
-                                self.state = State::Finish;
-                                Ok(())
-                            } else {
-                                self.state = State::Failure;
-                                Err(ProtocolError::ReceiveFailed)
-                            }
-                        } else {
-                            self.state = State::Failure;
-                            Err(ProtocolError::SendFailed)
-                        }
+            IncomingState::ReceivingRequest => {
+                info!("Incoming sync request from {}", self.connection.remote());
+                let packet = {
+                    if self.dir.inner.read().await.state.hash() == self.hash {
+                        SyncifyPacket::Success { pool: HashMap::new() }
                     } else {
-                        self.state = State::Failure;
-                        Err(ProtocolError::SendFailed)
+                        match self.dir.inner.read().await.state.clone_after(self.hash, MAX_LOADED_DELTAS) {
+                            Some(state) => SyncifyPacket::Success {
+                                pool: state.pool().clone(),
+                            },
+                            None => SyncifyPacket::Failed,
+                        }
                     }
+                };
+
+                if self.connection.send_packet(self.dir.clone(), packet).await.is_err() {
+                    self.state = IncomingState::Failure;
+                    Err(ProtocolError::SendFailed)
                 } else {
+                    self.state = IncomingState::SendingRequest;
                     Ok(())
                 }
             }
+            
+            IncomingState::SendingRequest => {
+                info!("Incoming: SendingRequest");
+                let packet = SyncifyPacket::Request {
+                    head: *self.dir.inner.read().await.state.hash().as_bytes()
+                };
 
-            State::Finish | State::Failure => {
+                if let Ok(()) = self.connection.send_packet(self.dir.clone(), packet).await {
+                    if let Ok((uuid, packet)) = self.connection.receive_packet(self.dir.clone()).await {
+
+                        // TODO: Process Success/Failed packet
+
+                        self.state = IncomingState::Finish;
+                        Ok(())
+                    } else {
+                        self.state = IncomingState::Failure;
+                        Err(ProtocolError::ReceiveFailed)
+                    }
+                } else {
+                    self.state = IncomingState::Failure;
+                    Err(ProtocolError::SendFailed)
+                }
+            }
+
+            IncomingState::Finish | IncomingState::Failure => {
+                info!("Incoming: Finished");
                 Ok(())
             }
         }
@@ -108,8 +115,12 @@ impl FiniteStateMachine for IncomingSync {
 
     fn finished(&self) -> bool {
         match self.state {
-            State::Requested => false,
-            State::Finish | State::Failure => true
+            IncomingState::ReceivingRequest | IncomingState::SendingRequest => false,
+            IncomingState::Finish | IncomingState::Failure => true
         }
+    }
+
+    fn current_state(&self) -> &Self::State {
+        &self.state
     }
 }

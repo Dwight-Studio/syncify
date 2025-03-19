@@ -22,14 +22,15 @@
  */
 use crate::engine::state::MAX_LOADED_DELTAS;
 use std::collections::HashMap;
+use blake3::Hash;
 use iroh::NodeId;
 use log::info;
-use crate::engine::actor::SyncEvent;
 use crate::engine::protocol::{SyncifyConnection, SyncifyPacket, SyncifyProtocol};
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::SharedDirectory;
 
-enum State {
+#[derive(PartialEq, Debug)]
+pub enum OutgoingState {
     Initialize,
     Connected,
     WaitForRequest,
@@ -38,7 +39,7 @@ enum State {
 }
 
 pub struct OutgoingSync {
-    state: State,
+    state: OutgoingState,
     dir: SharedDirectory,
     node_id: NodeId,
     protocol: SyncifyProtocol,
@@ -48,7 +49,7 @@ pub struct OutgoingSync {
 impl OutgoingSync {
     pub fn new(dir: SharedDirectory, node_id: NodeId, protocol: SyncifyProtocol) -> Self {
         Self {
-            state: State::Initialize,
+            state: OutgoingState::Initialize,
             dir,
             node_id,
             protocol,
@@ -58,22 +59,25 @@ impl OutgoingSync {
 }
 
 impl FiniteStateMachine for OutgoingSync {
-    async fn step(&mut self, event: Option<SyncEvent>) -> Result<(), ProtocolError> {
+    type State = OutgoingState;
+
+    async fn step(&mut self) -> Result<(), ProtocolError> {
         match &self.state {
 
-            State::Initialize => {
-                info!("Requesting sync to {}", self.node_id);
+            OutgoingState::Initialize => {
+                info!("Outgoing: Requesting sync to {}", self.node_id);
                 if let Ok(conn) = self.protocol.connect(self.node_id).await {
-                    self.state = State::Connected;
+                    self.state = OutgoingState::Connected;
                     self.connection = Some(conn);
                     Ok(())
                 } else {
-                    self.state = State::Failure;
+                    self.state = OutgoingState::Failure;
                     Err(ProtocolError::ConnectionFailed)
                 }
             }
 
-            State::Connected => {
+            OutgoingState::Connected => {
+                info!("Outgoing: Connected");
                 let packet = SyncifyPacket::Request {
                     head: *self.dir.inner.read().await.state.hash().as_bytes()
                 };
@@ -85,46 +89,57 @@ impl FiniteStateMachine for OutgoingSync {
                         
                         // TODO: Process Success/Failed packet
                         
-                        self.state = State::WaitForRequest;
+                        self.state = OutgoingState::WaitForRequest;
                         Ok(())
                     } else {
-                        self.state = State::Failure;
+                        self.state = OutgoingState::Failure;
                         Err(ProtocolError::ReceiveFailed)
                     }
                 } else {
-                    self.state = State::Failure;
+                    self.state = OutgoingState::Failure;
                     Err(ProtocolError::SendFailed)
                 }
             }
 
-            State::WaitForRequest => {
-                if let Some(SyncEvent::RequestDeltas(mut conn, hash)) = event {
-                    let packet = {
-                        if self.dir.inner.read().await.state.hash() == hash {
-                            SyncifyPacket::Success { pool: HashMap::new() }
-                        } else {
-                            match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
-                                Some(state) => SyncifyPacket::Success {
-                                    pool: state.pool().clone(),
-                                },
-                                None => SyncifyPacket::Failed,
-                            }
-                        }
-                    };
-                    
-                    if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
-                        self.state = State::Finish;
-                        Ok(())
+            OutgoingState::WaitForRequest => {
+                info!("Outgoing: WaitForRequest");
+                let mut conn = self.connection.clone().unwrap();
+                
+                let hash = if let Ok(request) = conn.receive_packet(self.dir.clone()).await {
+                    if let SyncifyPacket::Request { head } = request.1 {
+                        Hash::from_bytes(head)
                     } else {
-                        self.state = State::Failure;
-                        Err(ProtocolError::SendFailed)
+                        self.state = OutgoingState::Failure;
+                        return Err(ProtocolError::Unexpected)
                     }
                 } else {
+                    self.state = OutgoingState::Failure;
+                    return Err(ProtocolError::ReceiveFailed)
+                };
+                let packet = {
+                    if self.dir.inner.read().await.state.hash() == hash {
+                        SyncifyPacket::Success { pool: HashMap::new() }
+                    } else {
+                        match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
+                            Some(state) => SyncifyPacket::Success {
+                                pool: state.pool().clone(),
+                            },
+                            None => SyncifyPacket::Failed,
+                        }
+                    }
+                };
+
+                if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
+                    self.state = OutgoingState::Finish;
                     Ok(())
+                } else {
+                    self.state = OutgoingState::Failure;
+                    Err(ProtocolError::SendFailed)
                 }
             }
 
-            State::Finish | State::Failure => {
+            OutgoingState::Finish | OutgoingState::Failure => {
+                info!("Outgoing: Finished");
                 Ok(())
             }
         }
@@ -132,8 +147,12 @@ impl FiniteStateMachine for OutgoingSync {
 
     fn finished(&self) -> bool {
         match self.state {
-            State::Initialize | State::Connected | State::WaitForRequest => false,
-            State::Finish | State::Failure => true
+            OutgoingState::Initialize | OutgoingState::Connected | OutgoingState::WaitForRequest => false,
+            OutgoingState::Finish | OutgoingState::Failure => true
         }
+    }
+
+    fn current_state(&self) -> &Self::State {
+        &self.state
     }
 }

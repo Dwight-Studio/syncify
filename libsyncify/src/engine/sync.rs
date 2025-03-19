@@ -20,15 +20,13 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::sync::Arc;
 use crate::SharedDirectory;
 use crate::engine::actor::SyncEvent;
-use crate::engine::protocol::{SyncifyPacket, SyncifyProtocol};
+use crate::engine::protocol::SyncifyProtocol;
 use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
-use log::{error, info, warn};
+use log::{info, warn};
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio::time::sleep;
 use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
@@ -40,7 +38,6 @@ pub(crate) struct SyncManager {
     pub(crate) topic: GossipSender,
     pub(crate) dir: SharedDirectory,
     pub(crate) syncify_prot: SyncifyProtocol,
-    outgoing: Arc<RwLock<Option<OutgoingSync>>>,
 }
 
 impl SyncManager {
@@ -49,63 +46,49 @@ impl SyncManager {
             topic,
             dir,
             syncify_prot,
-            outgoing: None
         }
     }
 
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
         match &sync_event {
-            SyncEvent::RequestDeltas(_, _) => {
-                if let Some(mut outgoing) = self.outgoing.write().await.take() {
-                    let timeout_result = tokio::time::timeout(FSM_TIMEOUT, outgoing.step(Some(sync_event))).await;
+            SyncEvent::RequestDeltas(conn, hash) => {
+                self.dir.inner.write().await.received_sync = true;
+                
+                let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn.clone(), *hash);
+                
+                while !incoming_sync.finished() {
+                    let timeout_result = tokio::time::timeout(FSM_TIMEOUT, incoming_sync.step()).await;
 
-                    if let Ok(result) = timeout_result {
-                        if !outgoing.finished() {
-                            self.outgoing.write().aw = Some(outgoing);
-                        }
-                    } else {
-                        warn!("Timout while processing sync event: RequestDeltas");
-                    }
-                } else {
-                    let mut fsm = IncomingSync::new(self.dir.clone(), self.syncify_prot.clone());
-                    let timeout_result = tokio::time::timeout(FSM_TIMEOUT, fsm.step(Some(sync_event))).await;
-
-                    if let Ok(result) = timeout_result {
-
-                    } else {
-                        warn!("Timout while processing sync event: RequestDeltas");
+                    if timeout_result.is_err() {
+                        warn!("Timeout while processing sync event: RequestDeltas");
+                        break;
                     }
                 }
+                incoming_sync.step().await;
             }
         }
     }
 
     pub(crate) async fn initial_sync(&mut self) {
-        let inner_dir = self.dir.inner.read().await;
-        for node in inner_dir.neighbors.clone() {
+        for node in self.dir.inner.read().await.neighbors.clone() {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                let dir = self.dir.clone();
-                let syncify_prot = self.syncify_prot.clone();
-                let outgoing_ref = self.outgoing.clone();
+                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.syncify_prot.clone());
 
                 if self.syncify_prot.endpoint.node_id() > node_id {
-                    let mut outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.syncify_prot.clone());
-                    outgoing.step(None).await;
-                    self.outgoing = Some(Arc::new(RwLock::new(outgoing)));
-
+                    Self::start_sync(outgoing).await;
                 } else {
+                    let dir = self.dir.clone();
+                    
                     tokio::spawn(async move {
                         sleep(Duration::from_secs(2)).await; // Wait 2 seconds for RequestDeltas
                         let received_request = dir.inner.read().await.received_sync;
 
                         if !received_request {
-                            info!("Requester: No sync request received. Initiating sync myself.");
-                            let mut outgoing = OutgoingSync::new(dir, node_id, syncify_prot);
-                            outgoing.step(None).await;
-                            outgoing_ref = Some(Arc::new(RwLock::new(outgoing)));
+                            info!("Outgoing: No sync request received. Initiating sync myself.");
+                            Self::start_sync(outgoing).await;
                         } else {
-                            info!("Requester: Sync request received. No need to start sync.");
+                            info!("Outgoing: Sync request received. No need to start sync.");
                         }
                     });
                 }
@@ -114,35 +97,15 @@ impl SyncManager {
         }
     }
 
-    async fn start_sync(node_id: NodeId, syncify_prot: SyncifyProtocol, dir: SharedDirectory) {
-        info!("Requester: Attempting to sync with {}", &node_id);
-        match syncify_prot.connect(node_id).await {
-            Ok(mut conn) => {
-                let request = SyncifyPacket::Request {
-                    head: *dir.inner.read().await.state.hash().as_bytes(),
-                };
-                info!("Requester: Sending request...");
-                conn.send_packet(dir.clone(), request).await.unwrap();
-                info!("Requester: Finished sending request!");
-                match conn.receive_packet(dir.clone()).await {
-                    Ok(packet) => {
-                        info!("Requester: {:?}: {:?}", packet.0, packet.1);
-                        /*match conn.receive_packet(dir.clone()).await {
-                            Ok(packet) => {}
-                            Err(err) => {
-                                error!("{}", err)
-                            }
-                        }*/
-                    }
-                    Err(err) => {
-                        error!("{}", err);
-                    }
-                }
-                info!("Requester: Received success/failed response!");
-            }
-            Err(err) => {
-                error!("Requester: Error while connecting {}", err);
+    async fn start_sync(mut outgoing_sync: OutgoingSync) {
+        while !outgoing_sync.finished() {
+            let timeout_result = tokio::time::timeout(FSM_TIMEOUT, outgoing_sync.step()).await;
+            
+            if timeout_result.is_err() {
+                warn!("Timeout while requesting sync");
+                break;
             }
         }
+        outgoing_sync.step().await;
     }
 }

@@ -20,21 +20,26 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::actor::SyncEvent;
-
 /// Simple finite state machine (FSM) to handle protocols.
 pub trait FiniteStateMachine {
+    type State;
+    
     /// Execute a step.
-    async fn step(&mut self, event: Option<SyncEvent>) -> Result<(), ProtocolError>;
+    async fn step(&mut self) -> Result<(), ProtocolError>;
     
     /// Test if the FSM reached a final state.
     fn finished(&self) -> bool;
+    
+    /// Get the current state.
+    fn current_state(&self) -> &Self::State;
 }
 
+#[derive(Debug)]
 pub enum ProtocolError {
     ConnectionFailed,
     ConnectionClosed,
     SendFailed,
     ReceiveFailed,
-    Timeout
+    Timeout,
+    Unexpected
 }

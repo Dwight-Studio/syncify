@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::engine::actor::{DirectoryManagerHandle, Event, SyncEvent};
+use crate::engine::actor::{DirectoryManagerHandle, Event};
 use crate::SharedDirectory;
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::info;

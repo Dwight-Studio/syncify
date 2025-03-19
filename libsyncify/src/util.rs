@@ -20,9 +20,6 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::state::Delta;
-use crate::Arc;
-use crate::HashMap;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::Signature;

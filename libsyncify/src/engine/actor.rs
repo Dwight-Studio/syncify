@@ -34,7 +34,6 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use iroh::NodeId;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;

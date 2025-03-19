@@ -197,7 +197,7 @@ impl FileSystemManager {
     pub(crate) async fn apply_mutations(&mut self) {
         let write_key = match &self.dir.sign_key {
             Some(key) => key,
-            None => return return,
+            None => return,
         };
         
         let mut inner = self.dir.inner.write().await;  
