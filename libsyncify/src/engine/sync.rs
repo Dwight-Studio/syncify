@@ -72,7 +72,8 @@ impl SyncManager {
     }
 
     pub(crate) async fn initial_sync(&mut self) {
-        for node in self.dir.inner.read().await.neighbors.clone() {
+        let neighbors = self.dir.inner.read().await.neighbors.clone();
+        for node in neighbors {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
                 let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.prot.clone());

@@ -37,13 +37,12 @@ use iroh::{Endpoint, NodeAddr, NodeId};
 use log::{info, warn};
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::engine::state::Delta;
+use crate::engine::state::State;
 
 /// The size in bytes of the SyncifyPacket::Header packet variant
 const HEADER_SIZE: usize = 48;
@@ -68,7 +67,7 @@ pub enum SyncifyPacket {
         head: [u8; 32]
     } = 0,
     Success {
-        pool: HashMap<[u8; 32], Arc::<Delta>>
+        state: State
     } = 1,
     Failed = 2,
 }
@@ -187,11 +186,17 @@ impl SyncifyConnection {
     }
 
     //noinspection RsTraitObligations
-    async fn receive_header(&mut self, rx: &mut RecvStream) -> Result<HeaderPacket, SyncifyProtocolError> {
+    async fn receive_header(&mut self, rx: &mut RecvStream, uuid: Uuid) -> Result<HeaderPacket, SyncifyProtocolError> {
         let mut header_data = [0u8; HEADER_SIZE];
         rx.read(&mut header_data).await.map_err(|e| SyncifyProtocolError::ReadError(e, String::from("header")))?;
 
-        rkyv::from_bytes::<HeaderPacket, RancorError>(&header_data).map_err(SyncifyProtocolError::DeserializeError)
+        let res = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_data).map_err(SyncifyProtocolError::DeserializeError)?;
+
+        if uuid != res.uuid {
+            return Err(SyncifyProtocolError::WrongRecipient(res.uuid));
+        }
+        
+        Ok(res)
     }
 
     //noinspection RsTraitObligations
@@ -207,12 +212,12 @@ impl SyncifyConnection {
 
     //noinspection RsTraitObligations
     /// Receive a SyncifyPacket from a node
-    pub async fn receive_packet(&mut self, dir: SharedDirectory) -> Result<(Uuid, SyncifyPacket), SyncifyProtocolError> {
+    pub async fn receive_packet(&mut self, dir: SharedDirectory) -> Result<SyncifyPacket, SyncifyProtocolError> {
         let (_tx, mut rx) = self.connection.accept_bi().await.unwrap();
-        let header = self.receive_header(&mut rx).await?;
+        let header = self.receive_header(&mut rx, dir.uuid).await?;
         let packet = self.receive_syncify_packet(&header, dir, &mut rx).await?;
-
-        Ok((header.uuid, packet))
+        
+        Ok(packet)
     }
     
     pub fn is_closed(&self) -> bool {
@@ -255,7 +260,7 @@ pub enum SyncifyProtocolError {
     
     #[error("Cannot decrypt the packet: {0}")]
     DecryptionError(Error),
-
-    #[error("Unable to process data")]
-    ProcessingError
+    
+    #[error("Wrong recipient: {0}")]
+    WrongRecipient(Uuid),
 }

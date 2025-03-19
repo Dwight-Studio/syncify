@@ -93,7 +93,7 @@ impl FileSystemManager {
                         info!("File '{:?}' modified in {}", path.display(), self.dir.uuid());
                         let file_hash = match hasher.update_mmap(&abs_path) {
                             Ok(hash) => *hash.finalize().as_bytes(),
-                            Err(e) => {
+                            Err(_) => {
                                 error!("Cannot compute hash: {}", path.display());
                                 continue;
                             }

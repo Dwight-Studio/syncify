@@ -20,11 +20,11 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::state::MAX_LOADED_DELTAS;
-use std::collections::HashMap;
+use crate::engine::state::{StateError, MAX_LOADED_DELTAS};
 use blake3::Hash;
 use iroh::NodeId;
 use log::{info, warn};
+use crate::engine::actor::Event;
 use crate::engine::protocol::{SyncifyConnection, SyncifyPacket, SyncifyProtocol};
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::SharedDirectory;
@@ -43,7 +43,7 @@ pub struct OutgoingSync {
     dir: SharedDirectory,
     node_id: NodeId,
     protocol: SyncifyProtocol,
-    connection: Option<SyncifyConnection>
+    connection: Option<SyncifyConnection>,
 }
 
 impl OutgoingSync {
@@ -83,9 +83,26 @@ impl FiniteStateMachine for OutgoingSync {
                 let mut conn = self.connection.clone().unwrap();
                 
                 if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
-                    if let Ok((uuid, packet)) = conn.receive_packet(self.dir.clone()).await {
+                    if let Ok(packet) = conn.receive_packet(self.dir.clone()).await {
                         
-                        // TODO: Process Success/Failed packet
+                        match packet {
+                            SyncifyPacket::Request { .. } => {}
+                            SyncifyPacket::Success { state } => {
+                                info!("Outgoing: Receiving state\n{}", state);
+                                let mut inner = self.dir.inner.write().await;
+                                let mutations = inner.state.verify_and_add(state, self.dir.clone()).map_err(|e| {
+                                    match e {
+                                        StateError::InvalidSignature => ProtocolError::InvalidSignature,
+                                        _ => { ProtocolError::Unexpected }
+                                    }
+                                })?;
+
+                                if let Some(handle) = &inner.handle {
+                                    handle.send(Event::ApplyRemoteMutations(mutations)).await;
+                                }
+                            }
+                            SyncifyPacket::Failed => {}
+                        }
                         
                         Ok(OutgoingState::ReceivingRequest)
                     } else {
@@ -101,7 +118,7 @@ impl FiniteStateMachine for OutgoingSync {
                 let mut conn = self.connection.clone().unwrap();
                 
                 let hash = if let Ok(request) = conn.receive_packet(self.dir.clone()).await {
-                    if let SyncifyPacket::Request { head } = request.1 {
+                    if let SyncifyPacket::Request { head } = request {
                         Hash::from_bytes(head)
                     } else {
                         return Err(ProtocolError::Unexpected)
@@ -110,15 +127,11 @@ impl FiniteStateMachine for OutgoingSync {
                     return Err(ProtocolError::ReceiveFailed)
                 };
                 let packet = {
-                    if self.dir.inner.read().await.state.hash() == hash {
-                        SyncifyPacket::Success { pool: HashMap::new() }
-                    } else {
-                        match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
-                            Some(state) => SyncifyPacket::Success {
-                                pool: state.pool().clone(),
-                            },
-                            None => SyncifyPacket::Failed,
-                        }
+                    match self.dir.inner.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
+                        Some(state) => SyncifyPacket::Success {
+                            state
+                        },
+                        None => SyncifyPacket::Failed,
                     }
                 };
 

@@ -110,7 +110,9 @@ impl Commands {
                 })
                 .unwrap();
                 rx.recv().await.unwrap();
-                syncify.stop_sync().await;
+                if let Err(e) = syncify.stop_sync().await {
+                    utils::print_error(e);
+                }
             }
             Subcommands::Invite { uuid, permission } => {
                 if uuid.is_none() {

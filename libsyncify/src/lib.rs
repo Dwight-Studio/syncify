@@ -91,7 +91,7 @@ impl Syncify {
     }
 
     /// Stop syncing destroy current engine.
-    pub async fn stop_sync(mut self) -> Self {
+    pub async fn stop_sync(mut self) -> Result<Self, SyncifyError> {
         let old_engine = self.engine.take();
 
         if let Some(engine) = old_engine {
@@ -99,9 +99,9 @@ impl Syncify {
         }
 
         // Flushing store
-        self.store.write().await.flush().await;
+        self.store.write().await.flush().await.map_err(SyncifyError::Store)?;
 
-        self
+        Ok(self)
     }
 
     /// Create shared directory.
@@ -161,7 +161,7 @@ impl Syncify {
             dir.path().display()
         );
 
-        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::StoreKeyring)?;
+        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::Store)?;
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
@@ -182,7 +182,7 @@ impl Syncify {
         dir: SharedDirectory,
     ) -> Result<(), SyncifyError> {
         if self.store.read().await.get_shared_dir(&dir.uuid).is_some() {
-            self.store.write().await.remove_shared_dir(&dir).await.map_err(SyncifyError::StoreKeyring)?;
+            self.store.write().await.remove_shared_dir(&dir).await.map_err(SyncifyError::Store)?;
 
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
@@ -259,7 +259,7 @@ impl Syncify {
             dir.path().display()
         );
 
-        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::StoreKeyring)?;
+        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::Store)?;
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
@@ -318,9 +318,6 @@ impl InnerSharedDirectory {
 pub enum SyncifyError {
     #[error("Store error: {0}")]
     Store(store::StoreError),
-
-    #[error("Store error: {0}")]
-    StoreKeyring(keyring::Error),
 
     #[error("Engine {0}")]
     Engine(EngineError),

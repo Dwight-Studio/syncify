@@ -29,7 +29,6 @@ use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
-use ::keyring::Error;
 use log::{error, info, warn};
 use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TableHandle, TransactionError};
 use std::collections::HashMap;
@@ -226,7 +225,7 @@ impl StoreManager {
     }
 
     /// Add a [`SharedDirectory`] to the store.
-    pub async fn add_shared_dir(&mut self, dir: &SharedDirectory) -> Result<(), Error> {
+    pub async fn add_shared_dir(&mut self, dir: &SharedDirectory) -> Result<(), StoreError> {
         let sign_key_base64: String = {
             match dir.sign_key.clone() {
                 Some(key) => BASE64_STANDARD.encode(key.to_bytes()),
@@ -240,21 +239,21 @@ impl StoreManager {
                 Keys::SharedDirKey,
                 (sign_key_base64 + " " + verif_key_base64.as_str()).as_str(),
                 Some(dir.uuid.to_string().as_str()),
-            )?;
+            ).map_err(StoreError::Keyring)?;
         
         self.cache.insert(dir.uuid, dir.clone());
-        self.flush().await;
+        self.flush().await?;
         Ok(())
     }
 
     /// Remove a [`SharedDirectory`] from store.
-    pub async fn remove_shared_dir(&mut self, dir: &SharedDirectory) -> Result<(), Error> {
+    pub async fn remove_shared_dir(&mut self, dir: &SharedDirectory) -> Result<(), StoreError> {
         self.cache.remove(&dir.uuid);
 
         self.keyring
-            .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))?;
+            .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str())).map_err(StoreError::Keyring)?;
 
-        self.flush().await;
+        self.flush().await?;
         Ok(())
     }
 
@@ -345,5 +344,8 @@ pub enum StoreError {
     Commit(CommitError),
 
     #[error("{0}")]
-    Serialize(rkyv::rancor::Error)
+    Serialize(rkyv::rancor::Error),
+    
+    #[error("{0}")]
+    Keyring(::keyring::error::Error)
 }

@@ -27,19 +27,21 @@ pub trait FiniteStateMachine {
     type State;
     
     /// Execute a step.
-    async fn step(&mut self) {
-        match self.execute_step().await {
-            Ok(state) => {
-                self.transition(state);
-            }
-            Err(e) => {
-                self.transition_error(e);
+    fn step(&mut self) -> impl Future<Output = ()> {
+        async {
+            match self.execute_step().await {
+                Ok(state) => {
+                    self.transition(state);
+                }
+                Err(e) => {
+                    self.transition_error(e);
+                }
             }
         }
     }
 
     /// Inner stepping execution.
-    async fn execute_step(&mut self) -> Result<Self::State, ProtocolError>;
+    fn execute_step(&mut self) -> impl Future<Output = Result<Self::State, ProtocolError>>;
     
     /// Test if the FSM reached a final state.
     fn finished(&self) -> bool;
@@ -49,16 +51,18 @@ pub trait FiniteStateMachine {
     /// # Return
     /// 
     /// Returns true if finished, false if timed out.
-    async fn step_until_finished(&mut self, timeout: Duration) -> bool {
-        tokio::time::timeout(timeout, async move {
-            loop {
-                self.step().await;
-                
-                if self.finished() {
-                    break;
+    fn step_until_finished(&mut self, timeout: Duration) -> impl Future<Output = bool> {
+        async move {
+            tokio::time::timeout(timeout, async move {
+                loop {
+                    self.step().await;
+
+                    if self.finished() {
+                        break;
+                    }
                 }
-            }
-        }).await.is_ok()
+            }).await.is_ok()
+        }
     }
     
     /// Get the current state.
@@ -82,5 +86,6 @@ pub enum ProtocolError {
     ConnectionClosed,
     SendFailed,
     ReceiveFailed,
-    Unexpected
+    Unexpected,
+    InvalidSignature
 }

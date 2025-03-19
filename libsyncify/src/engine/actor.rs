@@ -36,7 +36,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::state::Mutation;
@@ -185,7 +184,7 @@ impl EventHandler for DirectoryManagerHandle {
 impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
     type Error = iroh_gossip::net::Error;
 
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         if self.tx.is_closed() {
             Poll::Ready(Err(iroh_gossip::net::Error::ReceiverClosed))
         } else {
@@ -196,16 +195,16 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
     fn start_send(self: Pin<&mut Self>, item: iroh_gossip::net::Event) -> Result<(), Self::Error> {
         let fut = self.tx.clone();
         tokio::spawn(async move {
-            fut.send(Event::Gossip(item)).await;
+            fut.send(Event::Gossip(item)).await.unwrap();
         });
         Ok(())
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 }

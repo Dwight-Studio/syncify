@@ -132,7 +132,7 @@ impl Engine {
     /// Create [`DirectoryManager`] actor for a [`SharedDirectory`].
     pub async fn add_watched_directory(
         &mut self,
-        store: Arc<RwLock<StoreManager>>,
+        _store: Arc<RwLock<StoreManager>>,
         dir: &SharedDirectory,
     ) -> Result<(), EngineError> {
         if !self.managers.contains_key(&dir.uuid()) {

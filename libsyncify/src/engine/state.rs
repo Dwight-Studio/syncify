@@ -23,7 +23,7 @@
 
 use crate::SharedDirectory;
 use crate::engine::state::HashTree::{Directory, File, Void};
-use crate::engine::state::StateError::NotADirectory;
+use crate::engine::state::StateError::{InvalidSignature, NotADirectory, UnexpectedHash};
 use blake3::Hash;
 use chrono::{DateTime, Utc};
 use log::{error, warn};
@@ -243,6 +243,35 @@ impl State {
             false
         }
     }
+    
+    pub fn verify_and_add(&mut self, other_state: State, dir: SharedDirectory) -> Result<Vec<Mutation>, StateError> {
+        let mut stack: Vec<Arc<Delta>> = Vec::new();
+        let mut mutations: Vec<Mutation> = Vec::new();
+        
+        for delta in other_state.iter() {
+            stack.push(delta);
+        }
+
+        let mut parent = stack.pop().unwrap().hash();
+        if parent != self.hash() {
+            return Err(UnexpectedHash(parent));
+        }
+        while let Some(delta) = stack.pop() {
+            if let Some(curr_parent) = delta.parent() {
+                if curr_parent != parent {
+                    return Err(UnexpectedHash(parent));
+                }
+                if !delta.verify_signature(dir.verif_key) {
+                    return Err(InvalidSignature)
+                }
+                mutations.insert(0, delta.mutation());
+                self.accept(delta.as_ref().clone());
+                parent = delta.hash();
+            }
+        }
+        
+        Ok(mutations)
+    }
 
     /// Trim [`State`]'s tree of all deltas over the limit of loaded deltas.
     ///
@@ -253,7 +282,7 @@ impl State {
 
             let mut head = self.head();
 
-            for i in 0..MAX_LOADED_DELTAS {
+            for _ in 0..MAX_LOADED_DELTAS {
                 new_pool.insert(head.hash, head.clone());
 
                 if let Some(parent_hash) = head.parent {
@@ -288,7 +317,7 @@ impl State {
         let mut pool = HashMap::new();
         let mut head = self.head();
 
-        for i in 0..max_depth {
+        for _ in 0..max_depth {
             // Check if we reached the root
             if head.hash == root {
                 let mut delta = head.as_ref().clone();
@@ -1008,4 +1037,10 @@ pub enum StateError {
 
     #[error("Root node has no tree: {0}")]
     InvalidRoot(Hash),
+    
+    #[error("Unexpected hash: {0}")]
+    UnexpectedHash(Hash),
+    
+    #[error("Invalid Signature")]
+    InvalidSignature,
 }
