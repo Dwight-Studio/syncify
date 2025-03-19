@@ -228,6 +228,22 @@ impl State {
         Ok(())
     }
 
+    /// Accept a new [`Delta`] in the state.
+    pub fn accept(&mut self, delta: Delta) -> bool {
+        if let Some(parent) = delta.parent {
+            if parent == self.head {
+                self.head = delta.hash;
+                self.pool.insert(*delta.hash.as_bytes(), Arc::new(delta));
+                
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
     /// Trim [`State`]'s tree of all deltas over the limit of loaded deltas.
     ///
     /// Return true if the State was pruned.
@@ -372,11 +388,11 @@ pub struct Delta {
 }
 
 impl Delta {
-    
+
     /// Get the data used to verify the authenticity of a [`Delta`].
-    /// 
+    ///
     /// # Return
-    /// 
+    ///
     /// Returns a [`Vec`] containing the hashes of self, the parent and the tree.
     pub fn get_signature_data(&self) -> Option<Vec<u8>> {
         if let Some(parent) = self.parent {
@@ -398,7 +414,7 @@ impl Delta {
     }
 
     /// Verify embedded signature.
-    /// 
+    ///
     /// # Return
     ///
     /// Returns true if the signature is genuine, false otherwise.
@@ -409,7 +425,7 @@ impl Delta {
             self.signature == Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64]))
         }
     }
-    
+
     /// Get the hash.
     pub fn hash(&self) -> Hash {
         self.hash
@@ -417,9 +433,9 @@ impl Delta {
 
     /// Get the hash of the parent (if present).
     pub fn parent(&self) -> Option<Hash> {
-        self.parent 
+        self.parent
     }
-    
+
     /// Get the timestamp (when the mutation was applied, i.e. the creation of the [`Delta]).
     pub fn timestamp(&self) -> DateTime<Utc> {
         self.timestamp
