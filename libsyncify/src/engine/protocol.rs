@@ -20,7 +20,9 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-mod outgoing_sync;
+pub mod outgoing_sync;
+pub mod fsm;
+pub mod incoming_sync;
 
 use crate::engine::actor::Event::Sync;
 use crate::engine::actor::SyncEvent;
@@ -218,6 +220,10 @@ impl SyncifyConnection {
         info!("CLOSED: {}", err);
         self.connection.close(VarInt::from_u32(err_code), err.to_string().as_bytes());
     }
+    
+    pub fn remote(&self) -> NodeId {
+        self.connection.remote_node_id().unwrap()
+    } 
 }
 
 #[derive(Error, Debug)]

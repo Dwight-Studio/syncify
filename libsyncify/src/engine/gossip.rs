@@ -44,7 +44,7 @@ impl GossipManager {
                 GossipEvent::Joined(node_id_vec) => {
                     let neighbors = &mut self.dir.inner.write().await.neighbors;
 
-                    for node_id in node_id_vec {
+                    for node_id in &node_id_vec {
                         if !neighbors.keys().any(|e| node_id.as_bytes() == e) {
                             neighbors.insert(*node_id.as_bytes(), true);
                         } else {
@@ -52,7 +52,7 @@ impl GossipManager {
                         }
                     }
                     
-                    self.handle.send(Event::Sync(SyncEvent::TriggerInitialSync)).await.expect("Unable to push a new event!");
+                    self.handle.send(Event::TriggerSync).await.expect("Unable to push a new event!");
                 }
                 GossipEvent::NeighborUp(node_id) => {
                     let neighbors = &mut self.dir.inner.write().await.neighbors;

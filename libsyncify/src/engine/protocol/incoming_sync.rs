@@ -20,85 +20,44 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::state::MAX_LOADED_DELTAS;
 use std::collections::HashMap;
 use iroh::NodeId;
 use log::info;
 use crate::engine::actor::SyncEvent;
 use crate::engine::protocol::{SyncifyConnection, SyncifyPacket, SyncifyProtocol};
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
+use crate::engine::state::MAX_LOADED_DELTAS;
 use crate::SharedDirectory;
 
 enum State {
-    Initialize,
-    Connected,
-    WaitForRequest,
+    Requested,
     Finish,
     Failure,
 }
 
-pub struct OutgoingSync {
+pub struct IncomingSync {
     state: State,
     dir: SharedDirectory,
-    node_id: NodeId,
-    protocol: SyncifyProtocol,
-    connection: Option<SyncifyConnection>
+    protocole: SyncifyProtocol,
 }
 
-impl OutgoingSync {
-    pub fn new(dir: SharedDirectory, node_id: NodeId, protocol: SyncifyProtocol) -> Self {
+impl IncomingSync {
+    pub fn new(dir: SharedDirectory, protocole: SyncifyProtocol) -> Self {
         Self {
-            state: State::Initialize,
+            state: State::Requested,
+            protocole,
             dir,
-            node_id,
-            protocol,
-            connection: None,
         }
     }
 }
 
-impl FiniteStateMachine for OutgoingSync {
+impl FiniteStateMachine for IncomingSync {
     async fn step(&mut self, event: Option<SyncEvent>) -> Result<(), ProtocolError> {
         match &self.state {
 
-            State::Initialize => {
-                info!("Requesting sync to {}", self.node_id);
-                if let Ok(conn) = self.protocol.connect(self.node_id).await {
-                    self.state = State::Connected;
-                    self.connection = Some(conn);
-                    Ok(())
-                } else {
-                    self.state = State::Failure;
-                    Err(ProtocolError::ConnectionFailed)
-                }
-            }
-
-            State::Connected => {
-                let packet = SyncifyPacket::Request {
-                    head: *self.dir.inner.read().await.state.hash().as_bytes()
-                };
-                
-                let mut conn = self.connection.clone().unwrap();
-                
-                if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
-                    if let Ok((uuid, packet)) = conn.receive_packet(self.dir.clone()).await {
-                        
-                        // TODO: Process Success/Failed packet
-                        
-                        self.state = State::WaitForRequest;
-                        Ok(())
-                    } else {
-                        self.state = State::Failure;
-                        Err(ProtocolError::ReceiveFailed)
-                    }
-                } else {
-                    self.state = State::Failure;
-                    Err(ProtocolError::SendFailed)
-                }
-            }
-
-            State::WaitForRequest => {
+            State::Requested => {
                 if let Some(SyncEvent::RequestDeltas(mut conn, hash)) = event {
+                    info!("Incoming sync request from {}", conn.remote());
                     let packet = {
                         if self.dir.inner.read().await.state.hash() == hash {
                             SyncifyPacket::Success { pool: HashMap::new() }
@@ -111,10 +70,27 @@ impl FiniteStateMachine for OutgoingSync {
                             }
                         }
                     };
-                    
+
                     if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
-                        self.state = State::Finish;
-                        Ok(())
+                        let packet = SyncifyPacket::Request {
+                            head: *self.dir.inner.read().await.state.hash().as_bytes()
+                        };
+
+                        if let Ok(()) = conn.send_packet(self.dir.clone(), packet).await {
+                            if let Ok((uuid, packet)) = conn.receive_packet(self.dir.clone()).await {
+
+                                // TODO: Process Success/Failed packet
+
+                                self.state = State::Finish;
+                                Ok(())
+                            } else {
+                                self.state = State::Failure;
+                                Err(ProtocolError::ReceiveFailed)
+                            }
+                        } else {
+                            self.state = State::Failure;
+                            Err(ProtocolError::SendFailed)
+                        }
                     } else {
                         self.state = State::Failure;
                         Err(ProtocolError::SendFailed)
@@ -132,7 +108,7 @@ impl FiniteStateMachine for OutgoingSync {
 
     fn finished(&self) -> bool {
         match self.state {
-            State::Initialize | State::Connected | State::WaitForRequest => false,
+            State::Requested => false,
             State::Finish | State::Failure => true
         }
     }

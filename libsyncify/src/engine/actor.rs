@@ -34,6 +34,7 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use iroh::NodeId;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
@@ -131,6 +132,7 @@ impl DirectoryManager {
 
                     // Protocol
                     Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
+                    Event::TriggerSync => sync_manager.initial_sync().await,
 
                     // Actor
                     Event::Shutdown => {
@@ -215,12 +217,12 @@ pub enum Event {
 
     // Protocol
     Sync(SyncEvent),
+    TriggerSync,
 
     // Actor
     Shutdown,
 }
 
 pub enum SyncEvent {
-    TriggerInitialSync,
     RequestDeltas(SyncifyConnection, blake3::Hash)
 }

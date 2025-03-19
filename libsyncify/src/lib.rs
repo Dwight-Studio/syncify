@@ -300,7 +300,7 @@ pub(crate) struct InnerSharedDirectory {
     pub(crate) state: State,
     pub(crate) neighbors: HashMap<[u8; 32], bool>,
     pub(crate) handle: Option<DirectoryManagerHandle>,
-    received_init: bool
+    pub(crate) received_sync: bool
 }
 
 impl InnerSharedDirectory {
@@ -309,16 +309,8 @@ impl InnerSharedDirectory {
             state,
             neighbors,
             handle: None,
-            received_init: false
+            received_sync: false
         }
-    }
-    
-    pub(crate) fn received_init(&self) -> bool {
-        self.received_init
-    }
-    
-    pub(crate) fn set_received_init(&mut self) {
-        self.received_init = true;
     }
 }
 
