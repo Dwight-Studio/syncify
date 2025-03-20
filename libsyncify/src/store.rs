@@ -322,8 +322,8 @@ impl StoreManager {
 
                 let state_table_def: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
-
-                dir.read().await.state.flush_in_table(&mut state_table)?;
+                
+                inner.state.flush_in_table(&mut state_table)?;
 
                 if inner.state.trim() {
                     info!("Pruned state {}", uuid_string);

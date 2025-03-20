@@ -42,7 +42,6 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
-const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Actor responsible to handle all filesystem events for a [`SharedDirectory`].
 pub struct DirectoryManager {
@@ -52,12 +51,13 @@ pub struct DirectoryManager {
 }
 
 impl DirectoryManager {
-    pub fn new(dir: SharedDirectory, topic: GossipTopic, syncify_prot: SyncifyProtocol) -> Result<Self, notify::Error> {
+    pub async fn new(dir: SharedDirectory, topic: GossipTopic, syncify_prot: SyncifyProtocol) -> Result<Self, notify::Error> {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = DirectoryManagerHandle { tx };
+        dir.write().await.handle = Some(handle.clone());
 
         // Plug gossip stream into the channel
         let (gossip_tx, gossip_rx) = topic.split();

@@ -31,32 +31,41 @@ use notify::event::{ModifyKind, RemoveKind, RenameMode};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+use crate::engine::actor::{DirectoryManagerHandle, Event};
+
+const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct FileSystemManager {
     topic: GossipSender,
     dir: SharedDirectory,
     mutations_buffer: Vec<Mutation>,
+    commit_timeout: JoinHandle<()>,
 }
 
 impl FileSystemManager {
     pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory, last_tree: &mut HashTree) -> Self {
         let inner = dir.read().await;
 
-        let mut local_buffer = if dir.is_read_only() {
+        let local_buffer = if dir.is_read_only() {
             Vec::new()
         } else {
             inner.state.hash_tree().mutations_from_disk(&dir)
         };
 
-        Self::clean_mutation_buffer(&mut local_buffer, Some(&last_tree));
-
-        Self {
+        let mut inst = Self {
             topic,
             dir: dir.clone(),
             mutations_buffer: local_buffer,
-        }
+            commit_timeout: Self::schedule_commit(dir.handle().await)
+        };
+
+        inst.clean_mutation_buffer(last_tree).await;
+        
+        inst
     }
 
     pub(crate) async fn handle_events(&mut self, fs_event: notify::Event, timestamp: DateTime<Utc>, jobs_buffer: &mut Vec<Arc<RwLock<Job>>>, last_tree: &mut HashTree) {
@@ -187,7 +196,7 @@ impl FileSystemManager {
                                 }
                             }
                         }
-                        
+
                         info!("File '{:?}' removed in {}", path.display(), self.dir.uuid());
 
                         let mutation = Mutation::Remove {
@@ -202,13 +211,13 @@ impl FileSystemManager {
             _ => return,
         }
 
-        Self::clean_mutation_buffer(&mut self.mutations_buffer, Some(&last_tree));
+        self.clean_mutation_buffer(&last_tree).await;
     }
 
-    fn clean_mutation_buffer(buffer: &mut Vec<Mutation>, tree: Option<&HashTree>) {
+    async fn clean_mutation_buffer(&mut self, last_tree: &HashTree) {
         let mut working_buffer = Vec::new();
 
-        for n_mut in &*buffer {
+        for n_mut in &*self.mutations_buffer {
             // Fuse Mod then Mod, Mod then Rem and Rem then Mod
             working_buffer.retain(|o_mut| match (n_mut, o_mut) {
                 (
@@ -250,30 +259,97 @@ impl FileSystemManager {
                     // Retain if the path is different, or it's more recent
                     n_path != o_path || n_time < o_time
                 }
+                (
+                    Mutation::Move {
+                        from: n_from,
+                        ..
+                    },
+                    Mutation::Move {
+                        from: o_from,
+                        ..
+                    }
+                ) => {
+                    // Retain if the "from" are different
+                    n_from != o_from
+                },
                 _ => true,
             });
 
             // Drop remove if about a file that doesn't exist
-            if let Some(last_tree) = tree {
-                if let Mutation::Remove { file_path, .. } = n_mut {
-                    if last_tree.get(file_path).is_none() {
-                        continue;
-                    }
+            if let Mutation::Remove { file_path, .. } = n_mut {
+                if last_tree.get(file_path).is_none() {
+                    continue;
                 }
             }
 
             // TODO: Add move
+            // Drop Mod+Rem/Rem+Mod corresponding to a move
+            let mut new_mut_opt = None;
+            working_buffer.retain(|o_mut| match (n_mut, o_mut) {
+                (
+                    Mutation::Modify {
+                        file_path: m_path,
+                        file_hash,
+                        timestamp: m_time,
+                        ..
+                    },
+                    Mutation::Remove {
+                        file_path: r_path,
+                        ..
+                    },
+                ) | (
+                    Mutation::Remove {
+                        file_path: r_path,
+                        ..
+                    },
+                    Mutation::Modify {
+                        file_path: m_path,
+                        file_hash,
+                        timestamp: m_time,
+                        ..
+                    },
+                ) => {
+                    if let Some(HashTree::File { hash: r_hash, .. }) = last_tree.get(r_path) {
+                        if *r_hash == *file_hash {
+                            new_mut_opt = Some(Mutation::Move {
+                                from: r_path.clone(),
+                                to: m_path.clone(),
+                                timestamp: m_time.clone(),
+                            });
+                            return false;
+                        } 
+                    }
+                    
+                    true
+                }
+                _ => true
+            });
 
-            working_buffer.push(n_mut.clone());
+            if let Some(new_mut) = new_mut_opt {
+                working_buffer.push(new_mut);
+            } else {
+                working_buffer.push(n_mut.clone());
+            }
         }
+        
+        // Regenerate timeout
+        self.commit_timeout.abort();
+        self.commit_timeout = Self::schedule_commit(self.dir.handle().await);
 
         // Copy the new buffer
-        buffer.clear();
-        buffer.extend(working_buffer);
+        self.mutations_buffer.clear();
+        self.mutations_buffer.extend(working_buffer);
 
-        for mutation in buffer {
+        for mutation in &self.mutations_buffer {
             info!("{mutation}")
         }
+    }
+
+    pub(crate) fn schedule_commit(handle: DirectoryManagerHandle) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            tokio::time::sleep(MUTATIONS_FLUSH_TIMEOUT).await;
+            handle.send(Event::ApplyLocalMutations).await;
+        })
     }
 
     /// Apply [`Mutation`] in the mutation buffer.
@@ -285,23 +361,28 @@ impl FileSystemManager {
 
         let mut inner = self.dir.write().await;
 
-        info!("Applying mutations for {}", self.dir.uuid());
-
         for mutation in &self.mutations_buffer {
             match inner.state.mutate(mutation.clone(), write_key) {
                 Ok(_) => {
-                    info!("Applied: {mutation}");
+                    match last_tree.apply(mutation) {
+                        Ok(tree) => {
+                            info!("Applied in {}: {mutation}", self.dir.uuid());
+                            *last_tree = tree; 
+                        },
+                        Err(e) => {
+                            error!("Cannot apply mutation to current tree in {}: {mutation} ({e})", self.dir.uuid());
+                        }
+                    }
                 }
                 Err(e) => {
-                    error!("Cannot apply mutation: {mutation} ({e}");
+                    error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
                 }
             }
         }
 
         self.mutations_buffer.clear();
 
-        *last_tree = inner.state.hash_tree().clone();
-        info!("\n{}", last_tree)
+        info!("New file tree: \n{}", last_tree)
     }
 
     pub(crate) async fn generate_jobs(&mut self, jobs_buffer: &mut Vec<Arc<RwLock<Job>>>, mutations: Vec<Mutation>) {

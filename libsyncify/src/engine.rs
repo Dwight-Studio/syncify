@@ -158,10 +158,8 @@ impl Engine {
 
             // Create manager
             let manager = DirectoryManager::new(dir.clone(), topic, self.syncify_prot.clone())
+                .await
                 .map_err(EngineError::CannotWatch)?;
-
-            // Store the handle in the inner
-            dir.write().await.handle = Some(manager.clone());
 
             self.managers.insert(dir.uuid, manager);
             Ok(())
