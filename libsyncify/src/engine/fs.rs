@@ -20,27 +20,28 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 use crate::SharedDirectory;
 use crate::engine::state::{HashTree, Mutation};
 use blake3::Hash;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use iroh_gossip::net::GossipSender;
 use log::{error, info};
 use notify::EventKind::{Modify, Remove};
 use notify::event::{ModifyKind, RemoveKind, RenameMode};
-use std::path::Path;
+use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::fs;
+use tokio::sync::RwLock;
 
 pub struct FileSystemManager {
     topic: GossipSender,
     dir: SharedDirectory,
-    pub(super) remote_buffer: Vec<Mutation>,
-    pub(super) local_buffer: Vec<Mutation>,
-    last_tree: HashTree,
+    mutations_buffer: Vec<Mutation>,
 }
 
 impl FileSystemManager {
-    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
+    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory, last_tree: &mut HashTree) -> Self {
         let inner = dir.read().await;
 
         let mut local_buffer = if dir.is_read_only() {
@@ -49,20 +50,16 @@ impl FileSystemManager {
             inner.state.hash_tree().mutations_from_disk(&dir)
         };
 
-        let last_tree = inner.state.hash_tree().clone();
-
         Self::clean_mutation_buffer(&mut local_buffer, Some(&last_tree));
 
         Self {
             topic,
             dir: dir.clone(),
-            remote_buffer: Vec::new(),
-            local_buffer,
-            last_tree,
+            mutations_buffer: local_buffer,
         }
     }
 
-    pub(crate) async fn handle_events(&mut self, fs_event: notify::Event, timestamp: DateTime<Utc>) {
+    pub(crate) async fn handle_events(&mut self, fs_event: notify::Event, timestamp: DateTime<Utc>, jobs_buffer: &mut Vec<Arc<RwLock<Job>>>, last_tree: &mut HashTree) {
         let mut hasher = blake3::Hasher::new();
 
         match fs_event.kind {
@@ -71,6 +68,28 @@ impl FileSystemManager {
                     relative(&self.dir, &fs_event.paths[0]),
                     relative(&self.dir, &fs_event.paths[1]),
                 ) {
+                    // Checking if it correspondes to a job
+                    for job_ref in jobs_buffer.clone() {
+                        let job = job_ref.read().await;
+                        if let Job::Move {
+                            from,
+                            to,
+                            state: JobState::Done(job_timestamp),
+                            ..
+                        } = job.deref()
+                        {
+                            if from == path_from
+                                && to == path_to
+                                && job_timestamp
+                                    .signed_duration_since(timestamp)
+                                    .abs()
+                                    .le(&TimeDelta::new(1, 0).unwrap())
+                            {
+                                return;
+                            }
+                        }
+                    }
+
                     info!("File {:?} moved to {:?} in {}", path_from, path_to, self.dir.uuid());
 
                     let mutation = Mutation::Move {
@@ -79,12 +98,43 @@ impl FileSystemManager {
                         timestamp,
                     };
 
-                    self.local_buffer.push(mutation);
+                    self.mutations_buffer.push(mutation);
                 }
             }
             Modify(ModifyKind::Data(_)) | Modify(ModifyKind::Name(RenameMode::To)) => {
                 for abs_path in fs_event.paths {
                     if let Some(path) = relative(&self.dir, &abs_path) {
+                        // Checking if it correspondes to a job
+                        for job_ref in jobs_buffer.clone() {
+                            let job = job_ref.read().await;
+                            if let Job::Move {
+                                to,
+                                state: JobState::Done(job_timestamp),
+                                ..
+                            } = job.deref()
+                            {
+                                if to == path && job_timestamp
+                                        .signed_duration_since(timestamp)
+                                        .abs()
+                                        .le(&TimeDelta::new(1, 0).unwrap()) {
+                                    return;
+                                }
+                            }
+                            if let Job::Download {
+                                path: job_path,
+                                state: JobState::Done(job_timestamp),
+                                ..
+                            } = job.deref()
+                            {
+                                if job_path == path && job_timestamp
+                                    .signed_duration_since(timestamp)
+                                    .abs()
+                                    .le(&TimeDelta::new(1, 0).unwrap()) {
+                                    return;
+                                }
+                            }
+                        }
+
                         info!("File '{:?}' modified in {}", path.display(), self.dir.uuid());
                         let file_hash = match hasher.update_mmap(&abs_path) {
                             Ok(hash) => *hash.finalize().as_bytes(),
@@ -100,13 +150,44 @@ impl FileSystemManager {
                             timestamp,
                         };
 
-                        self.local_buffer.push(mutation);
+                        self.mutations_buffer.push(mutation);
                     }
                 }
             }
             Remove(RemoveKind::File) | Modify(ModifyKind::Name(RenameMode::From)) => {
                 for abs_path in fs_event.paths {
                     if let Some(path) = relative(&self.dir, &abs_path) {
+                        // Checking if it correspondes to a job
+                        for job_ref in jobs_buffer.clone() {
+                            let job = job_ref.read().await;
+                            if let Job::Move {
+                                from,
+                                state: JobState::Done(job_timestamp),
+                                ..
+                            } = job.deref()
+                            {
+                                if from == path && job_timestamp
+                                    .signed_duration_since(timestamp)
+                                    .abs()
+                                    .le(&TimeDelta::new(1, 0).unwrap()) {
+                                    return;
+                                }
+                            }
+                            if let Job::Remove {
+                                path: job_path,
+                                state: JobState::Done(job_timestamp),
+                                ..
+                            } = job.deref()
+                            {
+                                if job_path == path && job_timestamp
+                                    .signed_duration_since(timestamp)
+                                    .abs()
+                                    .le(&TimeDelta::new(1, 0).unwrap()) {
+                                    return;
+                                }
+                            }
+                        }
+                        
                         info!("File '{:?}' removed in {}", path.display(), self.dir.uuid());
 
                         let mutation = Mutation::Remove {
@@ -114,14 +195,14 @@ impl FileSystemManager {
                             timestamp,
                         };
 
-                        self.local_buffer.push(mutation);
+                        self.mutations_buffer.push(mutation);
                     }
                 }
             }
             _ => return,
         }
 
-        Self::clean_mutation_buffer(&mut self.local_buffer, Some(&self.last_tree));
+        Self::clean_mutation_buffer(&mut self.mutations_buffer, Some(&last_tree));
     }
 
     fn clean_mutation_buffer(buffer: &mut Vec<Mutation>, tree: Option<&HashTree>) {
@@ -195,7 +276,8 @@ impl FileSystemManager {
         }
     }
 
-    pub(crate) async fn apply_local_mutations(&mut self) {
+    /// Apply [`Mutation`] in the mutation buffer.
+    pub(crate) async fn apply_local_mutations(&mut self, last_tree: &mut HashTree) {
         let write_key = match &self.dir.sign_key {
             Some(key) => key,
             None => return,
@@ -205,7 +287,7 @@ impl FileSystemManager {
 
         info!("Applying mutations for {}", self.dir.uuid());
 
-        for mutation in &self.local_buffer {
+        for mutation in &self.mutations_buffer {
             match inner.state.mutate(mutation.clone(), write_key) {
                 Ok(_) => {
                     info!("Applied: {mutation}");
@@ -216,15 +298,70 @@ impl FileSystemManager {
             }
         }
 
-        self.local_buffer.clear();
+        self.mutations_buffer.clear();
 
-        self.last_tree = inner.state.hash_tree().clone();
-        info!("\n{}", self.last_tree)
+        *last_tree = inner.state.hash_tree().clone();
+        info!("\n{}", last_tree)
     }
 
-    pub(crate) async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
+    pub(crate) async fn generate_jobs(&mut self, jobs_buffer: &mut Vec<Arc<RwLock<Job>>>, mutations: Vec<Mutation>) {
         for mutation in mutations {
-            self.remote_buffer.insert(0, mutation);
+            match &mutation {
+                Mutation::Modify {
+                    file_path, file_hash, ..
+                } => {
+                    let job_ref = Arc::new(RwLock::new(Job::Download {
+                        path: self.dir.path.join(file_path),
+                        hash: *file_hash,
+                        state: JobState::Pending,
+                    }));
+                    jobs_buffer.push(job_ref.clone());
+
+                    let job = job_ref.write().await;
+
+                    // TODO: Add download process
+                }
+                Mutation::Move { from, to, .. } => {
+                    let from = self.dir.path.join(from);
+                    let to = self.dir.path.join(to);
+
+                    let job_ref = Arc::new(RwLock::new(Job::Move {
+                        from: from.clone(),
+                        to: to.clone(),
+                        state: JobState::Done(Utc::now()),
+                    }));
+                    jobs_buffer.push(job_ref.clone());
+
+                    match fs::rename(&from, &to).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
+                            if let Job::Move { state, .. } = job_ref.write().await.deref_mut() {
+                                *state = JobState::Error(e.into())
+                            }
+                        }
+                    }
+                }
+                Mutation::Remove { file_path, .. } => {
+                    let path = self.dir.path.join(PathBuf::from(file_path));
+                    let job_ref = Arc::new(RwLock::new(Job::Remove {
+                        path: path.clone(),
+                        state: JobState::Done(Utc::now()),
+                    }));
+                    jobs_buffer.push(job_ref.clone());
+
+                    match fs::remove_file(&path).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Cannot remove file: '{}' ({e})", path.display());
+                            if let Job::Remove { state, .. } = job_ref.write().await.deref_mut() {
+                                *state = JobState::Error(e.into())
+                            }
+                        }
+                    }
+                }
+                _ => continue,
+            }
         }
     }
 }
@@ -241,4 +378,28 @@ pub fn relative<'a>(dir: &SharedDirectory, file: &'a Path) -> Option<&'a Path> {
             None
         }
     }
+}
+
+pub enum Job {
+    Download {
+        path: PathBuf,
+        hash: Hash,
+        state: JobState,
+    },
+    Remove {
+        path: PathBuf,
+        state: JobState,
+    },
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+        state: JobState,
+    },
+}
+
+pub enum JobState {
+    Pending,
+    Ongoing(f32),
+    Done(DateTime<Utc>),
+    Error(anyhow::Error),
 }

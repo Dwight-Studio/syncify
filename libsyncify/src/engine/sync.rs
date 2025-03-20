@@ -88,11 +88,8 @@ impl SyncManager {
 
                         if !received_request {
                             info!("Initial sync: No sync request received. Initiating sync myself.");
-                            if let Some(handle) = &inner.handle {
-                                handle.send(Event::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
-                            } else {
-                                error!("Initial sync: No handle available, aborting.");
-                            }
+                            
+                            dir.handle().await.send(Event::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
                         } else {
                             info!("Initial sync: Sync request received. No need to start sync.");
                         }

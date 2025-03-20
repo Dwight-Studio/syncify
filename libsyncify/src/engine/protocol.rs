@@ -117,16 +117,6 @@ impl ProtocolHandler for SyncifyProtocol {
                     Some(dir) => dir,
                 }
             };
-            let handle = {
-                match dir.read().await.handle.clone() {
-                    None => {
-                        conn.close(1, SyncifyProtocolError::HandleDoesNotExists);
-                        return Ok(());
-                    }
-                    Some(handle) => handle,
-                }
-            };
-
             let mut packet_buffer = vec![0u8; header.packet_size as usize];
             rx.read(&mut packet_buffer)
                 .await
@@ -142,7 +132,9 @@ impl ProtocolHandler for SyncifyProtocol {
 
             match packet {
                 SyncifyPacket::Request { head } => {
-                    handle
+                    dir.handle()
+                        .await
+                        .clone()
                         .send(Sync(SyncEvent::RequestSync(conn.clone(), blake3::Hash::from(head))))
                         .await;
                 }
@@ -288,9 +280,6 @@ pub enum SyncifyProtocolError {
 
     #[error("Uuid does not exists")]
     UuidDoesNotExists,
-
-    #[error("Directory handle does not exists")]
-    HandleDoesNotExists,
 
     #[error("Cannot decrypt the packet: {0}")]
     DecryptionError(Error),

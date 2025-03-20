@@ -318,6 +318,15 @@ impl SharedDirectory {
     pub(crate) async fn write(&self) -> RwLockWriteGuard<InnerSharedDirectory> {
         self.inner.write().await
     }
+    
+    /// Get the handle. Panics if not available.
+    pub(crate) async fn handle(&self) -> DirectoryManagerHandle {
+        if let Some(handle) = &self.read().await.handle {
+            handle.clone()
+        } else {
+            panic!("Handle is not available for {}", self.uuid);
+        }
+    }
 }
 
 pub(crate) struct InnerSharedDirectory {

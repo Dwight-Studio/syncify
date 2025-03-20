@@ -87,19 +87,22 @@ impl FiniteStateMachine for OutgoingSync {
                             SyncifyPacket::Request { .. } => {}
                             SyncifyPacket::Success { state } => {
                                 info!("Outgoing: Receiving state\n{}", state);
-                                let mut inner = self.dir.write().await;
-                                let mutations =
-                                    inner
-                                        .state
-                                        .verify_and_add(state, self.dir.clone())
-                                        .map_err(|e| match e {
-                                            StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                            _ => ProtocolError::Unexpected,
-                                        })?;
+                                let mutations = self
+                                    .dir
+                                    .write()
+                                    .await
+                                    .state
+                                    .verify_and_add(state, self.dir.clone())
+                                    .map_err(|e| match e {
+                                        StateError::InvalidSignature => ProtocolError::InvalidSignature,
+                                        _ => ProtocolError::Unexpected,
+                                    })?;
 
-                                if let Some(handle) = &inner.handle {
-                                    handle.send(Event::ApplyRemoteMutations(mutations)).await;
-                                }
+                                self.dir
+                                    .handle()
+                                    .await
+                                    .send(Event::GenerateJobs(mutations))
+                                    .await;
                             }
                             SyncifyPacket::Failed => {}
                         }

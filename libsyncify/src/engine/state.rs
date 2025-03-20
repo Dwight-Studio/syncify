@@ -270,7 +270,7 @@ impl State {
                 if !delta.verify_signature(dir.verif_key) {
                     return Err(InvalidSignature);
                 }
-                mutations.insert(0, delta.mutation());
+                mutations.push(delta.mutation());
                 self.accept(delta.as_ref().clone());
                 parent = delta.hash();
             }

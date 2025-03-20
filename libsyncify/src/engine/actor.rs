@@ -22,7 +22,7 @@
  */
 
 use crate::SharedDirectory;
-use crate::engine::fs::FileSystemManager;
+use crate::engine::fs::{FileSystemManager, Job};
 use crate::engine::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
@@ -35,9 +35,10 @@ use log::{debug, error, info};
 use notify::{EventHandler, RecommendedWatcher, Watcher};
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
@@ -102,57 +103,40 @@ impl DirectoryManager {
     }
 
     /// Main method of the actor.
-    pub async fn handle_event(
+    async fn handle_event(
         mut rx: mpsc::Receiver<Event>,
         dir: SharedDirectory,
         topic: GossipSender,
         protocol: SyncifyProtocol,
         handle: DirectoryManagerHandle,
     ) {
-        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone()).await;
+        // Shared variables
+        let mut jobs_buffer: Vec<Arc<RwLock<Job>>> = Vec::new();
+        let mut last_tree = dir.read().await.state.hash_tree().clone();
+        
+        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone(), &mut last_tree).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), handle.clone()).await;
         let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), protocol).await;
 
         // Process the event
-        loop {
-            // Check if the mutation buffer is empty,
-            let result = if fs_manager.local_buffer.is_empty() {
-                // If so, wait for event
-                rx.recv().await
-            } else {
-                // If not, wait for event with a timeout
-                match tokio::time::timeout(MUTATIONS_FLUSH_TIMEOUT, rx.recv()).await {
-                    // Return if there's an event
-                    Ok(result) => result,
-                    // Flush if not
-                    Err(_) => {
-                        fs_manager.apply_local_mutations().await;
-                        continue;
-                    }
+        while let Some(event) = rx.recv().await {
+            match event {
+                // FileSystem
+                Event::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp, &mut jobs_buffer, &mut last_tree).await,
+                Event::ApplyLocalMutations => fs_manager.apply_local_mutations(&mut last_tree).await,
+                Event::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations).await,
+
+                // Gossip
+                Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
+
+                // Protocol
+                Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
+
+                // Actor
+                Event::Shutdown => {
+                    rx.close();
+                    debug!("Closing event channel for {}", dir.uuid())
                 }
-            };
-
-            if let Some(event) = result {
-                match event {
-                    // FileSystem
-                    Event::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp).await,
-                    Event::ApplyLocalMutations => fs_manager.apply_local_mutations().await,
-                    Event::ApplyRemoteMutations(mutations) => fs_manager.apply_remote_mutations(mutations).await,
-
-                    // Gossip
-                    Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
-
-                    // Protocol
-                    Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
-
-                    // Actor
-                    Event::Shutdown => {
-                        rx.close();
-                        debug!("Closing event channel for {}", dir.uuid())
-                    }
-                }
-            } else {
-                break;
             }
         }
         info!("Finished event processing for {}", dir.uuid());
@@ -224,7 +208,7 @@ pub enum Event {
     // FileSystem
     FileSystem(notify::Event, DateTime<Utc>),
     ApplyLocalMutations,
-    ApplyRemoteMutations(Vec<Mutation>),
+    GenerateJobs(Vec<Mutation>),
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
