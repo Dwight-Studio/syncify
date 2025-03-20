@@ -56,8 +56,6 @@ pub struct State {
     timestamp: DateTime<Utc>,
 }
 
-// TODO: Add optimization
-//  -> Compute when last modified date is > than the last save date (for fastforward sync)
 impl State {
     pub fn new(uuid: Uuid) -> Self {
         let timestamp = Utc::now();
@@ -778,7 +776,7 @@ impl HashTree {
         }
     }
 
-    /// Generate a vec of all the paths in the tree.
+    /// Generate a vec of all the files in the tree.
     pub fn flatten(&self) -> Vec<String> {
         match self {
             Void | File { .. } => Vec::new(),
@@ -804,6 +802,43 @@ impl HashTree {
 
                 for tree in content {
                     rtn.extend(tree.flatten_recursive(new_prefix.clone()));
+                }
+
+                rtn
+            }
+        }
+    }
+
+    /// Generate a map of all the files in the tree, tied to their hash.
+    pub fn map(&self) -> HashMap<String, Hash> {
+        match self {
+            Void | File { .. } => HashMap::new(),
+            Directory { content, .. } => {
+                let mut rtn = HashMap::new();
+
+                for tree in content {
+                    rtn.extend(tree.map_recursive("".to_string()));
+                }
+
+                rtn
+            }
+        }
+    }
+
+    fn map_recursive(&self, prefix: String) -> HashMap<String, Hash> {
+        match self {
+            Void => HashMap::new(),
+            File { name, hash, .. } => {
+                let mut rtn = HashMap::new();
+                rtn.insert(prefix + name.as_str(), *hash);
+                rtn
+            },
+            Directory { name, content, .. } => {
+                let new_prefix = prefix + name.as_str() + "/";
+                let mut rtn = HashMap::new();
+
+                for tree in content {
+                    rtn.extend(tree.map_recursive(new_prefix.clone()));
                 }
 
                 rtn
