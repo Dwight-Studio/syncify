@@ -810,7 +810,7 @@ impl HashTree {
     }
 
     /// Generate a map of all the files in the tree, tied to their hash.
-    pub fn map(&self) -> HashMap<String, Hash> {
+    pub fn map(&self) -> HashMap<Hash, String> {
         match self {
             Void | File { .. } => HashMap::new(),
             Directory { content, .. } => {
@@ -825,12 +825,12 @@ impl HashTree {
         }
     }
 
-    fn map_recursive(&self, prefix: String) -> HashMap<String, Hash> {
+    fn map_recursive(&self, prefix: String) -> HashMap<Hash, String> {
         match self {
             Void => HashMap::new(),
             File { name, hash, .. } => {
                 let mut rtn = HashMap::new();
-                rtn.insert(prefix + name.as_str(), *hash);
+                rtn.insert(*hash, prefix + name.as_str());
                 rtn
             },
             Directory { name, content, .. } => {

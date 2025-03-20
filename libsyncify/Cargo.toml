@@ -33,3 +33,4 @@ walkdir = "2.5.0"
 rkyv = { version = "0.8.10", features = ["default", "unaligned", "uuid-1"] }
 redb = "2.4.0"
 chrono = { version = "0.4.40", features = ["default", "rkyv-64", "rkyv-validation"] }
+bytes = "1.10.1"

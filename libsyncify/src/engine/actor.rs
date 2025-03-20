@@ -20,10 +20,10 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
+use std::collections::HashMap;
 use crate::SharedDirectory;
 use crate::engine::fs::{FileSystemManager, Job};
-use crate::engine::gossip::GossipManager;
+use crate::engine::gossip::{GossipManager, Provided};
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
 use crate::engine::state::Mutation;
@@ -38,6 +38,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use blake3::Hash;
+use iroh::NodeId;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
@@ -113,6 +115,7 @@ impl DirectoryManager {
         // Shared variables
         let mut jobs_buffer: Vec<Arc<RwLock<Job>>> = Vec::new();
         let mut last_tree = dir.read().await.state.hash_tree().clone();
+        let mut provides_map: HashMap<[u8; 32], Vec<Provided>> = HashMap::new();
         
         let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone(), &mut last_tree).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), handle.clone()).await;
@@ -127,7 +130,7 @@ impl DirectoryManager {
                 Event::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations).await,
 
                 // Gossip
-                Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
+                Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event, &mut last_tree, &mut provides_map).await,
 
                 // Protocol
                 Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
