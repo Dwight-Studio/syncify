@@ -29,7 +29,7 @@ use blake3::Hash;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::ed25519::SignatureBytes;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use log::{error, warn};
+use log::{error, info, warn};
 use redb::{ReadableTable, Table, Value};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
@@ -141,7 +141,7 @@ impl State {
     }
 
     pub(crate) fn flush_in_table(&self, state_table: &mut Table<[u8; 32], &[u8]>) -> Result<(), StoreError> {
-        for (hash, delta) in self.pool().iter() {
+        for (hash, delta) in self.pool.iter() {
             match rkyv::to_bytes::<rkyv::rancor::Error>(delta.as_ref()) {
                 Ok(value) => state_table
                     .insert(hash, value.as_slice())
@@ -619,17 +619,26 @@ impl HashTree {
                 file_path.split("/").peekable(),
             ),
             Mutation::Move { from, to, .. } => {
-                let extracted = self.get(from).unwrap();
-                let tree = Self::apply_and_update_parents(
-                    self.clone(),
-                    &mut |_: HashTree| -> HashTree { Void },
-                    from.split("/").peekable(),
-                )?;
-                Self::apply_and_update_parents(
-                    tree,
-                    &mut |_: HashTree| -> HashTree { extracted.clone() },
-                    to.split("/").peekable(),
-                )
+                if let Some(mut extracted) = self.get(from).cloned() {
+                    let tree = Self::apply_and_update_parents(
+                        self.clone(),
+                        &mut |_: HashTree| -> HashTree { Void },
+                        from.split("/").peekable(),
+                    )?;
+                    match &mut extracted {
+                        Void => {}
+                        File { name, .. } | Directory { name, .. } => {
+                            *name = to.split("/").last().unwrap().to_string();
+                        }
+                    }
+                    Self::apply_and_update_parents(
+                        tree,
+                        &mut |_: HashTree| -> HashTree { extracted.clone() },
+                        to.split("/").peekable(),
+                    )
+                } else {
+                    Err(StateError::InvalidPath(from.to_string()))
+                }
             }
             Mutation::Remove { file_path, .. } => Self::apply_and_update_parents(
                 self.clone(),
