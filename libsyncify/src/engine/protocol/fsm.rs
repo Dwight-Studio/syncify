@@ -25,7 +25,7 @@ use std::time::Duration;
 /// Simple finite state machine (FSM) to handle protocols.
 pub trait FiniteStateMachine {
     type State;
-    
+
     /// Execute a step.
     fn step(&mut self) -> impl Future<Output = ()> {
         async {
@@ -42,14 +42,14 @@ pub trait FiniteStateMachine {
 
     /// Inner stepping execution.
     fn execute_step(&mut self) -> impl Future<Output = Result<Self::State, ProtocolError>>;
-    
+
     /// Test if the FSM reached a final state.
     fn finished(&self) -> bool;
-    
+
     /// Execute all steps until finished or timeout exceeded.
-    /// 
+    ///
     /// # Return
-    /// 
+    ///
     /// Returns true if finished, false if timed out.
     fn step_until_finished(&mut self, timeout: Duration) -> impl Future<Output = bool> {
         async move {
@@ -61,18 +61,20 @@ pub trait FiniteStateMachine {
                         break;
                     }
                 }
-            }).await.is_ok()
+            })
+            .await
+            .is_ok()
         }
     }
-    
+
     /// Get the current state.
     fn current_state(&self) -> &Self::State;
-    
+
     /// Get error if on failure state.
     fn error(&self) -> Option<ProtocolError>;
 
     /* Internal methods */
-    
+
     /// Transition to state. Meant to be called by the FSM.
     fn transition(&mut self, state: Self::State);
 
@@ -87,5 +89,5 @@ pub enum ProtocolError {
     SendFailed,
     ReceiveFailed,
     Unexpected,
-    InvalidSignature
+    InvalidSignature,
 }

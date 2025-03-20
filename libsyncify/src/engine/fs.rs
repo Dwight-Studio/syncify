@@ -21,14 +21,14 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use blake3::Hash;
-use crate::engine::state::{HashTree, Mutation};
 use crate::SharedDirectory;
+use crate::engine::state::{HashTree, Mutation};
+use blake3::Hash;
 use chrono::{DateTime, Utc};
 use iroh_gossip::net::GossipSender;
 use log::{error, info};
-use notify::event::{ModifyKind, RemoveKind, RenameMode};
 use notify::EventKind::{Modify, Remove};
+use notify::event::{ModifyKind, RemoveKind, RenameMode};
 use std::path::Path;
 
 pub struct FileSystemManager {
@@ -41,18 +41,18 @@ pub struct FileSystemManager {
 
 impl FileSystemManager {
     pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory) -> Self {
-        let inner = dir.inner.read().await;
-        
+        let inner = dir.read().await;
+
         let mut local_buffer = if dir.is_read_only() {
             Vec::new()
         } else {
             inner.state.hash_tree().mutations_from_disk(&dir)
         };
-        
+
         let last_tree = inner.state.hash_tree().clone();
-        
+
         Self::clean_mutation_buffer(&mut local_buffer, Some(&last_tree));
-        
+
         Self {
             topic,
             dir: dir.clone(),
@@ -71,12 +71,7 @@ impl FileSystemManager {
                     relative(&self.dir, &fs_event.paths[0]),
                     relative(&self.dir, &fs_event.paths[1]),
                 ) {
-                    info!(
-                        "File {:?} moved to {:?} in {}",
-                        path_from,
-                        path_to,
-                        self.dir.uuid()
-                    );
+                    info!("File {:?} moved to {:?} in {}", path_from, path_to, self.dir.uuid());
 
                     let mutation = Mutation::Move {
                         from: path_from.to_string_lossy().to_string(),
@@ -133,7 +128,6 @@ impl FileSystemManager {
         let mut working_buffer = Vec::new();
 
         for n_mut in &*buffer {
-
             // Fuse Mod then Mod, Mod then Rem and Rem then Mod
             working_buffer.retain(|o_mut| match (n_mut, o_mut) {
                 (
@@ -147,7 +141,8 @@ impl FileSystemManager {
                         timestamp: o_time,
                         ..
                     },
-                ) | (
+                )
+                | (
                     Mutation::Remove {
                         file_path: n_path,
                         timestamp: n_time,
@@ -158,7 +153,8 @@ impl FileSystemManager {
                         timestamp: o_time,
                         ..
                     },
-                ) | (
+                )
+                | (
                     Mutation::Modify {
                         file_path: n_path,
                         timestamp: n_time,
@@ -175,7 +171,7 @@ impl FileSystemManager {
                 }
                 _ => true,
             });
-            
+
             // Drop remove if about a file that doesn't exist
             if let Some(last_tree) = tree {
                 if let Mutation::Remove { file_path, .. } = n_mut {
@@ -204,11 +200,11 @@ impl FileSystemManager {
             Some(key) => key,
             None => return,
         };
-        
-        let mut inner = self.dir.inner.write().await;  
-        
+
+        let mut inner = self.dir.write().await;
+
         info!("Applying mutations for {}", self.dir.uuid());
-        
+
         for mutation in &self.local_buffer {
             match inner.state.mutate(mutation.clone(), write_key) {
                 Ok(_) => {
@@ -219,13 +215,13 @@ impl FileSystemManager {
                 }
             }
         }
-        
+
         self.local_buffer.clear();
-        
+
         self.last_tree = inner.state.hash_tree().clone();
         info!("\n{}", self.last_tree)
     }
-    
+
     pub(crate) async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
         for mutation in mutations {
             self.remote_buffer.insert(0, mutation);
@@ -237,7 +233,11 @@ pub fn relative<'a>(dir: &SharedDirectory, file: &'a Path) -> Option<&'a Path> {
     match file.strip_prefix(dir.path.as_path()) {
         Ok(path) => Some(path),
         Err(_) => {
-            error!("Cannot get relative path: '{:?}' in '{:?}'", file.display(), dir.path.display());
+            error!(
+                "Cannot get relative path: '{:?}' in '{:?}'",
+                file.display(),
+                dir.path.display()
+            );
             None
         }
     }

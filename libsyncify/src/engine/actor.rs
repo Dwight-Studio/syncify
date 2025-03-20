@@ -21,11 +21,14 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::SharedDirectory;
 use crate::engine::fs::FileSystemManager;
 use crate::engine::gossip::GossipManager;
+use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
+use crate::engine::state::Mutation;
 use crate::engine::sync::SyncManager;
-use crate::SharedDirectory;
+use chrono::{DateTime, Utc};
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info};
@@ -34,11 +37,8 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use crate::engine::protocol::outgoing_sync::OutgoingSync;
-use crate::engine::state::Mutation;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -65,7 +65,13 @@ impl DirectoryManager {
 
         // Spawn new thread
         let path = dir.path();
-        let join_handle = Some(tokio::spawn(Self::handle_event(rx, dir.clone(), gossip_tx, syncify_prot, handle.clone())));
+        let join_handle = Some(tokio::spawn(Self::handle_event(
+            rx,
+            dir.clone(),
+            gossip_tx,
+            syncify_prot,
+            handle.clone(),
+        )));
 
         // Create and configure watcher
         let mut _watcher = None;
@@ -74,7 +80,11 @@ impl DirectoryManager {
         } else {
             let mut watcher = notify::recommended_watcher(handle.clone())?;
             watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
-            info!("{} is writable, attached '{:?}' file watcher", dir.uuid, RecommendedWatcher::kind());
+            info!(
+                "{} is writable, attached '{:?}' file watcher",
+                dir.uuid,
+                RecommendedWatcher::kind()
+            );
             _watcher = Some(watcher);
         }
 
@@ -96,12 +106,12 @@ impl DirectoryManager {
         mut rx: mpsc::Receiver<Event>,
         dir: SharedDirectory,
         topic: GossipSender,
-        syncify_prot: SyncifyProtocol,
-        handle: DirectoryManagerHandle
+        protocol: SyncifyProtocol,
+        handle: DirectoryManagerHandle,
     ) {
         let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone()).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), handle.clone()).await;
-        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), syncify_prot).await;
+        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), protocol).await;
 
         // Process the event
         loop {
@@ -121,7 +131,7 @@ impl DirectoryManager {
                     }
                 }
             };
-            
+
             if let Some(event) = result {
                 match event {
                     // FileSystem
@@ -228,5 +238,5 @@ pub enum Event {
 
 pub enum SyncEvent {
     RequestSync(SyncifyConnection, blake3::Hash),
-    TriggerSync(Option<OutgoingSync>)
+    TriggerSync(Option<OutgoingSync>),
 }

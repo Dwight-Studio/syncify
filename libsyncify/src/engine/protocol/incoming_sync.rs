@@ -20,12 +20,12 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use log::{info, warn};
-use crate::engine::actor::Event;
-use crate::engine::protocol::{SyncifyConnection, SyncifyPacket};
-use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
-use crate::engine::state::{StateError, MAX_LOADED_DELTAS};
 use crate::SharedDirectory;
+use crate::engine::actor::Event;
+use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
+use crate::engine::protocol::{SyncifyConnection, SyncifyPacket};
+use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
+use log::{info, warn};
 
 #[derive(Eq, PartialEq)]
 pub enum IncomingState {
@@ -61,10 +61,8 @@ impl FiniteStateMachine for IncomingSync {
             IncomingState::ReceivingRequest => {
                 info!("Incoming sync request from {}", self.connection.remote());
                 let packet = {
-                    match self.dir.inner.read().await.state.clone_after(self.hash, MAX_LOADED_DELTAS) {
-                        Some(state) => SyncifyPacket::Success {
-                            state
-                        },
+                    match self.dir.read().await.state.clone_after(self.hash, MAX_LOADED_DELTAS) {
+                        Some(state) => SyncifyPacket::Success { state },
                         None => SyncifyPacket::Failed,
                     }
                 };
@@ -75,11 +73,11 @@ impl FiniteStateMachine for IncomingSync {
                     Ok(IncomingState::SendingRequest)
                 }
             }
-            
+
             IncomingState::SendingRequest => {
                 info!("Incoming: SendingRequest");
                 let packet = SyncifyPacket::Request {
-                    head: *self.dir.inner.read().await.state.hash().as_bytes()
+                    head: *self.dir.read().await.state.hash().as_bytes(),
                 };
 
                 if let Ok(()) = self.connection.send_packet(self.dir.clone(), packet).await {
@@ -88,13 +86,15 @@ impl FiniteStateMachine for IncomingSync {
                             SyncifyPacket::Request { .. } => {}
                             SyncifyPacket::Success { state } => {
                                 info!("Incoming: Receiving state\n{}", state);
-                                let mut inner = self.dir.inner.write().await;
-                                let mutations = inner.state.verify_and_add(state, self.dir.clone()).map_err(|e| {
-                                    match e {
-                                        StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                        _ => { ProtocolError::Unexpected }
-                                    }
-                                })?;
+                                let mut inner = self.dir.write().await;
+                                let mutations =
+                                    inner
+                                        .state
+                                        .verify_and_add(state, self.dir.clone())
+                                        .map_err(|e| match e {
+                                            StateError::InvalidSignature => ProtocolError::InvalidSignature,
+                                            _ => ProtocolError::Unexpected,
+                                        })?;
 
                                 if let Some(handle) = &inner.handle {
                                     handle.send(Event::ApplyRemoteMutations(mutations)).await;
@@ -102,7 +102,7 @@ impl FiniteStateMachine for IncomingSync {
                             }
                             SyncifyPacket::Failed => {}
                         }
-                        
+
                         Ok(IncomingState::Finish)
                     } else {
                         Err(ProtocolError::ReceiveFailed)
@@ -116,7 +116,7 @@ impl FiniteStateMachine for IncomingSync {
                 info!("Incoming: Finished");
                 Ok(IncomingState::Finish)
             }
-            
+
             IncomingState::Failure(error) => {
                 warn!("Incoming: Failure ({:?})", error);
                 Ok(IncomingState::Failure(*error))
@@ -127,7 +127,7 @@ impl FiniteStateMachine for IncomingSync {
     fn finished(&self) -> bool {
         match self.state {
             IncomingState::ReceivingRequest | IncomingState::SendingRequest => false,
-            IncomingState::Finish | IncomingState::Failure(_) => true
+            IncomingState::Finish | IncomingState::Failure(_) => true,
         }
     }
 
@@ -138,7 +138,7 @@ impl FiniteStateMachine for IncomingSync {
     fn error(&self) -> Option<ProtocolError> {
         match self.state {
             IncomingState::Failure(error) => Some(error),
-            _ => None
+            _ => None,
         }
     }
 

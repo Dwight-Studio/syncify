@@ -24,8 +24,11 @@
 use crate::SharedDirectory;
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::{InvalidSignature, NotADirectory, UnexpectedHash};
+use crate::store::StoreError;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
+use ed25519_dalek::ed25519::SignatureBytes;
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use log::{error, warn};
 use redb::{ReadableTable, Table, Value};
 use rkyv::{Archive, Deserialize, Serialize};
@@ -33,9 +36,7 @@ use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::iter::Peekable;
-use std::sync::{Arc};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use ed25519_dalek::ed25519::SignatureBytes;
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -70,9 +71,7 @@ impl State {
                 hash,
                 signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
                 timestamp,
-                mutation: Mutation::Init {
-                    timestamp: Utc::now(),
-                },
+                mutation: Mutation::Init { timestamp: Utc::now() },
                 hash_tree: Directory {
                     name: uuid.to_string(),
                     content: vec![],
@@ -89,7 +88,8 @@ impl State {
     }
 
     //noinspection RsTraitObligations
-    pub fn from_table(state_table: Table<[u8; 32], &[u8]>, head_hash: [u8; 32]) -> Option<State> {
+    /// Load a [`State`] from a table storing each [`Delta`].
+    pub(crate) fn from_table(state_table: &Table<[u8; 32], &[u8]>, head_hash: [u8; 32]) -> Option<State> {
         if let Ok(Some(head_access)) = state_table.get(&head_hash) {
             match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(head_access.value()) {
                 Ok(head) => {
@@ -102,20 +102,14 @@ impl State {
 
                     for _ in 0..MAX_LOADED_DELTAS {
                         if let Some(parent_hash) = parent_opt {
-                            if let Ok(Some(parent_access)) = state_table.get(parent_hash.as_bytes())
-                            {
-                                match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(
-                                    parent_access.value(),
-                                ) {
+                            if let Ok(Some(parent_access)) = state_table.get(parent_hash.as_bytes()) {
+                                match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(parent_access.value()) {
                                     Ok(parent) => {
                                         parent_opt = parent.parent;
                                         pool.insert(*parent_hash.as_bytes(), Arc::new(parent));
                                     }
                                     Err(e) => {
-                                        error!(
-                                            "Could not deserialize delta {} ({})",
-                                            parent_hash, e
-                                        );
+                                        error!("Could not deserialize delta {} ({})", parent_hash, e);
                                         return None;
                                     }
                                 };
@@ -138,11 +132,7 @@ impl State {
                     }
                 }
                 Err(e) => {
-                    error!(
-                        "Could not deserialize head {} ({})",
-                        Hash::from_bytes(head_hash),
-                        e
-                    );
+                    error!("Could not deserialize head {} ({})", Hash::from_bytes(head_hash), e);
                     None
                 }
             }
@@ -150,6 +140,22 @@ impl State {
             error!("Unable to find head {}", Hash::from_bytes(head_hash));
             None
         }
+    }
+
+    pub(crate) fn flush_in_table(&self, state_table: &mut Table<[u8; 32], &[u8]>) -> Result<(), StoreError> {
+        for (hash, delta) in self.pool().iter() {
+            match rkyv::to_bytes::<rkyv::rancor::Error>(delta.as_ref()) {
+                Ok(value) => state_table
+                    .insert(hash, value.as_slice())
+                    .map_err(StoreError::Storage)?,
+                Err(e) => {
+                    error!("Could not serialize {}", Hash::from_bytes(*hash));
+                    return Err(StoreError::Serialize(e));
+                }
+            };
+        }
+
+        Ok(())
     }
 
     /// Get head's [`Delta`].
@@ -210,10 +216,10 @@ impl State {
 
             // Tree
             data.extend(delta.hash_tree.hash().as_bytes());
-            
+
             blake3::hash(data.leak())
         };
-        
+
         // Compute signature
         delta.signature = if let Some(data) = delta.get_signature_data() {
             write_key.sign(data.leak())
@@ -234,7 +240,7 @@ impl State {
             if parent == self.head {
                 self.head = delta.hash;
                 self.pool.insert(*delta.hash.as_bytes(), Arc::new(delta));
-                
+
                 true
             } else {
                 false
@@ -243,11 +249,11 @@ impl State {
             false
         }
     }
-    
+
     pub fn verify_and_add(&mut self, other_state: State, dir: SharedDirectory) -> Result<Vec<Mutation>, StateError> {
         let mut stack: Vec<Arc<Delta>> = Vec::new();
         let mut mutations: Vec<Mutation> = Vec::new();
-        
+
         for delta in other_state.iter() {
             stack.push(delta);
         }
@@ -262,14 +268,14 @@ impl State {
                     return Err(UnexpectedHash(parent));
                 }
                 if !delta.verify_signature(dir.verif_key) {
-                    return Err(InvalidSignature)
+                    return Err(InvalidSignature);
                 }
                 mutations.insert(0, delta.mutation());
                 self.accept(delta.as_ref().clone());
                 parent = delta.hash();
             }
         }
-        
+
         Ok(mutations)
     }
 
@@ -313,6 +319,7 @@ impl State {
         }
     }
 
+    /// Clone every [`Delta`] after a root (from provided hash).
     pub fn clone_after(&self, root: Hash, max_depth: u32) -> Option<State> {
         let mut pool = HashMap::new();
         let mut head = self.head();
@@ -322,7 +329,7 @@ impl State {
             if head.hash == root {
                 let mut delta = head.as_ref().clone();
                 delta.parent = None;
-                
+
                 pool.insert(*head.hash.as_bytes(), Arc::new(delta));
 
                 return Some(State {
@@ -417,7 +424,6 @@ pub struct Delta {
 }
 
 impl Delta {
-
     /// Get the data used to verify the authenticity of a [`Delta`].
     ///
     /// # Return
@@ -469,10 +475,14 @@ impl Delta {
     pub fn timestamp(&self) -> DateTime<Utc> {
         self.timestamp
     }
-    
+
     /// Get a copy of the [`Mutation`].
     pub fn mutation(&self) -> Mutation {
         self.mutation.clone()
+    }
+
+    pub fn hash_tree(&self) -> &HashTree {
+        &self.hash_tree
     }
 }
 
@@ -584,7 +594,7 @@ impl HashTree {
                         }
                     }
                 } else {
-                    return Some(self)
+                    return Some(self);
                 }
 
                 None
@@ -593,14 +603,12 @@ impl HashTree {
     }
 
     /// Construct a mutated version of the [`HashTree`].
-    fn apply(&self, mutation: &Mutation) -> Result<HashTree, StateError> {
+    pub fn apply(&self, mutation: &Mutation) -> Result<HashTree, StateError> {
         match mutation {
             Mutation::Init { .. } => Ok(self.clone()),
             Mutation::Merge { .. } => Ok(self.clone()),
             Mutation::Modify {
-                file_path,
-                file_hash,
-                ..
+                file_path, file_hash, ..
             } => Self::apply_and_update_parents(
                 self.clone(),
                 &mut |_: HashTree| -> HashTree {
@@ -646,11 +654,7 @@ impl HashTree {
         if let Some(elem) = next {
             // If not, check if the current parent is a directory
             let rtn = match parent {
-                Directory {
-                    name,
-                    content,
-                    hash,
-                } => {
+                Directory { name, content, hash } => {
                     // If so, construct new content by searching for the elem
                     let mut new_content: Vec<HashTree> = Vec::new();
                     let mut elem_pos: i64 = -1;
@@ -686,11 +690,7 @@ impl HashTree {
                         Self::apply_and_update_parents(new_tree, mut_fn, path)
                     } else {
                         // If so, call recursively
-                        Self::apply_and_update_parents(
-                            new_content.remove(elem_pos.try_into().unwrap()),
-                            mut_fn,
-                            path,
-                        )
+                        Self::apply_and_update_parents(new_content.remove(elem_pos.try_into().unwrap()), mut_fn, path)
                     };
 
                     // Check if there is an error
@@ -732,9 +732,7 @@ impl HashTree {
                     result.update_hash();
                     Ok(result)
                 }
-                Err(e) => {
-                    Err(e)
-                }
+                Err(e) => Err(e),
             }
         } else {
             // If so, return parent
@@ -756,15 +754,6 @@ impl HashTree {
         }
     }
 
-    /// Get node hash.
-    pub fn hash(&self) -> Hash {
-        match self {
-            Void => Hash::from_bytes([0; 32]),
-            File { hash, .. } => *hash,
-            Directory { hash, .. } => *hash,
-        }
-    }
-
     /// Non-recursively compute the hash of content (computed only with direct children)
     fn compute_content_hash(content: &Vec<HashTree>) -> Hash {
         let mut data: Vec<u8> = Vec::new();
@@ -780,7 +769,17 @@ impl HashTree {
         blake3::hash(data.as_slice())
     }
 
-    fn flatten(&self) -> Vec<String> {
+    /// Get node hash.
+    pub fn hash(&self) -> Hash {
+        match self {
+            Void => Hash::from_bytes([0; 32]),
+            File { hash, .. } => *hash,
+            Directory { hash, .. } => *hash,
+        }
+    }
+
+    /// Generate a vec of all the paths in the tree.
+    pub fn flatten(&self) -> Vec<String> {
         match self {
             Void | File { .. } => Vec::new(),
             Directory { content, .. } => {
@@ -837,7 +836,7 @@ impl HashTree {
                         }
                     } else {
                         warn!("Cannot retrieve metatdata of '{}'", file.path().display());
-                        continue
+                        continue;
                     }
 
                     hasher
@@ -873,7 +872,7 @@ impl HashTree {
         Ok(rtn)
     }
 
-    /// Generate all [`Mutation`] detected from current [`HashTree`].
+    /// Generate all [`Mutation`] detected from comparing current [`HashTree`] and disk.
     pub fn mutations_from_disk(&self, dir: &SharedDirectory) -> Vec<Mutation> {
         let mut current_files = self.flatten();
         let mut rtn = Vec::new();
@@ -973,10 +972,7 @@ impl Display for HashTree {
         match self {
             Void => Ok(()),
             File {
-                name,
-                hash,
-                timestamp,
-                ..
+                name, hash, timestamp, ..
             } => {
                 writeln!(f, "{}", *hash)?;
                 writeln!(f, "Timestamp: {}", *timestamp)?;
@@ -985,10 +981,7 @@ impl Display for HashTree {
                 Ok(())
             }
             Directory {
-                name,
-                hash,
-                content,
-                ..
+                name, hash, content, ..
             } => {
                 writeln!(f, "{}", *hash)?;
                 writeln!(f, "Directory name: {}", name)?;
@@ -1037,10 +1030,10 @@ pub enum StateError {
 
     #[error("Root node has no tree: {0}")]
     InvalidRoot(Hash),
-    
+
     #[error("Unexpected hash: {0}")]
     UnexpectedHash(Hash),
-    
+
     #[error("Invalid Signature")]
     InvalidSignature,
 }

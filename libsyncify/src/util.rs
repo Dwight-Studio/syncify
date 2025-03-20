@@ -28,10 +28,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 #[derive(Archive, Serialize, Deserialize)]
 #[rkyv(remote = blake3::Hash)]
 #[rkyv(archived = ArchivedHash)]
-pub struct HashDef (
-    #[rkyv(getter = blake3::Hash::as_bytes)]
-    [u8; 32]
-);
+pub struct HashDef(#[rkyv(getter = blake3::Hash::as_bytes)] [u8; 32]);
 
 impl From<HashDef> for Hash {
     fn from(hash_def: HashDef) -> Self {
@@ -42,10 +39,7 @@ impl From<HashDef> for Hash {
 #[derive(Archive, Serialize, Deserialize)]
 #[rkyv(remote = DateTime::<Utc>)]
 #[rkyv(archived = ArchivedDateTime)]
-pub struct DateTimeDef (
-    #[rkyv(getter = DateTime::timestamp)]
-    i64
-);
+pub struct DateTimeDef(#[rkyv(getter = DateTime::timestamp)] i64);
 
 impl From<DateTimeDef> for DateTime<Utc> {
     fn from(date_time_def: DateTimeDef) -> DateTime<Utc> {
@@ -58,14 +52,14 @@ impl From<DateTimeDef> for DateTime<Utc> {
 #[rkyv(archived = ArchivedOptionHash)]
 pub enum OptionHashDef {
     Some(#[rkyv(with = HashDef)] Hash),
-    None
+    None,
 }
 
 impl From<OptionHashDef> for Option<Hash> {
     fn from(hash_def: OptionHashDef) -> Option<Hash> {
         match hash_def {
             OptionHashDef::Some(hash) => Option::Some(hash),
-            OptionHashDef::None => Option::None
+            OptionHashDef::None => Option::None,
         }
     }
 }
@@ -73,7 +67,7 @@ impl From<OptionHashDef> for Option<Hash> {
 #[derive(Archive, Serialize, Deserialize)]
 #[rkyv(remote = ed25519_dalek::Signature)]
 #[rkyv(archived = ArchivedSignature)]
-pub struct SignatureDef (#[rkyv(getter = Signature::to_bytes)] [u8; 64]);
+pub struct SignatureDef(#[rkyv(getter = Signature::to_bytes)] [u8; 64]);
 
 impl From<SignatureDef> for Signature {
     fn from(signature_def: SignatureDef) -> Signature {

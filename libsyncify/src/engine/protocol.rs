@@ -20,14 +20,15 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-pub mod outgoing_sync;
 pub mod fsm;
 pub mod incoming_sync;
+pub mod outgoing_sync;
 
+use crate::SharedDirectory;
 use crate::engine::actor::Event::Sync;
 use crate::engine::actor::SyncEvent;
+use crate::engine::state::State;
 use crate::store::StoreManager;
-use crate::SharedDirectory;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
@@ -42,7 +43,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::engine::state::State;
 
 /// The size in bytes of the SyncifyPacket::Header packet variant
 const HEADER_SIZE: usize = 48;
@@ -55,20 +55,16 @@ pub const SYNCIFY_ALPN: &[u8] = b"/syncify/1";
 /// to deserialize the next SyncifyPacket from
 pub(crate) struct HeaderPacket {
     packet_size: u64, // 8 bytes
-    nonce: [u8; 24], // 24 bytes
-    uuid: Uuid // 16 bytes
+    nonce: [u8; 24],  // 24 bytes
+    uuid: Uuid,       // 16 bytes
 }
 
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize, Debug)]
 /// Enumeration representing the data that can be transferred using SyncifyConnection
 pub enum SyncifyPacket {
-    Request {
-        head: [u8; 32]
-    } = 0,
-    Success {
-        state: State
-    } = 1,
+    Request { head: [u8; 32] } = 0,
+    Success { state: State } = 1,
     Failed = 2,
 }
 
@@ -76,14 +72,14 @@ pub enum SyncifyPacket {
 /// The SyncifyProtocol struct, used to connect a node to this protocol
 pub struct SyncifyProtocol {
     pub(crate) store: Arc<RwLock<StoreManager>>,
-    pub(crate) endpoint: Endpoint
+    pub(crate) endpoint: Endpoint,
 }
 
 impl SyncifyProtocol {
     /// Connect to a node using `node_id`.
     ///
     /// # Return
-    /// 
+    ///
     /// Returns a [`SyncifyConnection`] if successful.
     pub async fn connect(&self, node_id: NodeId) -> Result<SyncifyConnection, anyhow::Error> {
         SyncifyConnection::open_new(node_id, self.endpoint.clone()).await
@@ -102,43 +98,60 @@ impl ProtocolHandler for SyncifyProtocol {
     fn accept(&self, connection: Connection) -> Boxed<anyhow::Result<()>> {
         let store = self.store.clone();
         Box::pin(async move {
-            
             let (_tx, mut rx) = connection.accept_bi().await.unwrap();
-            
+
             let mut header_buffer = [0u8; HEADER_SIZE];
             rx.read_exact(&mut header_buffer).await.unwrap();
-            
-            let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer).map_err(SyncifyProtocolError::DeserializeError)?;
+
+            let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer)
+                .map_err(SyncifyProtocolError::DeserializeError)?;
 
             let conn = SyncifyConnection::accept_new(connection).await.unwrap();
-            
+
             let dir = {
                 match store.read().await.get_shared_dir(&header.uuid) {
-                    None => { conn.close(1, SyncifyProtocolError::UuidDoesNotExists); return Ok(()); }
-                    Some(dir) => { dir }
+                    None => {
+                        conn.close(1, SyncifyProtocolError::UuidDoesNotExists);
+                        return Ok(());
+                    }
+                    Some(dir) => dir,
                 }
             };
             let handle = {
-                match dir.inner.read().await.handle.clone() {
-                    None => { conn.close(1, SyncifyProtocolError::HandleDoesNotExists); return Ok(()); }
-                    Some(handle) => {
-                        handle
+                match dir.read().await.handle.clone() {
+                    None => {
+                        conn.close(1, SyncifyProtocolError::HandleDoesNotExists);
+                        return Ok(());
                     }
+                    Some(handle) => handle,
                 }
             };
 
             let mut packet_buffer = vec![0u8; header.packet_size as usize];
-            rx.read(&mut packet_buffer).await.map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
-            
-            let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
-            let decrypted_bytes = cipher.decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref()).map_err(SyncifyProtocolError::DecryptionError)?;
+            rx.read(&mut packet_buffer)
+                .await
+                .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
 
-            let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes).map_err(SyncifyProtocolError::DeserializeError)?;
-            
+            let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
+            let decrypted_bytes = cipher
+                .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
+                .map_err(SyncifyProtocolError::DecryptionError)?;
+
+            let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
+                .map_err(SyncifyProtocolError::DeserializeError)?;
+
             match packet {
-                SyncifyPacket::Request { head } => { handle.send(Sync(SyncEvent::RequestSync(conn.clone(), blake3::Hash::from(head)))).await; }
-                SyncifyPacket::Success { .. } => { warn!("Success: Not implemented!"); }
-                SyncifyPacket::Failed => { warn!("Failed: Not implemented!") }
+                SyncifyPacket::Request { head } => {
+                    handle
+                        .send(Sync(SyncEvent::RequestSync(conn.clone(), blake3::Hash::from(head))))
+                        .await;
+                }
+                SyncifyPacket::Success { .. } => {
+                    warn!("Success: Not implemented!");
+                }
+                SyncifyPacket::Failed => {
+                    warn!("Failed: Not implemented!")
+                }
             }
 
             Ok(())
@@ -157,15 +170,19 @@ impl SyncifyConnection {
     async fn open_new(node_id: NodeId, endpoint: Endpoint) -> Result<Self, anyhow::Error> {
         let connection = endpoint.connect(NodeAddr::new(node_id), SYNCIFY_ALPN).await?;
 
-        Ok(Self{connection})
+        Ok(Self { connection })
     }
 
     async fn accept_new(connection: Connection) -> Result<Self, anyhow::Error> {
-        Ok(Self{connection})
+        Ok(Self { connection })
     }
 
     /// Send a SyncifyPacket to the node using this connection
-    pub async fn send_packet(&mut self, dir: SharedDirectory, packet: SyncifyPacket) -> Result<(), SyncifyProtocolError> {
+    pub async fn send_packet(
+        &mut self,
+        dir: SharedDirectory,
+        packet: SyncifyPacket,
+    ) -> Result<(), SyncifyProtocolError> {
         let (mut tx, _rx) = self.connection.open_bi().await.unwrap();
         let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
@@ -173,39 +190,55 @@ impl SyncifyConnection {
         let packet_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&packet).unwrap();
         let crypted_bytes = cipher.encrypt(&nonce, &*packet_bytes).unwrap();
 
-        let header = HeaderPacket {packet_size: crypted_bytes.len() as u64, nonce: <[u8; 24]>::try_from(nonce.as_slice()).unwrap(), uuid: dir.uuid};
+        let header = HeaderPacket {
+            packet_size: crypted_bytes.len() as u64,
+            nonce: <[u8; 24]>::try_from(nonce.as_slice()).unwrap(),
+            uuid: dir.uuid,
+        };
         let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
 
         tx.write(header_bytes.as_slice()).await.unwrap();
         tx.write(crypted_bytes.as_slice()).await.unwrap();
-        
+
         tx.finish().map_err(SyncifyProtocolError::ClosedStream)?;
         tx.stopped().await.unwrap();
-        
+
         Ok(())
     }
 
     //noinspection RsTraitObligations
     async fn receive_header(&mut self, rx: &mut RecvStream, uuid: Uuid) -> Result<HeaderPacket, SyncifyProtocolError> {
         let mut header_data = [0u8; HEADER_SIZE];
-        rx.read(&mut header_data).await.map_err(|e| SyncifyProtocolError::ReadError(e, String::from("header")))?;
+        rx.read(&mut header_data)
+            .await
+            .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("header")))?;
 
-        let res = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_data).map_err(SyncifyProtocolError::DeserializeError)?;
+        let res = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_data)
+            .map_err(SyncifyProtocolError::DeserializeError)?;
 
         if uuid != res.uuid {
             return Err(SyncifyProtocolError::WrongRecipient(res.uuid));
         }
-        
+
         Ok(res)
     }
 
     //noinspection RsTraitObligations
-    async fn receive_syncify_packet(&mut self, header_packet: &HeaderPacket, dir: SharedDirectory, rx: &mut RecvStream) -> Result<SyncifyPacket, SyncifyProtocolError> {
+    async fn receive_syncify_packet(
+        &mut self,
+        header_packet: &HeaderPacket,
+        dir: SharedDirectory,
+        rx: &mut RecvStream,
+    ) -> Result<SyncifyPacket, SyncifyProtocolError> {
         let mut packet_buffer = vec![0u8; header_packet.packet_size as usize];
-        rx.read(&mut packet_buffer).await.map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
+        rx.read(&mut packet_buffer)
+            .await
+            .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
 
         let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
-        let decrypted_bytes = cipher.decrypt(&XNonce::from(header_packet.nonce), packet_buffer.as_ref()).map_err(SyncifyProtocolError::DecryptionError)?;
+        let decrypted_bytes = cipher
+            .decrypt(&XNonce::from(header_packet.nonce), packet_buffer.as_ref())
+            .map_err(SyncifyProtocolError::DecryptionError)?;
 
         rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes).map_err(SyncifyProtocolError::DeserializeError)
     }
@@ -216,10 +249,10 @@ impl SyncifyConnection {
         let (_tx, mut rx) = self.connection.accept_bi().await.unwrap();
         let header = self.receive_header(&mut rx, dir.uuid).await?;
         let packet = self.receive_syncify_packet(&header, dir, &mut rx).await?;
-        
+
         Ok(packet)
     }
-    
+
     pub fn is_closed(&self) -> bool {
         self.connection.close_reason().is_some()
     }
@@ -227,12 +260,13 @@ impl SyncifyConnection {
     /// Close the connection
     pub fn close(&self, err_code: u32, err: SyncifyProtocolError) {
         info!("CLOSED: {}", err);
-        self.connection.close(VarInt::from_u32(err_code), err.to_string().as_bytes());
+        self.connection
+            .close(VarInt::from_u32(err_code), err.to_string().as_bytes());
     }
-    
+
     pub fn remote(&self) -> NodeId {
         self.connection.remote_node_id().unwrap()
-    } 
+    }
 }
 
 #[derive(Error, Debug)]
@@ -242,25 +276,25 @@ pub enum SyncifyProtocolError {
 
     #[error("Write error: {0}")]
     WriteError(WriteError),
-    
+
     #[error("Closed stream: {0}")]
     ClosedStream(ClosedStream),
-    
+
     #[error("Unable to deserialize received data: {0}")]
     DeserializeError(RancorError),
-    
+
     #[error("Missing header packet. Received {0}")]
     HeaderMissing(String),
-    
+
     #[error("Uuid does not exists")]
     UuidDoesNotExists,
 
     #[error("Directory handle does not exists")]
     HandleDoesNotExists,
-    
+
     #[error("Cannot decrypt the packet: {0}")]
     DecryptionError(Error),
-    
+
     #[error("Wrong recipient: {0}")]
     WrongRecipient(Uuid),
 }

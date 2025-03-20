@@ -56,12 +56,7 @@ impl Keyring {
         }
     }
 
-    pub fn set_key(
-        &self,
-        key: Keys,
-        value: &str,
-        key_complement: Option<&str>,
-    ) -> Result<(), keyring::Error> {
+    pub fn set_key(&self, key: Keys, value: &str, key_complement: Option<&str>) -> Result<(), keyring::Error> {
         let credential = self.get_credential(key, key_complement);
 
         let val = value.to_string();
@@ -71,37 +66,22 @@ impl Keyring {
             .unwrap()
     }
 
-    pub fn get_key(
-        &self,
-        key: Keys,
-        key_complement: Option<&str>,
-    ) -> Result<String, keyring::Error> {
+    pub fn get_key(&self, key: Keys, key_complement: Option<&str>) -> Result<String, keyring::Error> {
         let credential = self.get_credential(key, key_complement);
 
-        thread::spawn(move || credential.get_password())
-            .join()
-            .unwrap()
+        thread::spawn(move || credential.get_password()).join().unwrap()
     }
 
-    pub fn delete_key(
-        &self,
-        key: Keys,
-        key_complement: Option<&str>,
-    ) -> Result<(), keyring::Error> {
+    pub fn delete_key(&self, key: Keys, key_complement: Option<&str>) -> Result<(), keyring::Error> {
         let credential = self.get_credential(key, key_complement);
 
-        thread::spawn(move || credential.delete_credential())
-            .join()
-            .unwrap()
+        thread::spawn(move || credential.delete_credential()).join().unwrap()
     }
 
     pub fn key_exists(&self, key: Keys, key_complement: Option<&str>) -> bool {
         let credential = self.get_credential(key, key_complement);
 
-        thread::spawn(move || credential.get_password())
-            .join()
-            .unwrap()
-            .is_ok()
+        thread::spawn(move || credential.get_password()).join().unwrap().is_ok()
     }
 
     fn get_credential(&self, key: Keys, key_complement: Option<&str>) -> Box<Credential> {

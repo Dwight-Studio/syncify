@@ -21,12 +21,13 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
 use crate::engine::actor::DirectoryManagerHandle;
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
-use crate::store::link::Link;
 use crate::store::StoreManager;
-use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
+use crate::store::link::Link;
+use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use log::info;
@@ -37,7 +38,8 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::RwLockReadGuard;
+use tokio::sync::{RwLock, RwLockWriteGuard};
 use uuid::Uuid;
 
 pub mod engine;
@@ -54,8 +56,7 @@ fn get_app_dir() -> PathBuf {
     }
 }
 
-#[derive(PartialEq, Clone)]
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(PartialEq, Clone, Archive, Serialize, Deserialize)]
 pub enum SharedDirPermission {
     ReadOnly,
     Write,
@@ -82,11 +83,7 @@ impl Syncify {
 
     /// Initialize new engine and start syncing.
     pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
-        self.engine = Some(
-            Engine::new(self.store.clone())
-                .await
-                .map_err(SyncifyError::Engine)?,
-        );
+        self.engine = Some(Engine::new(self.store.clone()).await.map_err(SyncifyError::Engine)?);
         Ok(())
     }
 
@@ -105,12 +102,9 @@ impl Syncify {
     }
 
     /// Create shared directory.
-    pub async fn create_shared_directory(
-        &mut self,
-        path: PathBuf,
-    ) -> Result<SharedDirectory, SyncifyError> {
+    pub async fn create_shared_directory(&mut self, path: PathBuf) -> Result<SharedDirectory, SyncifyError> {
         let mut abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
-        
+
         // Add a trailing "/" at the end of the path
         abs_path.push("");
 
@@ -125,7 +119,7 @@ impl Syncify {
         if abs_path.exists() {
             // Check if the user has write access in the directory
             if !abs_path.is_dir() {
-                return Err(NotADirectory(abs_path))
+                return Err(NotADirectory(abs_path));
             }
             let md = abs_path.metadata().map_err(InvalidPath)?;
             if md.permissions().readonly() {
@@ -134,22 +128,25 @@ impl Syncify {
         } else {
             // Create the dir and its parent
             tokio::fs::create_dir_all(&get_app_dir())
-                .await.map_err(|e| match e.kind() {
-                ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
-                _ => InvalidPath(e)
-            })?
+                .await
+                .map_err(|e| match e.kind() {
+                    ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
+                    _ => InvalidPath(e),
+                })?
         }
 
         // Add the directory to the store
         let uuid = Uuid::new_v4();
         let sign_key = SigningKey::generate(&mut OsRng);
+        let state = State::new(uuid);
 
         let dir = SharedDirectory {
             uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                State::new(uuid),
-                HashMap::new()
+                state.hash(),
+                state,
+                HashMap::new(),
             ))),
             sign_key: Some(sign_key.clone()),
             verif_key: sign_key.verifying_key(),
@@ -161,7 +158,12 @@ impl Syncify {
             dir.path().display()
         );
 
-        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::Store)?;
+        self.store
+            .write()
+            .await
+            .add_shared_dir(&dir)
+            .await
+            .map_err(SyncifyError::Store)?;
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
@@ -177,12 +179,14 @@ impl Syncify {
     /// Remove shared directory.
     ///
     /// No files are actually deleted, but the directory will no longer be synchronized.
-    pub async fn remove_shared_directory(
-        &mut self,
-        dir: SharedDirectory,
-    ) -> Result<(), SyncifyError> {
+    pub async fn remove_shared_directory(&mut self, dir: SharedDirectory) -> Result<(), SyncifyError> {
         if self.store.read().await.get_shared_dir(&dir.uuid).is_some() {
-            self.store.write().await.remove_shared_dir(&dir).await.map_err(SyncifyError::Store)?;
+            self.store
+                .write()
+                .await
+                .remove_shared_dir(&dir)
+                .await
+                .map_err(SyncifyError::Store)?;
 
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
@@ -214,16 +218,16 @@ impl Syncify {
 
         // Add a trailing "/" at the end of the path
         abs_path.push("");
-        
+
         // Check if the dir exists
         if abs_path.exists() {
             // Check if abs_path is a directory
             if !abs_path.is_dir() {
-                return Err(NotADirectory(abs_path))
+                return Err(NotADirectory(abs_path));
             }
             // Check if the directory is empty
             if abs_path.read_dir().iter().nth(1).is_some() {
-                return Err(DirectoryNotEmpty(abs_path))
+                return Err(DirectoryNotEmpty(abs_path));
             }
             // Check if the user has write access in the directory
             let md = abs_path.metadata().map_err(InvalidPath)?;
@@ -233,33 +237,45 @@ impl Syncify {
         } else {
             // Create the dir and its parent
             tokio::fs::create_dir_all(&get_app_dir())
-                .await.map_err(|e| match e.kind() {
-                ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
-                _ => InvalidPath(e)
-            })?
+                .await
+                .map_err(|e| match e.kind() {
+                    ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
+                    _ => InvalidPath(e),
+                })?
         }
 
         // Add the directory to the store
-        let sign_key = if link.permission == SharedDirPermission::Write { Some(SigningKey::from_bytes(&link.key)) } else { None };
+        let sign_key = if link.permission == SharedDirPermission::Write {
+            Some(SigningKey::from_bytes(&link.key))
+        } else {
+            None
+        };
+        let state = State::new(link.uuid);
 
         let dir = SharedDirectory {
             uuid: link.uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                State::new(link.uuid),
-                link.neighbors
+                state.hash(),
+                state,
+                link.neighbors,
             ))),
             sign_key: sign_key.clone(),
-            verif_key: if let Some(key) = sign_key { key.verifying_key() } else { VerifyingKey::from_bytes(&link.key).unwrap() },
+            verif_key: if let Some(key) = sign_key {
+                key.verifying_key()
+            } else {
+                VerifyingKey::from_bytes(&link.key).unwrap()
+            },
         };
 
-        info!(
-            "Added shared directory {} at \"{}\"",
-            dir.uuid(),
-            dir.path().display()
-        );
+        info!("Added shared directory {} at \"{}\"", dir.uuid(), dir.path().display());
 
-        self.store.write().await.add_shared_dir(&dir).await.map_err(SyncifyError::Store)?;
+        self.store
+            .write()
+            .await
+            .add_shared_dir(&dir)
+            .await
+            .map_err(SyncifyError::Store)?;
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
@@ -290,26 +306,36 @@ impl SharedDirectory {
     pub fn path(&self) -> PathBuf {
         self.path.clone()
     }
-    
+
     pub fn is_read_only(&self) -> bool {
         self.sign_key.is_none()
+    }
+
+    pub(crate) async fn read(&self) -> RwLockReadGuard<InnerSharedDirectory> {
+        self.inner.read().await
+    }
+
+    pub(crate) async fn write(&self) -> RwLockWriteGuard<InnerSharedDirectory> {
+        self.inner.write().await
     }
 }
 
 pub(crate) struct InnerSharedDirectory {
     pub(crate) state: State,
+    pub(crate) local_head: Hash,
     pub(crate) neighbors: HashMap<[u8; 32], bool>,
     pub(crate) handle: Option<DirectoryManagerHandle>,
-    pub(crate) received_sync: bool
+    pub(crate) received_initial_sync: bool,
 }
 
 impl InnerSharedDirectory {
-    pub(crate) fn new(state: State, neighbors: HashMap<[u8; 32], bool>) -> Self {
+    pub(crate) fn new(local_head: Hash, state: State, neighbors: HashMap<[u8; 32], bool>) -> Self {
         Self {
             state,
+            local_head,
             neighbors,
             handle: None,
-            received_sync: false
+            received_initial_sync: false,
         }
     }
 }
@@ -345,13 +371,13 @@ pub enum SyncifyError {
 
     #[error("Shared directory does not exists: {0}")]
     DirectoryDoesNotExists(Uuid),
-    
+
     #[error("Error while parsing link: {0}")]
     LinkParseError(String),
-    
+
     #[error("Directory is not empty: {0}")]
     DirectoryNotEmpty(PathBuf),
-    
+
     #[error("{0} is not a directory")]
     NotADirectory(PathBuf),
 }

@@ -119,16 +119,12 @@ impl Commands {
                     let dirs = syncify.get_all_shared_directories().await;
 
                     if dirs.is_empty() {
-                        utils::print_error(
-                            "No shared directory found! Please join or create a shared directory!",
-                        );
+                        utils::print_error("No shared directory found! Please join or create a shared directory!");
                         exit(1);
                     }
 
                     let dir_choice = utils::number_choice(
-                        dirs.iter()
-                            .map(|dir| dir.path().display().to_string())
-                            .collect(),
+                        dirs.iter().map(|dir| dir.path().display().to_string()).collect(),
                         Some("Choose a directory to share:"),
                     )
                     .await;
@@ -144,11 +140,7 @@ impl Commands {
                             ]
                             .into_iter()
                             .collect();
-                            utils::hash_choice(
-                                perm_vec,
-                                Some("Choose the directory access policy:"),
-                            )
-                            .await
+                            utils::hash_choice(perm_vec, Some("Choose the directory access policy:")).await
                         }
                     };
                     Self::invite(syncify, uuid, &permission).await;
@@ -175,11 +167,7 @@ impl Commands {
                         "'{}' as '{}' in {} mode",
                         dir.path().display(),
                         dir.uuid(),
-                        if dir.is_read_only() {
-                            "read-only"
-                        } else {
-                            "write"
-                        }
+                        if dir.is_read_only() { "read-only" } else { "write" }
                     )
                 }
 
@@ -219,20 +207,12 @@ impl Commands {
                 }
             }
             Subcommands::Join { link, path } => match Link::from_str(link) {
-                Ok(o_link) => {
-                    match syncify
-                        .join_shared_directory(o_link, PathBuf::from(path))
-                        .await
-                    {
-                        Ok(dir) => utils::print_success(format!(
-                            "Joined shared directory '{}'",
-                            dir.uuid()
-                        )),
-                        Err(e) => {
-                            utils::print_error(format!("{e}"));
-                        }
+                Ok(o_link) => match syncify.join_shared_directory(o_link, PathBuf::from(path)).await {
+                    Ok(dir) => utils::print_success(format!("Joined shared directory '{}'", dir.uuid())),
+                    Err(e) => {
+                        utils::print_error(format!("{e}"));
                     }
-                }
+                },
                 Err(e) => {
                     utils::print_error(format!("{e}"));
                 }
@@ -291,10 +271,7 @@ impl Commands {
                 println!("{}", e);
                 exit(1);
             } else {
-                utils::print_success(format!(
-                    "The shared directory '{}' has been removed!",
-                    dir_path
-                ))
+                utils::print_success(format!("The shared directory '{}' has been removed!", dir_path))
             }
         } else {
             utils::print_error("The shared directory does not exists!");

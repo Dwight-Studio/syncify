@@ -23,14 +23,14 @@
 use crate::SharedDirectory;
 use crate::engine::actor::{Event, SyncEvent};
 use crate::engine::protocol::SyncifyProtocol;
+use crate::engine::protocol::fsm::FiniteStateMachine;
+use crate::engine::protocol::incoming_sync::IncomingSync;
+use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
 use log::{error, info, warn};
 use std::time::Duration;
 use tokio::time::sleep;
-use crate::engine::protocol::fsm::FiniteStateMachine;
-use crate::engine::protocol::incoming_sync::IncomingSync;
-use crate::engine::protocol::outgoing_sync::OutgoingSync;
 
 const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -52,27 +52,25 @@ impl SyncManager {
     pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
         match sync_event {
             SyncEvent::RequestSync(conn, hash) => {
-                self.dir.inner.write().await.received_sync = true;
-                
+                self.dir.write().await.received_initial_sync = true;
+
                 let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn.clone(), hash);
-                
+
                 if incoming_sync.step_until_finished(FSM_TIMEOUT).await {
                     incoming_sync.step().await;
                 } else {
                     warn!("Timeout while processing sync event: RequestSync");
                 }
             }
-            SyncEvent::TriggerSync(outgoing_opt) => {
-                match outgoing_opt {
-                    None => self.initial_sync().await,
-                    Some(outgoing) => Self::start_sync(outgoing).await,
-                }
-            }
+            SyncEvent::TriggerSync(outgoing_opt) => match outgoing_opt {
+                None => self.initial_sync().await,
+                Some(outgoing) => Self::start_sync(outgoing).await,
+            },
         }
     }
 
     pub(crate) async fn initial_sync(&mut self) {
-        let neighbors = self.dir.inner.read().await.neighbors.clone();
+        let neighbors = self.dir.read().await.neighbors.clone();
         for node in neighbors {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
@@ -82,16 +80,16 @@ impl SyncManager {
                     Self::start_sync(outgoing).await;
                 } else {
                     let dir = self.dir.clone();
-                    
+
                     tokio::spawn(async move {
                         sleep(Duration::from_secs(2)).await; // Wait 2 seconds for RequestDeltas
-                        let inner = dir.inner.read().await;
-                        let received_request = inner.received_sync;
+                        let inner = dir.read().await;
+                        let received_request = inner.received_initial_sync;
 
                         if !received_request {
                             info!("Initial sync: No sync request received. Initiating sync myself.");
                             if let Some(handle) = &inner.handle {
-                                    handle.send(Event::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
+                                handle.send(Event::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
                             } else {
                                 error!("Initial sync: No handle available, aborting.");
                             }

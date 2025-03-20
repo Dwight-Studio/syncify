@@ -21,16 +21,20 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::engine::state::State;
 use crate::store::keyring::{Keyring, Keys};
-use crate::{get_app_dir, InnerSharedDirectory, SharedDirectory};
-use base64::prelude::BASE64_STANDARD;
+use crate::{InnerSharedDirectory, SharedDirectory, get_app_dir};
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use log::{error, info, warn};
-use redb::{CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TableHandle, TransactionError};
+use redb::{
+    CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TableHandle,
+    TransactionError,
+};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -38,7 +42,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::engine::state::State;
 
 pub mod keyring;
 pub mod link;
@@ -48,6 +51,7 @@ const STORE_FILENAME: &str = "store.db";
 // Base table linking Path to UUID
 const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
 const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
+const LOCAL_HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("local_head");
 const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
 
 /// Store manager.
@@ -62,7 +66,9 @@ impl StoreManager {
     pub async fn new() -> Result<Self, StoreError> {
         // Create app dir (and parents)
         if !get_app_dir().exists() {
-            tokio::fs::create_dir_all(&get_app_dir()).await.map_err(StoreError::IO)?;
+            tokio::fs::create_dir_all(&get_app_dir())
+                .await
+                .map_err(StoreError::IO)?;
         }
 
         // Initialize everything
@@ -92,19 +98,13 @@ impl StoreManager {
             key
         } else {
             info!("Loading secret key from keyring");
-            keyring
-                .get_key(Keys::SecretKey, None)
-                .unwrap()
-                .parse()
-                .unwrap()
+            keyring.get_key(Keys::SecretKey, None).unwrap().parse().unwrap()
         }
     }
 
     /// Get shared folder keys.
     fn get_keys(keyring: &Keyring, uuid: Uuid) -> Option<(Option<SigningKey>, VerifyingKey)> {
-        if let Ok(key) = keyring
-            .get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str()))
-        {
+        if let Ok(key) = keyring.get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str())) {
             let mut split_key = key.split(" ");
 
             // Decode signing key
@@ -129,7 +129,7 @@ impl StoreManager {
                     }
                 } else {
                     error!("Malformed SharedDirKey for {}", uuid);
-                    return None
+                    return None;
                 }
             };
 
@@ -151,7 +151,7 @@ impl StoreManager {
                     }
                 } else {
                     error!("Malformed SharedDirKey for {}", uuid);
-                    return None
+                    return None;
                 }
             };
 
@@ -173,39 +173,49 @@ impl StoreManager {
         {
             let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+            let local_head_table = transaction.open_table(LOCAL_HEAD_TABLE).map_err(StoreError::Table)?;
             let neighbors_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
 
             for range in base_table.iter().map_err(StoreError::Storage)? {
                 let (path, uuid_bytes) = range.unwrap();
                 let head_opt = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let local_head_opt = local_head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
                 let neighbors_opt = neighbors_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
 
                 let uuid = Uuid::from_bytes(uuid_bytes.value());
 
-                if let (Some(head), Some(neighbors)) = (head_opt, neighbors_opt) {
+                if let (Some(head), Some(neighbors), Some(local_head)) = (head_opt, neighbors_opt, local_head_opt) {
                     if let Some((sign_key, verif_key)) = Self::get_keys(&keyring, uuid) {
-
                         let uuid_string = uuid.to_string();
 
                         // Reading state table
-                        let state_table_def: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new(uuid_string.as_str());
-                        if transaction.list_tables().map_err(StoreError::Storage)?
-                            .map(|e| e.name().to_string()).any(|e| e == uuid.to_string()) {
+                        let state_table_def: TableDefinition<[u8; 32], &[u8]> =
+                            TableDefinition::new(uuid_string.as_str());
+                        if transaction
+                            .list_tables()
+                            .map_err(StoreError::Storage)?
+                            .map(|e| e.name().to_string())
+                            .any(|e| e == uuid.to_string())
+                        {
                             let state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
 
                             // Build state
                             info!("Building state for {}", uuid);
-                            if let Some(state) = State::from_table(state_table, head.value()) {
-                                cache.insert(uuid, SharedDirectory {
+                            if let Some(state) = State::from_table(&state_table, head.value()) {
+                                cache.insert(
                                     uuid,
-                                    path: PathBuf::from(path.value()),
-                                    inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                                        state,
-                                        neighbors.value().iter().map(|e| (*e, false)).collect()
-                                    ))),
-                                    sign_key,
-                                    verif_key,
-                                });
+                                    SharedDirectory {
+                                        uuid,
+                                        path: PathBuf::from(path.value()),
+                                        inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
+                                            Hash::from_bytes(local_head.value()),
+                                            state,
+                                            neighbors.value().iter().map(|e| (*e, false)).collect(),
+                                        ))),
+                                        sign_key,
+                                        verif_key,
+                                    },
+                                );
                             } else {
                                 warn!("Failed!");
                             }
@@ -214,13 +224,16 @@ impl StoreManager {
                         }
                     }
                 } else {
-                    error!("Unable to load state for {}: Head not found", uuid);
+                    error!(
+                        "Unable to load state for {}: Head, Local Head or Neighbors is missing",
+                        uuid
+                    );
                 }
             }
         }
 
         transaction.commit().map_err(StoreError::Commit)?;
-        
+
         Ok(cache)
     }
 
@@ -239,8 +252,9 @@ impl StoreManager {
                 Keys::SharedDirKey,
                 (sign_key_base64 + " " + verif_key_base64.as_str()).as_str(),
                 Some(dir.uuid.to_string().as_str()),
-            ).map_err(StoreError::Keyring)?;
-        
+            )
+            .map_err(StoreError::Keyring)?;
+
         self.cache.insert(dir.uuid, dir.clone());
         self.flush().await?;
         Ok(())
@@ -251,7 +265,8 @@ impl StoreManager {
         self.cache.remove(&dir.uuid);
 
         self.keyring
-            .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str())).map_err(StoreError::Keyring)?;
+            .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))
+            .map_err(StoreError::Keyring)?;
 
         self.flush().await?;
         Ok(())
@@ -278,34 +293,37 @@ impl StoreManager {
         {
             let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+            let mut local_head_table = transaction.open_table(LOCAL_HEAD_TABLE).map_err(StoreError::Table)?;
             let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
 
             // Save each SharedDirectory
             for (uuid, dir) in &self.cache {
                 info!("Saving state for {}", uuid);
-                let mut inner = dir.inner.write().await;
+                let mut inner = dir.write().await;
 
                 // Update index tables
-                base_table.insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes()).map_err(StoreError::Storage)?;
-                head_table.insert(uuid.as_bytes(), inner.state.hash().as_bytes()).map_err(StoreError::Storage)?;
-                neighbor_table.insert(uuid.as_bytes(), inner.neighbors.keys().copied().collect::<Vec<[u8; 32]>>()).map_err(StoreError::Storage)?;
+                base_table
+                    .insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes())
+                    .map_err(StoreError::Storage)?;
+                head_table
+                    .insert(uuid.as_bytes(), inner.state.hash().as_bytes())
+                    .map_err(StoreError::Storage)?;
+                local_head_table
+                    .insert(uuid.as_bytes(), inner.local_head.as_bytes())
+                    .map_err(StoreError::Storage)?;
+                neighbor_table
+                    .insert(
+                        uuid.as_bytes(),
+                        inner.neighbors.keys().copied().collect::<Vec<[u8; 32]>>(),
+                    )
+                    .map_err(StoreError::Storage)?;
 
                 let uuid_string = uuid.to_string();
 
                 let state_table_def: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
 
-                for (hash, delta) in inner.state.pool().iter() {
-                    match rkyv::to_bytes::<rkyv::rancor::Error>(delta.deref()) {
-                        Ok(value) => {
-                            state_table.insert(hash, value.as_slice()).map_err(StoreError::Storage)?
-                        },
-                        Err(e) => {
-                            error!("Could not serialize {} in {}", Hash::from_bytes(*hash), uuid);
-                            return Err(StoreError::Serialize(e))
-                        },
-                    };
-                }
+                dir.read().await.state.flush_in_table(&mut state_table)?;
 
                 if inner.state.trim() {
                     info!("Pruned state {}", uuid_string);
@@ -345,7 +363,7 @@ pub enum StoreError {
 
     #[error("{0}")]
     Serialize(rkyv::rancor::Error),
-    
+
     #[error("{0}")]
-    Keyring(::keyring::error::Error)
+    Keyring(::keyring::error::Error),
 }

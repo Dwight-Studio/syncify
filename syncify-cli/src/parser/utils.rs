@@ -21,12 +21,12 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use colored::Colorize;
+use fern::colors::ColoredLevelConfig;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Write;
 use std::time::SystemTime;
-use colored::Colorize;
-use fern::colors::ColoredLevelConfig;
 
 pub fn setup_logger() -> Result<(), fern::InitError> {
     fern::Dispatch::new()
@@ -51,10 +51,12 @@ pub fn setup_logger() -> Result<(), fern::InitError> {
     Ok(())
 }
 
-pub async fn number_choice<T: Display>(vec: Vec<T>, head_message: Option<&str>, ) -> usize {
+pub async fn number_choice<T: Display>(vec: Vec<T>, head_message: Option<&str>) -> usize {
     loop {
         print_clear();
-        if let Some(msg) = head_message { println!("{msg}\n") }
+        if let Some(msg) = head_message {
+            println!("{msg}\n")
+        }
         for (i, dir) in vec.iter().enumerate() {
             println!("{}> {}", i + 1, dir);
         }
@@ -63,26 +65,28 @@ pub async fn number_choice<T: Display>(vec: Vec<T>, head_message: Option<&str>, 
 
         if let Ok(ch) = read_input().trim_end().parse::<usize>() {
             if ch > 0 && ch - 1 < vec.len() {
-                break ch - 1
+                break ch - 1;
             }
         }
     }
 }
 
-pub async fn hash_choice<T: Display, U: Clone>(map: HashMap<T, U>, head_message: Option<&str>, ) -> U {
+pub async fn hash_choice<T: Display, U: Clone>(map: HashMap<T, U>, head_message: Option<&str>) -> U {
     loop {
         print_clear();
-        if let Some(msg) = head_message { println!("{msg}\n") }
+        if let Some(msg) = head_message {
+            println!("{msg}\n")
+        }
         for (i, dir) in map.keys().enumerate() {
             println!("{}> {}", i + 1, dir);
         }
 
         print_no_newline("\nChoice> ".purple().bold());
-        
+
         if let Ok(ch) = read_input().trim_end().parse::<usize>() {
             if ch > 0 && ch - 1 < map.len() {
                 let vec: Vec<U> = map.values().cloned().collect();
-                break vec[ch - 1].clone()
+                break vec[ch - 1].clone();
             }
         }
     }
@@ -96,7 +100,7 @@ pub fn print_no_newline<T: Display>(msg: T) {
 pub fn read_input() -> String {
     let choice = &mut String::new();
     std::io::stdin().read_line(choice).unwrap();
-    
+
     choice.to_string()
 }
 

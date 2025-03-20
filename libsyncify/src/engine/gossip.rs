@@ -20,17 +20,17 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::collections::HashMap;
-use iroh::NodeId;
-use crate::engine::actor::{DirectoryManagerHandle, Event, SyncEvent};
 use crate::SharedDirectory;
+use crate::engine::actor::{DirectoryManagerHandle, Event, SyncEvent};
+use iroh::NodeId;
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::info;
+use std::collections::HashMap;
 
 pub(crate) struct GossipManager {
     topic: GossipSender,
     dir: SharedDirectory,
-    handle: DirectoryManagerHandle
+    handle: DirectoryManagerHandle,
 }
 
 impl GossipManager {
@@ -43,21 +43,21 @@ impl GossipManager {
         match gossip_event {
             iroh_gossip::net::Event::Gossip(event) => match event {
                 GossipEvent::Joined(node_id_vec) => {
-                    let neighbors = &mut self.dir.inner.write().await.neighbors;
+                    let neighbors = &mut self.dir.write().await.neighbors;
 
                     for node_id in &node_id_vec {
                         Self::update_neighbors(neighbors, node_id);
                     }
-                    
+
                     self.handle.send(Event::Sync(SyncEvent::TriggerSync(None))).await;
                 }
                 GossipEvent::NeighborUp(node_id) => {
-                    let neighbors = &mut self.dir.inner.write().await.neighbors;
+                    let neighbors = &mut self.dir.write().await.neighbors;
 
                     Self::update_neighbors(neighbors, &node_id);
                 }
                 GossipEvent::NeighborDown(node_id) => {
-                    let neighbors = &mut self.dir.inner.write().await.neighbors;
+                    let neighbors = &mut self.dir.write().await.neighbors;
                     *neighbors.get_mut(node_id.as_bytes()).unwrap() = false;
                 }
                 GossipEvent::Received(_) => {}

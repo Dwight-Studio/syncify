@@ -21,11 +21,11 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::engine::EngineError::AlreadyWatched;
 use crate::engine::actor::DirectoryManager;
 use crate::engine::protocol::SyncifyProtocol;
-use crate::engine::EngineError::AlreadyWatched;
 use crate::store::StoreManager;
-use crate::{get_app_dir, SharedDirectory};
+use crate::{SharedDirectory, get_app_dir};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId};
 use iroh_blobs::net_protocol::Blobs;
@@ -40,10 +40,10 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod actor;
-pub mod protocol;
-pub mod state;
 pub mod fs;
 pub mod gossip;
+pub mod protocol;
+pub mod state;
 pub mod sync;
 
 const DOWNLOAD_DIRNAME: &str = "download";
@@ -95,7 +95,7 @@ impl Engine {
 
         let syncify_prot = SyncifyProtocol {
             store: store.clone(),
-            endpoint: builder.endpoint().clone()
+            endpoint: builder.endpoint().clone(),
         };
 
         let mut engine = Self {
@@ -138,25 +138,30 @@ impl Engine {
         if !self.managers.contains_key(&dir.uuid()) {
             if !&dir.path.exists() {
                 warn!("Directory for {} don't exist", dir.uuid);
-                
+
                 // Create the dir and its parent
-                tokio::fs::create_dir_all(&dir.path)
-                    .await.map_err(EngineError::IO)?
+                tokio::fs::create_dir_all(&dir.path).await.map_err(EngineError::IO)?
             }
-            
-            let topic = self.gossip.subscribe(
-                TopicId::from_bytes(
-                    <[u8; 32]>::try_from(dir.uuid().as_simple().to_string().as_bytes()).unwrap()
-                ),
-                dir.inner.read().await.neighbors.keys().map(|n| { NodeId::from_bytes(n).unwrap() }).collect(),
-            ).map_err(EngineError::Gossip)?;
+
+            let topic = self
+                .gossip
+                .subscribe(
+                    TopicId::from_bytes(<[u8; 32]>::try_from(dir.uuid().as_simple().to_string().as_bytes()).unwrap()),
+                    dir.read()
+                        .await
+                        .neighbors
+                        .keys()
+                        .map(|n| NodeId::from_bytes(n).unwrap())
+                        .collect(),
+                )
+                .map_err(EngineError::Gossip)?;
 
             // Create manager
-            let manager =
-                DirectoryManager::new(dir.clone(), topic, self.syncify_prot.clone()).map_err(EngineError::CannotWatch)?;
+            let manager = DirectoryManager::new(dir.clone(), topic, self.syncify_prot.clone())
+                .map_err(EngineError::CannotWatch)?;
 
             // Store the handle in the inner
-            dir.inner.write().await.handle = Some(manager.clone());
+            dir.write().await.handle = Some(manager.clone());
 
             self.managers.insert(dir.uuid, manager);
             Ok(())
@@ -165,10 +170,7 @@ impl Engine {
         }
     }
 
-    pub async fn remove_watched_directory(
-        &mut self,
-        dir: &SharedDirectory,
-    ) -> Result<(), EngineError> {
+    pub async fn remove_watched_directory(&mut self, dir: &SharedDirectory) -> Result<(), EngineError> {
         info!("Removing directory manager for {}", dir.uuid());
         if self.managers.contains_key(&dir.uuid()) {
             self.managers.remove(&dir.uuid()).unwrap();
