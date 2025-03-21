@@ -25,7 +25,7 @@ pub mod incoming_sync;
 pub mod outgoing_sync;
 
 use crate::SharedDirectory;
-use crate::engine::manager::Event::Sync;
+use crate::engine::manager::ManagerEvent::Sync;
 use crate::engine::manager::SyncEvent;
 use crate::engine::state::State;
 use crate::store::StoreManager;

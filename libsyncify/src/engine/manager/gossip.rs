@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::manager::{DirectoryManagerHandle, Event, SyncEvent};
+use crate::engine::manager::{ManagerHandle, ManagerEvent, SyncEvent};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::state::HashTree;
 use crate::store::StoreManager;
@@ -90,7 +90,7 @@ pub(crate) struct GossipManager {
     topic: GossipSender,
     dir: SharedDirectory,
     protocol: SyncifyProtocol,
-    handle: DirectoryManagerHandle,
+    handle: ManagerHandle,
 }
 
 impl GossipManager {
@@ -98,7 +98,7 @@ impl GossipManager {
         topic: GossipSender,
         dir: SharedDirectory,
         protocol: SyncifyProtocol,
-        handle: DirectoryManagerHandle,
+        handle: ManagerHandle,
     ) -> Self {
         Self {
             topic,
@@ -125,7 +125,7 @@ impl GossipManager {
                         Self::update_neighbors(neighbors, node_id);
                     }
 
-                    self.handle.send(Event::Sync(SyncEvent::TriggerSync(None))).await;
+                    self.handle.send(ManagerEvent::Sync(SyncEvent::TriggerSync(None))).await;
                 }
                 GossipEvent::NeighborUp(node_id) => {
                     let neighbors = &mut self.dir.write().await.neighbors;

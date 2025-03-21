@@ -22,7 +22,7 @@
  */
 
 use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
-use crate::engine::manager::DirectoryManagerHandle;
+use crate::engine::manager::ManagerHandle;
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
@@ -320,7 +320,7 @@ impl SharedDirectory {
     }
     
     /// Get the handle. Panics if not available.
-    pub(crate) async fn handle(&self) -> DirectoryManagerHandle {
+    pub(crate) async fn handle(&self) -> ManagerHandle {
         if let Some(handle) = &self.read().await.handle {
             handle.clone()
         } else {
@@ -333,7 +333,7 @@ pub(crate) struct InnerSharedDirectory {
     pub(crate) state: State,
     pub(crate) local_head: Hash,
     pub(crate) neighbors: HashMap<[u8; 32], bool>,
-    pub(crate) handle: Option<DirectoryManagerHandle>,
+    pub(crate) handle: Option<ManagerHandle>,
     pub(crate) received_initial_sync: bool,
 }
 

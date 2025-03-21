@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::manager::{Event, SyncEvent};
+use crate::engine::manager::{ManagerEvent, SyncEvent};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
@@ -89,7 +89,7 @@ impl SyncManager {
                         if !received_request {
                             info!("Initial sync: No sync request received. Initiating sync myself.");
                             
-                            dir.handle().await.send(Event::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
+                            dir.handle().await.send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
                         } else {
                             info!("Initial sync: Sync request received. No need to start sync.");
                         }

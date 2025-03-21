@@ -22,7 +22,7 @@
  */
 
 use crate::engine::EngineError::AlreadyWatched;
-use crate::engine::manager::DirectoryManager;
+use crate::engine::manager::Manager;
 use crate::engine::protocol::SyncifyProtocol;
 use crate::store::StoreManager;
 use crate::{get_app_dir, SharedDirectory};
@@ -38,10 +38,13 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::engine::downloader::Downloader;
 
 pub mod manager;
 pub mod protocol;
 pub mod state;
+pub mod downloader;
+mod job;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 
@@ -51,7 +54,8 @@ pub struct Engine {
     gossip: Gossip,
     blobs: Blobs<iroh_blobs::store::fs::Store>,
     protocol: SyncifyProtocol,
-    managers: HashMap<Uuid, DirectoryManager>,
+    downloader: Downloader,
+    managers: HashMap<Uuid, Manager>,
 }
 
 /// Synchronization engine.
@@ -95,6 +99,10 @@ impl Engine {
             store.clone(),
             builder.endpoint().clone()
         );
+        
+        let downloader = Downloader::new(
+            blobs.clone()
+        );
 
         let mut engine = Self {
             store: store.clone(),
@@ -108,6 +116,7 @@ impl Engine {
             blobs,
             gossip,
             protocol,
+            downloader,
             managers: HashMap::new(),
         };
 
@@ -128,7 +137,7 @@ impl Engine {
         }
     }
 
-    /// Create [`DirectoryManager`] manager for a [`SharedDirectory`].
+    /// Create [`Manager`] manager for a [`SharedDirectory`].
     pub async fn add_watched_directory(
         &mut self,
         _store: Arc<RwLock<StoreManager>>,
@@ -156,11 +165,11 @@ impl Engine {
                 .map_err(EngineError::Gossip)?;
 
             // Create manager
-            let manager = DirectoryManager::new(
+            let manager = Manager::new(
                 dir.clone(),
                 topic,
-                self.blobs.clone(),
-                self.protocol.clone()
+                self.protocol.clone(),
+                self.downloader.clone(),
             ).await.map_err(EngineError::CannotWatch)?;
 
             self.managers.insert(dir.uuid, manager);

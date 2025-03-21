@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::manager::Event;
+use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::protocol::{SyncifyConnection, SyncifyPacket, SyncifyProtocol};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
@@ -101,7 +101,7 @@ impl FiniteStateMachine for OutgoingSync {
                                 self.dir
                                     .handle()
                                     .await
-                                    .send(Event::GenerateJobs(mutations))
+                                    .send(ManagerEvent::GenerateJobs(mutations))
                                     .await;
                             }
                             SyncifyPacket::Failed => {}

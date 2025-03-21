@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info};
-use notify::{EventHandler, RecommendedWatcher, Watcher};
+use notify::{Config, EventHandler, RecommendedWatcher, Watcher};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -39,6 +39,7 @@ use blake3::Hash;
 use iroh_blobs::net_protocol::Blobs;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
+use crate::engine::downloader::{Downloader, DownloaderHandle};
 use crate::engine::manager::fs::{FileSystemManager, Job};
 use crate::engine::manager::gossip::{GossipManager, Provided};
 
@@ -49,19 +50,19 @@ pub mod sync;
 const EVENT_BUFFER_SIZE: usize = 1024;
 
 /// Actor responsible to handle all filesystem events for a [`SharedDirectory`].
-pub struct DirectoryManager {
+pub struct Manager {
     _watcher: Option<notify::RecommendedWatcher>,
     join_handle: Option<JoinHandle<()>>,
-    handle: DirectoryManagerHandle,
+    handle: ManagerHandle,
 }
 
-impl DirectoryManager {
-    pub async fn new(dir: SharedDirectory, topic: GossipTopic, blobs: Blobs<iroh_blobs::store::fs::Store>, syncify_prot: SyncifyProtocol) -> Result<Self, notify::Error> {
+impl Manager {
+    pub async fn new(dir: SharedDirectory, topic: GossipTopic, protocol: SyncifyProtocol, downloader: DownloaderHandle) -> Result<Self, notify::Error> {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
-        let handle = DirectoryManagerHandle { tx };
+        let handle = ManagerHandle { tx };
         dir.write().await.handle = Some(handle.clone());
 
         // Plug gossip stream into the channel
@@ -70,22 +71,26 @@ impl DirectoryManager {
         tokio::spawn(forward);
 
         // Spawn new thread
-        let path = dir.path();
         let join_handle = Some(tokio::spawn(Self::handle_event(
             rx,
             dir.clone(),
             gossip_tx,
-            blobs,
-            syncify_prot,
+            protocol,
+            downloader,
             handle.clone(),
         )));
 
         // Create and configure watcher
+        let path = dir.path();
         let mut _watcher = None;
         if dir.is_read_only() {
             info!("{} is in read only", dir.uuid)
         } else {
-            let mut watcher = notify::recommended_watcher(handle.clone())?;
+            let mut watcher = RecommendedWatcher::new(
+                handle.clone(),
+                Config::default()
+                    .with_follow_symlinks(false)
+            )?;
             watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
             info!(
                 "{} is writable, attached '{:?}' file watcher",
@@ -104,25 +109,25 @@ impl DirectoryManager {
 
     /// Gracefully shutdown.
     pub async fn shutdown(&mut self) {
-        self.tx.send(Event::Shutdown).await.unwrap();
+        self.tx.send(ManagerEvent::Shutdown).await.unwrap();
         self.join_handle.take().unwrap().await.unwrap();
     }
 
-    /// Main method of the manager.
+    /// Main method of the [`Manager`].
     async fn handle_event(
-        mut rx: mpsc::Receiver<Event>,
+        mut rx: mpsc::Receiver<ManagerEvent>,
         dir: SharedDirectory,
         topic: GossipSender,
-        blobs: Blobs<iroh_blobs::store::fs::Store>,
         protocol: SyncifyProtocol,
-        handle: DirectoryManagerHandle,
+        downloader: DownloaderHandle,
+        handle: ManagerHandle,
     ) {
         // Shared variables
         let mut jobs_buffer: Vec<Arc<RwLock<Job>>> = Vec::new();
         let mut last_tree = dir.read().await.state.hash_tree().clone();
         let mut provides_map: HashMap<[u8; 32], Vec<Provided>> = HashMap::new();
         
-        let mut fs_manager = FileSystemManager::new(topic.clone(), blobs.clone(), dir.clone(), &mut last_tree).await;
+        let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone(), &mut last_tree).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), protocol.clone(), handle.clone()).await;
         let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), protocol.clone()).await;
 
@@ -130,19 +135,19 @@ impl DirectoryManager {
         while let Some(event) = rx.recv().await {
             match event {
                 // FileSystem
-                Event::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp, &mut jobs_buffer, &mut last_tree).await,
-                Event::ApplyLocalMutations => fs_manager.apply_local_mutations(&mut last_tree).await,
-                Event::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations, &mut provides_map).await,
+                ManagerEvent::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp, &mut jobs_buffer, &mut last_tree).await,
+                ManagerEvent::ApplyLocalMutations => fs_manager.apply_local_mutations(&mut last_tree).await,
+                ManagerEvent::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations).await,
 
                 // Gossip
-                Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event, &mut last_tree, &mut provides_map).await,
-                Event::RequestFileProviders(hash) => {/* Awesome method */}
+                ManagerEvent::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event, &mut last_tree, &mut provides_map).await,
+                ManagerEvent::RequestFileProviders(hash) => {/* Awesome method */}
 
                 // Protocol
-                Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
+                ManagerEvent::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
 
                 // Actor
-                Event::Shutdown => {
+                ManagerEvent::Shutdown => {
                     rx.close();
                     debug!("Closing event channel for {}", dir.uuid())
                 }
@@ -152,39 +157,39 @@ impl DirectoryManager {
     }
 }
 
-impl Deref for DirectoryManager {
-    type Target = DirectoryManagerHandle;
+impl Deref for Manager {
+    type Target = ManagerHandle;
 
     fn deref(&self) -> &Self::Target {
         &self.handle
     }
 }
 
-/// Handle to a [`DirectoryManager`].
+/// Handle to a [`Manager`].
 #[derive(Clone)]
-pub struct DirectoryManagerHandle {
-    tx: mpsc::Sender<Event>,
+pub struct ManagerHandle {
+    tx: mpsc::Sender<ManagerEvent>,
 }
 
-impl DirectoryManagerHandle {
-    pub async fn send(&self, event: Event) {
+impl ManagerHandle {
+    pub async fn send(&self, event: ManagerEvent) {
         if let Err(e) = self.tx.send(event).await {
             error!("Error sending to manager: {e}");
         }
     }
 }
 
-impl EventHandler for DirectoryManagerHandle {
+impl EventHandler for ManagerHandle {
     fn handle_event(&mut self, raw_event: notify::Result<notify::Event>) {
         if let Ok(event) = raw_event {
-            if let Err(error) = self.tx.blocking_send(Event::FileSystem(event, Utc::now())) {
+            if let Err(error) = self.tx.blocking_send(ManagerEvent::FileSystem(event, Utc::now())) {
                 log::error!("Failed to send event: {error}");
             };
         }
     }
 }
 
-impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
+impl Sink<iroh_gossip::net::Event> for ManagerHandle {
     type Error = iroh_gossip::net::Error;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -198,7 +203,7 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
     fn start_send(self: Pin<&mut Self>, item: iroh_gossip::net::Event) -> Result<(), Self::Error> {
         let fut = self.tx.clone();
         tokio::spawn(async move {
-            fut.send(Event::Gossip(item)).await.unwrap();
+            fut.send(ManagerEvent::Gossip(item)).await.unwrap();
         });
         Ok(())
     }
@@ -212,8 +217,8 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
     }
 }
 
-/// Event to control the [`DirectoryManager`] manager.
-pub enum Event {
+/// Event to control the [`Manager`].
+pub enum ManagerEvent {
     // FileSystem
     FileSystem(notify::Event, DateTime<Utc>),
     ApplyLocalMutations,
