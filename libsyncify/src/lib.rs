@@ -22,7 +22,7 @@
  */
 
 use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
-use crate::engine::actor::DirectoryManagerHandle;
+use crate::engine::manager::DirectoryManagerHandle;
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;

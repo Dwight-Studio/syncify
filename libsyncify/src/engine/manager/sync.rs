@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::actor::{Event, SyncEvent};
+use crate::engine::manager::{Event, SyncEvent};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;

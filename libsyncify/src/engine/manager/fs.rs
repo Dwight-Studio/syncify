@@ -39,8 +39,8 @@ use iroh_blobs::net_protocol::{Blobs};
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use crate::engine::actor::{DirectoryManagerHandle, Event};
-use crate::engine::actor::gossip::Provided;
+use crate::engine::manager::{DirectoryManagerHandle, Event};
+use crate::engine::manager::gossip::Provided;
 
 const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 

@@ -22,7 +22,7 @@
  */
 
 use crate::engine::EngineError::AlreadyWatched;
-use crate::engine::actor::DirectoryManager;
+use crate::engine::manager::DirectoryManager;
 use crate::engine::protocol::SyncifyProtocol;
 use crate::store::StoreManager;
 use crate::{get_app_dir, SharedDirectory};
@@ -39,7 +39,7 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-pub mod actor;
+pub mod manager;
 pub mod protocol;
 pub mod state;
 
@@ -128,7 +128,7 @@ impl Engine {
         }
     }
 
-    /// Create [`DirectoryManager`] actor for a [`SharedDirectory`].
+    /// Create [`DirectoryManager`] manager for a [`SharedDirectory`].
     pub async fn add_watched_directory(
         &mut self,
         _store: Arc<RwLock<StoreManager>>,

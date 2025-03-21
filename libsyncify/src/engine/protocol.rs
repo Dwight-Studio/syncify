@@ -25,8 +25,8 @@ pub mod incoming_sync;
 pub mod outgoing_sync;
 
 use crate::SharedDirectory;
-use crate::engine::actor::Event::Sync;
-use crate::engine::actor::SyncEvent;
+use crate::engine::manager::Event::Sync;
+use crate::engine::manager::SyncEvent;
 use crate::engine::state::State;
 use crate::store::StoreManager;
 use chacha20poly1305::aead::{Aead, OsRng};

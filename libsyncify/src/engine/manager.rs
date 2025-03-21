@@ -39,8 +39,8 @@ use blake3::Hash;
 use iroh_blobs::net_protocol::Blobs;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-use crate::engine::actor::fs::{FileSystemManager, Job};
-use crate::engine::actor::gossip::{GossipManager, Provided};
+use crate::engine::manager::fs::{FileSystemManager, Job};
+use crate::engine::manager::gossip::{GossipManager, Provided};
 
 pub mod fs;
 pub mod gossip;
@@ -108,7 +108,7 @@ impl DirectoryManager {
         self.join_handle.take().unwrap().await.unwrap();
     }
 
-    /// Main method of the actor.
+    /// Main method of the manager.
     async fn handle_event(
         mut rx: mpsc::Receiver<Event>,
         dir: SharedDirectory,
@@ -169,7 +169,7 @@ pub struct DirectoryManagerHandle {
 impl DirectoryManagerHandle {
     pub async fn send(&self, event: Event) {
         if let Err(e) = self.tx.send(event).await {
-            error!("Error sending to actor: {e}");
+            error!("Error sending to manager: {e}");
         }
     }
 }
@@ -212,7 +212,7 @@ impl Sink<iroh_gossip::net::Event> for DirectoryManagerHandle {
     }
 }
 
-/// Event to control the [`DirectoryManager`] actor.
+/// Event to control the [`DirectoryManager`] manager.
 pub enum Event {
     // FileSystem
     FileSystem(notify::Event, DateTime<Utc>),
