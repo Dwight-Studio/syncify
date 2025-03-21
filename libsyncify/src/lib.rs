@@ -62,7 +62,7 @@ pub enum SharedDirPermission {
     Write,
 }
 
-const APP_NAME: &str = "Syncify";
+pub const APP_NAME: &str = "Syncify";
 
 /// Entry point of the library.
 pub struct Syncify {

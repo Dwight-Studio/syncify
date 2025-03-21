@@ -26,8 +26,8 @@ use log::{debug, error, info};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-const EVENT_BUFFER_SIZE: usize = 1024;
-const CHUNK_SIZE: usize = 16 * 1024;
+pub const EVENT_BUFFER_SIZE: usize = 1024;
+pub const CHUNK_SIZE: usize = 16 * 1024;
 
 pub struct Downloader {
     join_handle: Option<JoinHandle<()>>,

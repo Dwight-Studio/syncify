@@ -35,7 +35,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// The prefix used for invitation link generation
-const LINK_PREFIX: &str = "syncify://";
+pub const LINK_PREFIX: &str = "syncify://";
 
 #[derive(Archive, Serialize, Deserialize)]
 /// The structure representing an invitation Link

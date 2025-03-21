@@ -35,11 +35,9 @@ use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
 
-const PROVIDES_EXPIRATION_HOURS_DELTA: i64 = 2;
+pub const PROVIDES_EXPIRATION_HOURS_DELTA: i64 = 2;
 
 #[derive(Archive, Serialize, Deserialize)]
 pub(crate) struct GossipHeader {

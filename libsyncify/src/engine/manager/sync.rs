@@ -32,7 +32,7 @@ use log::{info, warn};
 use std::time::Duration;
 use tokio::time::sleep;
 
-const FSM_TIMEOUT: Duration = Duration::from_secs(5);
+pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct SyncManager {
     pub(crate) topic: GossipSender,

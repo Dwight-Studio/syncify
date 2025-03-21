@@ -46,7 +46,7 @@ pub mod state;
 pub mod downloader;
 mod job;
 
-const DOWNLOAD_DIRNAME: &str = "download";
+pub const DOWNLOAD_DIRNAME: &str = "download";
 
 pub struct Engine {
     store: Arc<RwLock<StoreManager>>,

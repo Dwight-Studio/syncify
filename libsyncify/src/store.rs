@@ -46,13 +46,13 @@ use uuid::Uuid;
 pub mod keyring;
 pub mod link;
 
-const STORE_FILENAME: &str = "store.db";
+pub const STORE_FILENAME: &str = "store.db";
 
 // Base table linking Path to UUID
-const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
-const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
-const LOCAL_HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("local_head");
-const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
+pub const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
+pub const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
+pub const LOCAL_HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("local_head");
+pub const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
 
 /// Store manager.
 pub struct StoreManager {

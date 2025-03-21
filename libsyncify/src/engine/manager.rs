@@ -47,7 +47,7 @@ pub mod fs;
 pub mod gossip;
 pub mod sync;
 
-const EVENT_BUFFER_SIZE: usize = 1024;
+pub const EVENT_BUFFER_SIZE: usize = 1024;
 
 /// Actor responsible to handle all filesystem events for a [`SharedDirectory`].
 pub struct Manager {

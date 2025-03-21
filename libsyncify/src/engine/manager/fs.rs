@@ -41,9 +41,8 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::{ManagerHandle, ManagerEvent};
-use crate::engine::manager::gossip::Provided;
 
-const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+pub const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct FileSystemManager {
     topic: GossipSender,

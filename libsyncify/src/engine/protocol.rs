@@ -45,7 +45,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// The size in bytes of the SyncifyPacket::Header packet variant
-const HEADER_SIZE: usize = 48;
+pub const HEADER_SIZE: usize = 48;
 
 /// The ALPN that is used to open and accept connection on the SyncifyProtocol
 pub const SYNCIFY_ALPN: &[u8] = b"/syncify/1";
