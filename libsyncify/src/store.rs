@@ -36,7 +36,6 @@ use redb::{
     TransactionError,
 };
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;

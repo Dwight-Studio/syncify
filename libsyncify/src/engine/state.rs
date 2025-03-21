@@ -29,7 +29,7 @@ use blake3::Hash;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::ed25519::SignatureBytes;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use log::{error, info, warn};
+use log::{error, warn};
 use redb::{ReadableTable, Table, Value};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;

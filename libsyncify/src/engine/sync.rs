@@ -28,7 +28,7 @@ use crate::engine::protocol::incoming_sync::IncomingSync;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use iroh::NodeId;
 use iroh_gossip::net::GossipSender;
-use log::{error, info, warn};
+use log::{info, warn};
 use std::time::Duration;
 use tokio::time::sleep;
 
