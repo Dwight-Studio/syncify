@@ -36,10 +36,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use blake3::Hash;
-use iroh_blobs::net_protocol::Blobs;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-use crate::engine::downloader::{Downloader, DownloaderHandle};
+use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::fs::{FileSystemManager, Job};
 use crate::engine::manager::gossip::{GossipManager, Provided};
 

@@ -24,7 +24,6 @@ use crate::SharedDirectory;
 use crate::engine::manager::{ManagerHandle, ManagerEvent, SyncEvent};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::state::HashTree;
-use crate::store::StoreManager;
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};

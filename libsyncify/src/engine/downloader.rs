@@ -21,10 +21,12 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use std::ops::Deref;
+use blake3::Hash;
 use iroh_blobs::net_protocol::Blobs;
 use log::{debug, error, info};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 pub const CHUNK_SIZE: usize = 16 * 1024;
@@ -65,7 +67,9 @@ impl Downloader {
     ) {
         while let Some(event) = rx.recv().await {
             match event {
-
+                DownloaderEvent::Request { uuid, file_hash, from, to} => {
+                    
+                }
                 // Actor
                 DownloaderEvent::Shutdown => {
                     rx.close();
@@ -102,7 +106,7 @@ impl DownloaderHandle {
 
 /// Event to control the [`Downloader`].
 pub enum DownloaderEvent {
-
+    Request{uuid: Uuid, file_hash: Hash, from: u64, to: u64},
     // Actor
     Shutdown,
 }

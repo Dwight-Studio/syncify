@@ -35,14 +35,16 @@ use futures_lite::future::Boxed;
 use iroh::endpoint::{ClosedStream, Connection, ReadError, RecvStream, VarInt, WriteError};
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeAddr, NodeId};
-use log::{info, warn};
+use log::info;
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use blake3::Hash;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::engine::downloader::{DownloaderEvent, DownloaderHandle, CHUNK_SIZE};
 
 /// The size in bytes of the SyncifyPacket::Header packet variant
 pub const HEADER_SIZE: usize = 48;
@@ -63,9 +65,23 @@ pub(crate) struct HeaderPacket {
 #[derive(Archive, Serialize, Deserialize, Debug)]
 /// Enumeration representing the data that can be transferred using SyncifyConnection
 pub enum SyncifyPacket {
+    Sync(SyncPacket),
+    Blobs(Box<BlobsPacket>)
+}
+
+#[repr(u8)]
+#[derive(Archive, Serialize, Deserialize, Debug)]
+pub enum SyncPacket {
     Request { head: [u8; 32] } = 0,
     Success { state: State } = 1,
     Failed = 2,
+}
+
+#[repr(u8)]
+#[derive(Archive, Serialize, Deserialize, Debug)]
+pub enum BlobsPacket {
+    BlobRequest { file_hash: [u8; 32], from: u64, to: u64 } = 3,
+    Blob { chunk: Box<[u8; CHUNK_SIZE]> } = 4
 }
 
 #[derive(Clone)]
@@ -73,13 +89,15 @@ pub enum SyncifyPacket {
 pub struct SyncifyProtocol {
     store: Arc<RwLock<StoreManager>>,
     endpoint: Endpoint,
+    downloader: DownloaderHandle
 }
 
 impl SyncifyProtocol {
-    pub fn new(store: Arc<RwLock<StoreManager>>, endpoint: Endpoint) -> Self {
+    pub fn new(store: Arc<RwLock<StoreManager>>, endpoint: Endpoint, downloader: DownloaderHandle) -> Self {
         Self {
             store,
-            endpoint
+            endpoint,
+            downloader
         }
     }
     
@@ -108,6 +126,7 @@ impl ProtocolHandler for SyncifyProtocol {
     /// Manages incoming SyncifyProtocol connections
     fn accept(&self, connection: Connection) -> Boxed<anyhow::Result<()>> {
         let store = self.store.clone();
+        let downloader = self.downloader.clone();
         Box::pin(async move {
             let (_tx, mut rx) = connection.accept_bi().await.unwrap();
 
@@ -142,18 +161,19 @@ impl ProtocolHandler for SyncifyProtocol {
                 .map_err(SyncifyProtocolError::DeserializeError)?;
 
             match packet {
-                SyncifyPacket::Request { head } => {
-                    dir.handle()
-                        .await
-                        .clone()
-                        .send(Sync(SyncEvent::RequestSync(conn.clone(), blake3::Hash::from(head))))
-                        .await;
+                SyncifyPacket::Sync(sync_packet) => {
+                    if let SyncPacket::Request { head } = sync_packet {
+                        dir.handle()
+                            .await
+                            .clone()
+                            .send(Sync(SyncEvent::RequestSync(conn.clone(), blake3::Hash::from(head))))
+                            .await;
+                    }
                 }
-                SyncifyPacket::Success { .. } => {
-                    warn!("Success: Not implemented!");
-                }
-                SyncifyPacket::Failed => {
-                    warn!("Failed: Not implemented!")
+                SyncifyPacket::Blobs(blobs_packet) => {
+                    if let BlobsPacket::BlobRequest { file_hash, from, to } = *blobs_packet {
+                        downloader.send(DownloaderEvent::Request{uuid: dir.uuid, file_hash: Hash::from(file_hash), from, to}).await;
+                    }
                 }
             }
 

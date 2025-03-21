@@ -23,7 +23,7 @@
 use crate::SharedDirectory;
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
-use crate::engine::protocol::{SyncifyConnection, SyncifyPacket};
+use crate::engine::protocol::{SyncPacket, SyncifyConnection, SyncifyPacket};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use log::{info, warn};
 
@@ -62,8 +62,8 @@ impl FiniteStateMachine for IncomingSync {
                 info!("Incoming sync request from {}", self.connection.remote());
                 let packet = {
                     match self.dir.read().await.state.clone_after(self.hash, MAX_LOADED_DELTAS) {
-                        Some(state) => SyncifyPacket::Success { state },
-                        None => SyncifyPacket::Failed,
+                        Some(state) => SyncifyPacket::Sync(SyncPacket::Success { state }),
+                        None => SyncifyPacket::Sync(SyncPacket::Failed),
                     }
                 };
 
@@ -76,34 +76,38 @@ impl FiniteStateMachine for IncomingSync {
 
             IncomingState::SendingRequest => {
                 info!("Incoming: SendingRequest");
-                let packet = SyncifyPacket::Request {
+                let packet = SyncPacket::Request {
                     head: *self.dir.read().await.state.hash().as_bytes(),
                 };
 
-                if let Ok(()) = self.connection.send_packet(self.dir.clone(), packet).await {
+                if let Ok(()) = self.connection.send_packet(self.dir.clone(), SyncifyPacket::Sync(packet)).await {
                     if let Ok(packet) = self.connection.receive_packet(self.dir.clone()).await {
-                        match packet {
-                            SyncifyPacket::Request { .. } => {}
-                            SyncifyPacket::Success { state } => {
-                                info!("Incoming: Receiving state\n{}", state);
-                                let mutations = self
-                                    .dir
-                                    .write()
-                                    .await
-                                    .state
-                                    .verify_and_add(state, self.dir.clone())
-                                    .map_err(|e| match e {
-                                        StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                        _ => ProtocolError::Unexpected,
-                                    })?;
+                        if let SyncifyPacket::Sync(sync_packet) = packet {
+                            match sync_packet {
+                                SyncPacket::Request { .. } => {}
+                                SyncPacket::Success { state } => {
+                                    info!("Incoming: Receiving state\n{}", state);
+                                    let mutations = self
+                                        .dir
+                                        .write()
+                                        .await
+                                        .state
+                                        .verify_and_add(state, self.dir.clone())
+                                        .map_err(|e| match e {
+                                            StateError::InvalidSignature => ProtocolError::InvalidSignature,
+                                            _ => ProtocolError::Unexpected,
+                                        })?;
 
-                                self.dir
-                                    .handle()
-                                    .await
-                                    .send(ManagerEvent::GenerateJobs(mutations))
-                                    .await;
+                                    self.dir
+                                        .handle()
+                                        .await
+                                        .send(ManagerEvent::GenerateJobs(mutations))
+                                        .await;
+                                }
+                                SyncPacket::Failed => {}
                             }
-                            SyncifyPacket::Failed => {}
+                        } else {
+                            return Err(ProtocolError::Unexpected)
                         }
 
                         Ok(IncomingState::Finish)

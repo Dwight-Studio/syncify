@@ -95,13 +95,14 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let protocol = SyncifyProtocol::new(
-            store.clone(),
-            builder.endpoint().clone()
-        );
-        
         let downloader = Downloader::new(
             blobs.clone()
+        );
+        
+        let protocol = SyncifyProtocol::new(
+            store.clone(),
+            builder.endpoint().clone(),
+            downloader.clone()
         );
 
         let mut engine = Self {

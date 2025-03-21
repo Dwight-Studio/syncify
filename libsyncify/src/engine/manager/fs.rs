@@ -20,7 +20,6 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::collections::HashMap;
 use crate::SharedDirectory;
 use crate::engine::state::{HashTree, Mutation};
 use blake3::Hash;
@@ -33,9 +32,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use iroh_blobs::downloader::{DownloadHandle, DownloadKind, DownloadRequest};
-use iroh_blobs::{BlobFormat, HashAndFormat};
-use iroh_blobs::net_protocol::{Blobs};
+use iroh_blobs::downloader::DownloadHandle;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
