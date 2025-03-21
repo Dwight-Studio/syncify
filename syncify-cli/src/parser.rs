@@ -20,7 +20,6 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 use crate::parser::utils::read_input;
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -30,7 +29,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 mod utils;
@@ -104,12 +102,7 @@ impl Commands {
                     utils::print_error(format!("{e}"));
                     exit(1);
                 }
-                let (tx, mut rx) = mpsc::channel::<u8>(1);
-                ctrlc::set_handler(move || {
-                    tx.blocking_send(1).unwrap();
-                })
-                .unwrap();
-                rx.recv().await.unwrap();
+                tokio::signal::ctrl_c().await.unwrap();
                 if let Err(e) = syncify.stop_sync().await {
                     utils::print_error(e);
                 }

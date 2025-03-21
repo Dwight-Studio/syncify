@@ -76,7 +76,7 @@ impl SyncManager {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
                 let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.prot.clone());
 
-                if self.prot.endpoint.node_id() > node_id {
+                if self.prot.endpoint().node_id() > node_id {
                     Self::start_sync(outgoing).await;
                 } else {
                     let dir = self.dir.clone();

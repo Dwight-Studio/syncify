@@ -20,6 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::collections::HashMap;
 use crate::SharedDirectory;
 use crate::engine::state::{HashTree, Mutation};
 use blake3::Hash;
@@ -32,22 +33,27 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use iroh_blobs::downloader::{DownloadHandle, DownloadKind, DownloadRequest};
+use iroh_blobs::{BlobFormat, HashAndFormat};
+use iroh_blobs::net_protocol::{Blobs};
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use crate::engine::actor::{DirectoryManagerHandle, Event};
+use crate::engine::actor::gossip::Provided;
 
 const MUTATIONS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct FileSystemManager {
     topic: GossipSender,
+    blobs: Blobs<iroh_blobs::store::fs::Store>,
     dir: SharedDirectory,
     mutations_buffer: Vec<Mutation>,
     commit_timeout: JoinHandle<()>,
 }
 
 impl FileSystemManager {
-    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory, last_tree: &mut HashTree) -> Self {
+    pub(crate) async fn new(topic: GossipSender, blobs: Blobs<iroh_blobs::store::fs::Store>, dir: SharedDirectory, last_tree: &mut HashTree) -> Self {
         let inner = dir.read().await;
 
         let local_buffer = if dir.is_read_only() {
@@ -58,6 +64,7 @@ impl FileSystemManager {
 
         let mut inst = Self {
             topic,
+            blobs,
             dir: dir.clone(),
             mutations_buffer: local_buffer,
             commit_timeout: Self::schedule_commit(dir.handle().await)
@@ -281,8 +288,7 @@ impl FileSystemManager {
                     continue;
                 }
             }
-
-            // TODO: Add move
+            
             // Drop Mod+Rem/Rem+Mod corresponding to a move
             let mut new_mut_opt = None;
             working_buffer.retain(|o_mut| match (n_mut, o_mut) {
@@ -385,7 +391,7 @@ impl FileSystemManager {
         info!("New file tree: \n{}", last_tree)
     }
 
-    pub(crate) async fn generate_jobs(&mut self, jobs_buffer: &mut Vec<Arc<RwLock<Job>>>, mutations: Vec<Mutation>) {
+    pub(crate) async fn generate_jobs(&mut self, jobs_buffer: &mut Vec<Arc<RwLock<Job>>>, mutations: Vec<Mutation>, provides_map: &mut HashMap<[u8; 32], Vec<Provided>>) {
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify {
@@ -395,12 +401,39 @@ impl FileSystemManager {
                         path: self.dir.path.join(file_path),
                         hash: *file_hash,
                         state: JobState::Pending,
+                        handle: None,
                     }));
                     jobs_buffer.push(job_ref.clone());
+                    
+                    if let Some(providers) = provides_map.get_mut(file_hash.as_bytes()) {
+                        // Drop all providers that are expired
+                        providers.retain(|p| !p.expired());
+                        
+                        if providers.is_empty() {
+                            provides_map.remove(file_hash.as_bytes());
+                        } else {
+                            let nodes = providers.iter().map(|p| p.node_addr()).collect::<Vec<_>>();
+                            
+                            let download_kind = DownloadKind::from(HashAndFormat {
+                                hash: iroh_blobs::Hash::from(*file_hash.as_bytes()),
+                                format: BlobFormat::Raw,
+                            });
+                            
+                            let request = DownloadRequest::new(
+                                download_kind,
+                                nodes,
+                            );
+                            
+                            // Add download 
+                            
+                            self.blobs.downloader().queue(request).await;
+                            
+                            continue
+                        }
+                    }
 
-                    let job = job_ref.write().await;
-
-                    // TODO: Add download process
+                    // TODO: Send a event to broadcast and retrieve all providers
+                    // self.dir.handle().await.send(Event::)
                 }
                 Mutation::Move { from, to, .. } => {
                     let from = self.dir.path.join(from);
@@ -465,6 +498,7 @@ pub enum Job {
     Download {
         path: PathBuf,
         hash: Hash,
+        handle: Option<DownloadHandle>,
         state: JobState,
     },
     Remove {

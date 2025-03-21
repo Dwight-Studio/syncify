@@ -38,6 +38,7 @@ use redb::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use iroh_base::PublicKey;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -337,6 +338,10 @@ impl StoreManager {
 
     pub fn secret_key(&self) -> SecretKey {
         self.secret_key.clone()
+    }
+    
+    pub fn public_key(&self) -> PublicKey {
+        self.secret_key.public()
     }
 }
 

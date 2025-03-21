@@ -25,7 +25,7 @@ use crate::engine::EngineError::AlreadyWatched;
 use crate::engine::actor::DirectoryManager;
 use crate::engine::protocol::SyncifyProtocol;
 use crate::store::StoreManager;
-use crate::{SharedDirectory, get_app_dir};
+use crate::{get_app_dir, SharedDirectory};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId};
 use iroh_blobs::net_protocol::Blobs;
@@ -40,19 +40,17 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod actor;
-pub mod fs;
-pub mod gossip;
 pub mod protocol;
 pub mod state;
-pub mod sync;
 
 const DOWNLOAD_DIRNAME: &str = "download";
 
 pub struct Engine {
+    store: Arc<RwLock<StoreManager>>,
     router: Router,
     gossip: Gossip,
     blobs: Blobs<iroh_blobs::store::fs::Store>,
-    syncify_prot: SyncifyProtocol,
+    protocol: SyncifyProtocol,
     managers: HashMap<Uuid, DirectoryManager>,
 }
 
@@ -93,14 +91,15 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let syncify_prot = SyncifyProtocol {
-            store: store.clone(),
-            endpoint: builder.endpoint().clone(),
-        };
+        let protocol = SyncifyProtocol::new(
+            store.clone(),
+            builder.endpoint().clone()
+        );
 
         let mut engine = Self {
+            store: store.clone(),
             router: builder
-                .accept(protocol::SYNCIFY_ALPN, syncify_prot.clone())
+                .accept(protocol::SYNCIFY_ALPN, protocol.clone())
                 .accept(iroh_blobs::ALPN, blobs.clone())
                 .accept(iroh_gossip::ALPN, gossip.clone())
                 .spawn()
@@ -108,7 +107,7 @@ impl Engine {
                 .map_err(EngineError::Router)?,
             blobs,
             gossip,
-            syncify_prot,
+            protocol,
             managers: HashMap::new(),
         };
 
@@ -157,9 +156,12 @@ impl Engine {
                 .map_err(EngineError::Gossip)?;
 
             // Create manager
-            let manager = DirectoryManager::new(dir.clone(), topic, self.syncify_prot.clone())
-                .await
-                .map_err(EngineError::CannotWatch)?;
+            let manager = DirectoryManager::new(
+                dir.clone(),
+                topic,
+                self.blobs.clone(),
+                self.protocol.clone()
+            ).await.map_err(EngineError::CannotWatch)?;
 
             self.managers.insert(dir.uuid, manager);
             Ok(())

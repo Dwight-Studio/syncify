@@ -15,6 +15,7 @@ publish = false
 iroh = { version = "0.34.0", features = ["discovery-local-network"] }
 iroh-gossip = { version = "0.34.0" }
 iroh-blobs = { version = "0.34.0", features = ["downloader", "fs-store"] }
+iroh-base = "0.34.0"
 anyhow = "1.0.97"
 directories = "6.0.0"
 log = "0.4.26"

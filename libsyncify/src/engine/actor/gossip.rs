@@ -22,18 +22,22 @@
  */
 use crate::SharedDirectory;
 use crate::engine::actor::{DirectoryManagerHandle, Event, SyncEvent};
+use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::state::HashTree;
+use crate::store::StoreManager;
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, TimeDelta, Utc};
-use iroh::NodeId;
+use iroh::{NodeAddr, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 const PROVIDES_EXPIRATION_HOURS_DELTA: i64 = 2;
 
@@ -50,6 +54,7 @@ pub(crate) enum Payload {
     } = 0,
     Provides {
         hash: [u8; 32],
+        node_id: [u8; 32],
         #[rkyv(with= crate::util::DateTimeDef)]
         expire: DateTime<Utc>,
     } = 1,
@@ -62,23 +67,54 @@ pub(crate) struct Message {
 }
 
 pub(crate) struct Provided {
-    node: NodeId,
-    expire: DateTime<Utc>
+    node: NodeAddr,
+    expire: DateTime<Utc>,
+}
+
+impl Provided {
+    /// Check expiration.
+    ///
+    /// # Return
+    ///
+    /// Returns true if expired, false otherwise.
+    pub fn expired(&self) -> bool {
+        self.expire.signed_duration_since(Utc::now()).le(&TimeDelta::zero())
+    }
+
+    pub fn node_addr(&self) -> NodeAddr {
+        self.node.clone()
+    }
 }
 
 pub(crate) struct GossipManager {
     topic: GossipSender,
     dir: SharedDirectory,
+    protocol: SyncifyProtocol,
     handle: DirectoryManagerHandle,
 }
 
 impl GossipManager {
-    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory, handle: DirectoryManagerHandle) -> Self {
-        Self { topic, dir, handle }
+    pub(crate) async fn new(
+        topic: GossipSender,
+        dir: SharedDirectory,
+        protocol: SyncifyProtocol,
+        handle: DirectoryManagerHandle,
+    ) -> Self {
+        Self {
+            topic,
+            dir,
+            protocol,
+            handle,
+        }
     }
 
     //noinspection RsTraitObligations
-    pub(crate) async fn handle_events(&mut self, gossip_event: iroh_gossip::net::Event, last_tree: &mut HashTree, provides_map: &mut HashMap<[u8; 32], Vec<Provided>>) {
+    pub(crate) async fn handle_events(
+        &mut self,
+        gossip_event: iroh_gossip::net::Event,
+        last_tree: &mut HashTree,
+        provides_map: &mut HashMap<[u8; 32], Vec<Provided>>,
+    ) {
         info!("Dir {}: {:?}", self.dir.uuid(), gossip_event);
         match gossip_event {
             iroh_gossip::net::Event::Gossip(event) => match event {
@@ -118,7 +154,11 @@ impl GossipManager {
                                                 .checked_add_signed(TimeDelta::hours(PROVIDES_EXPIRATION_HOURS_DELTA))
                                                 .unwrap();
                                             if let Ok(resp_msg) =
-                                                self.create_message(Payload::Provides { hash, expire })
+                                                self.create_message(Payload::Provides {
+                                                    hash,
+                                                    node_id: *self.protocol.endpoint().node_id().as_bytes(),
+                                                    expire,
+                                                })
                                             {
                                                 if self.topic.broadcast(resp_msg).await.is_err() {
                                                     warn!("Cannot broadcast Provides message!");
@@ -128,8 +168,15 @@ impl GossipManager {
                                             }
                                         }
                                     }
-                                    Payload::Provides { hash, expire } => {
-                                        provides_map.entry(hash).or_insert_with(Vec::new).push(Provided {node: message.delivered_from, expire});
+                                    Payload::Provides { hash, node_id, expire } => {
+                                        if let Ok(node_id) = NodeId::from_bytes(&node_id) {
+                                            provides_map.entry(hash).or_insert_with(Vec::new).push(Provided {
+                                                node: NodeAddr::new(node_id),
+                                                expire,
+                                            });
+                                        } else {
+                                            warn!("Invalid NodeId");
+                                        }
                                     }
                                 }
                             } else {

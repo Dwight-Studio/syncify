@@ -119,7 +119,7 @@ impl LinkBuilder {
             };
 
             let mut neighbors = dir.read().await.neighbors.clone();
-            neighbors.insert(*self.store.read().await.secret_key.public().as_bytes(), false);
+            neighbors.insert(*self.store.read().await.public_key().as_bytes(), false);
 
             Ok(Link {
                 uuid: self.uuid,

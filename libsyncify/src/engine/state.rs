@@ -887,7 +887,7 @@ impl HashTree {
                         .update_mmap(file.path())
                         .inspect_err(|_| error!("Invalid path: {}", file.path().display()))?;
 
-                    let relative_path = crate::engine::fs::relative(dir, file.path());
+                    let relative_path = crate::engine::actor::fs::relative(dir, file.path());
 
                     if relative_path.is_none() {
                         continue;
@@ -936,7 +936,7 @@ impl HashTree {
                             continue;
                         }
 
-                        if let Some(relative_path) = crate::engine::fs::relative(dir, file.path()) {
+                        if let Some(relative_path) = crate::engine::actor::fs::relative(dir, file.path()) {
                             let relative_path_string = relative_path.to_string_lossy().to_string();
 
                             // Remove the file from the current file

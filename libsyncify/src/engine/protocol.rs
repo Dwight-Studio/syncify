@@ -71,11 +71,18 @@ pub enum SyncifyPacket {
 #[derive(Clone)]
 /// The SyncifyProtocol struct, used to connect a node to this protocol
 pub struct SyncifyProtocol {
-    pub(crate) store: Arc<RwLock<StoreManager>>,
-    pub(crate) endpoint: Endpoint,
+    store: Arc<RwLock<StoreManager>>,
+    endpoint: Endpoint,
 }
 
 impl SyncifyProtocol {
+    pub fn new(store: Arc<RwLock<StoreManager>>, endpoint: Endpoint) -> Self {
+        Self {
+            store,
+            endpoint
+        }
+    }
+    
     /// Connect to a node using `node_id`.
     ///
     /// # Return
@@ -83,6 +90,10 @@ impl SyncifyProtocol {
     /// Returns a [`SyncifyConnection`] if successful.
     pub async fn connect(&self, node_id: NodeId) -> Result<SyncifyConnection, anyhow::Error> {
         SyncifyConnection::open_new(node_id, self.endpoint.clone()).await
+    }
+    
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
     }
 }
 

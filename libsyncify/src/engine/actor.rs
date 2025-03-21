@@ -22,12 +22,10 @@
  */
 use std::collections::HashMap;
 use crate::SharedDirectory;
-use crate::engine::fs::{FileSystemManager, Job};
-use crate::engine::gossip::{GossipManager, Provided};
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
 use crate::engine::state::Mutation;
-use crate::engine::sync::SyncManager;
+use sync::SyncManager;
 use chrono::{DateTime, Utc};
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
@@ -37,8 +35,16 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use blake3::Hash;
+use iroh_blobs::net_protocol::Blobs;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
+use crate::engine::actor::fs::{FileSystemManager, Job};
+use crate::engine::actor::gossip::{GossipManager, Provided};
+
+pub mod fs;
+pub mod gossip;
+pub mod sync;
 
 const EVENT_BUFFER_SIZE: usize = 1024;
 
@@ -50,7 +56,7 @@ pub struct DirectoryManager {
 }
 
 impl DirectoryManager {
-    pub async fn new(dir: SharedDirectory, topic: GossipTopic, syncify_prot: SyncifyProtocol) -> Result<Self, notify::Error> {
+    pub async fn new(dir: SharedDirectory, topic: GossipTopic, blobs: Blobs<iroh_blobs::store::fs::Store>, syncify_prot: SyncifyProtocol) -> Result<Self, notify::Error> {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
@@ -69,6 +75,7 @@ impl DirectoryManager {
             rx,
             dir.clone(),
             gossip_tx,
+            blobs,
             syncify_prot,
             handle.clone(),
         )));
@@ -106,6 +113,7 @@ impl DirectoryManager {
         mut rx: mpsc::Receiver<Event>,
         dir: SharedDirectory,
         topic: GossipSender,
+        blobs: Blobs<iroh_blobs::store::fs::Store>,
         protocol: SyncifyProtocol,
         handle: DirectoryManagerHandle,
     ) {
@@ -114,9 +122,9 @@ impl DirectoryManager {
         let mut last_tree = dir.read().await.state.hash_tree().clone();
         let mut provides_map: HashMap<[u8; 32], Vec<Provided>> = HashMap::new();
         
-        let mut fs_manager = FileSystemManager::new(topic.clone(), dir.clone(), &mut last_tree).await;
-        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), handle.clone()).await;
-        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), protocol).await;
+        let mut fs_manager = FileSystemManager::new(topic.clone(), blobs.clone(), dir.clone(), &mut last_tree).await;
+        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), protocol.clone(), handle.clone()).await;
+        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), protocol.clone()).await;
 
         // Process the event
         while let Some(event) = rx.recv().await {
@@ -124,10 +132,11 @@ impl DirectoryManager {
                 // FileSystem
                 Event::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp, &mut jobs_buffer, &mut last_tree).await,
                 Event::ApplyLocalMutations => fs_manager.apply_local_mutations(&mut last_tree).await,
-                Event::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations).await,
+                Event::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations, &mut provides_map).await,
 
                 // Gossip
                 Event::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event, &mut last_tree, &mut provides_map).await,
+                Event::RequestFileProviders(hash) => {/* Awesome method */}
 
                 // Protocol
                 Event::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
@@ -212,6 +221,7 @@ pub enum Event {
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
+    RequestFileProviders(Hash),
 
     // Protocol
     Sync(SyncEvent),
