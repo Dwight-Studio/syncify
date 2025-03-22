@@ -40,7 +40,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::fs::{FileSystemManager, Job};
-use crate::engine::manager::gossip::{GossipManager, Provided};
+use crate::engine::manager::gossip::GossipManager;
 
 pub mod fs;
 pub mod gossip;
@@ -124,7 +124,6 @@ impl Manager {
         // Shared variables
         let mut jobs_buffer: Vec<Arc<RwLock<Job>>> = Vec::new();
         let mut last_tree = dir.read().await.state.hash_tree().clone();
-        let mut provides_map: HashMap<[u8; 32], Vec<Provided>> = HashMap::new();
         
         let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone(), &mut last_tree).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), protocol.clone(), handle.clone()).await;
@@ -139,8 +138,7 @@ impl Manager {
                 ManagerEvent::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations).await,
 
                 // Gossip
-                ManagerEvent::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event, &mut last_tree, &mut provides_map).await,
-                ManagerEvent::RequestFileProviders(hash) => {/* Awesome method */}
+                ManagerEvent::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event, &mut last_tree, downloader.clone()).await,
 
                 // Protocol
                 ManagerEvent::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
@@ -225,7 +223,6 @@ pub enum ManagerEvent {
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
-    RequestFileProviders(Hash),
 
     // Protocol
     Sync(SyncEvent),

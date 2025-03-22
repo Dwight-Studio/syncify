@@ -35,6 +35,7 @@ use log::{info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
+use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 
 pub const PROVIDES_EXPIRATION_HOURS_DELTA: i64 = 2;
 
@@ -61,26 +62,6 @@ pub(crate) enum Payload {
 pub(crate) struct Message {
     header: GossipHeader,
     payload: Vec<u8>,
-}
-
-pub(crate) struct Provided {
-    node: NodeAddr,
-    expire: DateTime<Utc>,
-}
-
-impl Provided {
-    /// Check expiration.
-    ///
-    /// # Return
-    ///
-    /// Returns true if expired, false otherwise.
-    pub fn expired(&self) -> bool {
-        self.expire.signed_duration_since(Utc::now()).le(&TimeDelta::zero())
-    }
-
-    pub fn node_addr(&self) -> NodeAddr {
-        self.node.clone()
-    }
 }
 
 pub(crate) struct GossipManager {
@@ -110,7 +91,7 @@ impl GossipManager {
         &mut self,
         gossip_event: iroh_gossip::net::Event,
         last_tree: &mut HashTree,
-        provides_map: &mut HashMap<[u8; 32], Vec<Provided>>,
+        downloader: DownloaderHandle
     ) {
         info!("Dir {}: {:?}", self.dir.uuid(), gossip_event);
         match gossip_event {
@@ -157,7 +138,9 @@ impl GossipManager {
                                                     expire,
                                                 })
                                             {
-                                                if self.topic.broadcast(resp_msg).await.is_err() {
+                                                if self.topic.broadcast(resp_msg).await.is_ok() {
+                                                    downloader.send(DownloaderEvent::Provision(Hash::from_bytes(hash), expire)).await;
+                                                } else {
                                                     warn!("Cannot broadcast Provides message!");
                                                 }
                                             } else {
@@ -167,12 +150,9 @@ impl GossipManager {
                                     }
                                     Payload::Provides { hash, node_id, expire } => {
                                         if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                                            provides_map.entry(hash).or_insert_with(Vec::new).push(Provided {
-                                                node: NodeAddr::new(node_id),
-                                                expire,
-                                            });
+                                            downloader.send(DownloaderEvent::Provide(self.dir.uuid, node_id, Hash::from_bytes(hash), expire)).await;
                                         } else {
-                                            warn!("Invalid NodeId");
+                                            warn!("Invalid NodeID!");
                                         }
                                     }
                                 }

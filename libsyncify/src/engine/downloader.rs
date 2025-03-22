@@ -20,11 +20,15 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::collections::HashMap;
 use std::sync::Arc;
 use blake3::Hash;
 use iroh_blobs::net_protocol::Blobs;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::ops::Deref;
+use chrono::{DateTime, TimeDelta, Utc};
+use iroh_base::NodeId;
+use rkyv::{Archive, Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -32,6 +36,24 @@ use crate::engine::job::Job;
 
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 pub const CHUNK_SIZE: usize = 16 * 1024;
+
+#[derive(Archive, Serialize, Deserialize)]
+pub(crate) struct Provided {
+    node: [u8; 32],
+    #[rkyv(with = crate::util::DateTimeDef)]
+    expire: DateTime<Utc>,
+}
+
+impl Provided {
+    /// Check expiration.
+    ///
+    /// # Return
+    ///
+    /// Returns true if expired, false otherwise.
+    pub fn expired(&self) -> bool {
+        self.expire.signed_duration_since(Utc::now()).le(&TimeDelta::zero())
+    }
+}
 
 pub struct Downloader {
     join_handle: Option<JoinHandle<()>>,
@@ -45,9 +67,11 @@ impl Downloader {
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = DownloaderHandle { tx };
+        let files_they_provide: HashMap<Uuid, HashMap<[u8; 32], Vec<Provided>>> = HashMap::new();
+        let files_i_provide: HashMap<Hash, DateTime<Utc>> = HashMap::new();
 
         // Spawn new thread
-        let join_handle = Some(tokio::spawn(Self::handle_event(rx)));
+        let join_handle = Some(tokio::spawn(Self::handle_event(rx, files_they_provide, files_i_provide)));
 
         Downloader { join_handle, handle }
     }
@@ -59,14 +83,26 @@ impl Downloader {
     }
 
     /// Main method of the [`Downloader`].
-    async fn handle_event(mut rx: mpsc::Receiver<DownloaderEvent>) {
+    async fn handle_event(mut rx: mpsc::Receiver<DownloaderEvent>, mut files_they_provide: HashMap<Uuid, HashMap<[u8; 32], Vec<Provided>>>, mut files_i_provide: HashMap<Hash, DateTime<Utc>>) {
         while let Some(event) = rx.recv().await {
             match event {
                 // Jobs
                 DownloaderEvent::Accept(_) => {}
                 
                 // Provision
-                DownloaderEvent::Provision {
+                DownloaderEvent::Provide(uuid, node_id, file_hash, expire) => {
+                    let file_map = &mut *files_they_provide.get_mut(&uuid).unwrap();
+                    file_map.entry(*file_hash.as_bytes()).or_default().push(Provided {
+                        node: *node_id.as_bytes(),
+                        expire,
+                    });
+                }
+                
+                DownloaderEvent::Provision(file_hash, expire) => {
+                    
+                }
+                
+                DownloaderEvent::Supply {
                     uuid,
                     file_hash,
                     from,
@@ -113,12 +149,15 @@ pub enum DownloaderEvent {
     Accept(Arc<RwLock<Job>>),
     
     // Provision
-    Provision {
+    Supply {
         uuid: Uuid,
         file_hash: Hash,
         from: u64,
         to: u64,
     },
+    Provide(Uuid, NodeId, Hash, DateTime<Utc>),
+    Provision(Hash, DateTime<Utc>),
+    
 
     // Actor
     Shutdown,
