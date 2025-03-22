@@ -21,10 +21,13 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::sync::Arc;
 use blake3::Hash;
 use log::{debug, error, info, warn};
 use std::ops::Deref;
+use std::path::PathBuf;
 use chrono::{DateTime, TimeDelta, Utc};
 use iroh_base::NodeId;
 use rkyv::{Archive, Deserialize, Serialize};
@@ -33,6 +36,8 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 use crate::engine::job::JobDownload;
 use crate::engine::manager::ManagerEvent;
+use crate::get_app_cache_dir;
+use crate::store::StoreError;
 
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 pub const CHUNK_SIZE: usize = 16 * 1024;
@@ -87,7 +92,7 @@ impl Downloader {
         while let Some(event) = rx.recv().await {
             match event {
                 // Jobs
-                DownloaderEvent::Accept(_) => {}
+                DownloaderEvent::Accept(download_job) => {}
                 
                 // Provision
                 DownloaderEvent::Provide(uuid, node_id, file_hash, expire) => {
@@ -97,11 +102,43 @@ impl Downloader {
                         expire,
                     });
                 }
-                
-                DownloaderEvent::Provision(file_hash, expire) => {
-                    
+
+                DownloaderEvent::Provision(file_hash, file_path, expire) => {
+                    if !get_app_cache_dir().exists() {
+                        if let Err(err) = tokio::fs::create_dir_all(&get_app_cache_dir()).await {
+                            error!("Cannot create cache directory: {err}");
+                        }
+                    }
+
+                    let mut encoder = {
+                        match File::create(get_app_cache_dir().join(file_hash.to_string())) {
+                            Ok(encode_file) => { bao::encode::Encoder::new(encode_file) }
+                            Err(err) => {
+                                error!("Cannot create cache file: {err}");
+                                return;
+                            }
+                        }
+                    };
+
+                    if let Ok(file) = File::open(file_path.clone()) {
+                        let mut reader = BufReader::new(file);
+                        let mut buf = [0u8; CHUNK_SIZE];
+                        while let Ok(len) = reader.read(&mut buf) {
+                            if let Err(err) = encoder.write(&buf[0..len]) {
+                                error!("Cannot write to cache file: {err}");
+                            }
+                        }
+
+                        if let Ok(hash) = encoder.finalize() {
+                            if hash == file_hash {
+                                files_i_provide.insert(hash, expire);
+                            } else {
+                                error!("Error while encoding file: {}", file_path.display());
+                            }
+                        }
+                    }
                 }
-                
+
                 DownloaderEvent::Supply {
                     uuid,
                     file_hash,
@@ -162,7 +199,7 @@ pub enum DownloaderEvent {
         to: u64,
     },
     Provide(Uuid, NodeId, Hash, DateTime<Utc>),
-    Provision(Hash, DateTime<Utc>),
+    Provision(Hash, PathBuf, DateTime<Utc>),
 
     // Actor
     Shutdown,

@@ -47,12 +47,21 @@ pub mod store;
 pub mod util;
 
 // Set the path where the store file will be/is stored
-fn get_app_dir() -> PathBuf {
+fn get_app_config_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("target/debug/cache")
     } else {
         let project_dir = directories::ProjectDirs::from("fr", "Dwight Studio", "Syncify").unwrap();
         project_dir.config_local_dir().to_path_buf()
+    }
+}
+
+fn get_app_cache_dir() -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from("target/debug/cache/cache")
+    } else {
+        let project_dir = directories::ProjectDirs::from("fr", "Dwight Studio", "Syncify").unwrap();
+        project_dir.cache_dir().to_path_buf()
     }
 }
 
@@ -127,7 +136,7 @@ impl Syncify {
             }
         } else {
             // Create the dir and its parent
-            tokio::fs::create_dir_all(&get_app_dir())
+            tokio::fs::create_dir_all(&get_app_config_dir())
                 .await
                 .map_err(|e| match e.kind() {
                     ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
@@ -236,7 +245,7 @@ impl Syncify {
             }
         } else {
             // Create the dir and its parent
-            tokio::fs::create_dir_all(&get_app_dir())
+            tokio::fs::create_dir_all(&get_app_config_dir())
                 .await
                 .map_err(|e| match e.kind() {
                     ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),

@@ -34,6 +34,7 @@ use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use thiserror::Error;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 
@@ -127,7 +128,9 @@ impl GossipManager {
                             {
                                 match payload {
                                     Payload::FileRequest { hash } => {
-                                        if local_tree.map().contains_key(&Hash::from_bytes(hash)) {
+                                        let local_tree = local_tree.map();
+                                        let file_hash = Hash::from_bytes(hash);
+                                        if let Some(file_path) = local_tree.get(&file_hash) {
                                             let expire = Utc::now()
                                                 .checked_add_signed(TimeDelta::hours(PROVIDES_EXPIRATION_HOURS_DELTA))
                                                 .unwrap();
@@ -139,7 +142,7 @@ impl GossipManager {
                                                 })
                                             {
                                                 if self.topic.broadcast(resp_msg).await.is_ok() {
-                                                    downloader.send(DownloaderEvent::Provision(Hash::from_bytes(hash), expire)).await;
+                                                    downloader.send(DownloaderEvent::Provision(file_hash, PathBuf::from(file_path), expire)).await;
                                                 } else {
                                                     warn!("Cannot broadcast Provides message!");
                                                 }

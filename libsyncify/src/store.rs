@@ -23,7 +23,7 @@
 
 use crate::engine::state::State;
 use crate::store::keyring::{Keyring, Keys};
-use crate::{InnerSharedDirectory, SharedDirectory, get_app_dir};
+use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir, get_app_cache_dir};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
@@ -65,14 +65,14 @@ pub struct StoreManager {
 impl StoreManager {
     pub async fn new() -> Result<Self, StoreError> {
         // Create app dir (and parents)
-        if !get_app_dir().exists() {
-            tokio::fs::create_dir_all(&get_app_dir())
+        if !get_app_config_dir().exists() {
+            tokio::fs::create_dir_all(&get_app_config_dir())
                 .await
                 .map_err(StoreError::IO)?;
         }
 
         // Initialize everything
-        let database_file = get_app_dir().join(STORE_FILENAME);
+        let database_file = get_app_config_dir().join(STORE_FILENAME);
         let keyring = Keyring::new();
         let secret_key = Self::load_secret_key(&keyring);
         let cache = Self::build_cache(&keyring, database_file.as_path())?;

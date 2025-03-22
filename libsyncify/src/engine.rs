@@ -26,7 +26,7 @@ use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol};
 use crate::store::StoreManager;
-use crate::{SharedDirectory, get_app_dir};
+use crate::{get_app_config_dir, SharedDirectory};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::Gossip;
@@ -74,7 +74,7 @@ impl Engine {
         let builder = Router::builder(endpoint);
 
         // Blobs protocol
-        let download_dir = get_app_dir().join(DOWNLOAD_DIRNAME);
+        let download_dir = get_app_config_dir().join(DOWNLOAD_DIRNAME);
 
         if !download_dir.exists() {
             tokio::fs::create_dir_all(&download_dir)
