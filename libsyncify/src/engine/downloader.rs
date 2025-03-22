@@ -20,13 +20,15 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::ops::Deref;
+use std::sync::Arc;
 use blake3::Hash;
 use iroh_blobs::net_protocol::Blobs;
 use log::{debug, error, info};
-use tokio::sync::mpsc;
+use std::ops::Deref;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+use crate::engine::job::Job;
 
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 pub const CHUNK_SIZE: usize = 16 * 1024;
@@ -45,14 +47,9 @@ impl Downloader {
         let handle = DownloaderHandle { tx };
 
         // Spawn new thread
-        let join_handle = Some(tokio::spawn(Self::handle_event(
-            rx,
-        )));
+        let join_handle = Some(tokio::spawn(Self::handle_event(rx)));
 
-        Downloader {
-            join_handle,
-            handle
-        }
+        Downloader { join_handle, handle }
     }
 
     /// Gracefully shutdown.
@@ -62,14 +59,20 @@ impl Downloader {
     }
 
     /// Main method of the [`Downloader`].
-    async fn handle_event(
-        mut rx: mpsc::Receiver<DownloaderEvent>,
-    ) {
+    async fn handle_event(mut rx: mpsc::Receiver<DownloaderEvent>) {
         while let Some(event) = rx.recv().await {
             match event {
-                DownloaderEvent::Request { uuid, file_hash, from, to} => {
-                    
-                }
+                // Jobs
+                DownloaderEvent::Accept(_) => {}
+                
+                // Provision
+                DownloaderEvent::Provision {
+                    uuid,
+                    file_hash,
+                    from,
+                    to,
+                } => {}
+                
                 // Actor
                 DownloaderEvent::Shutdown => {
                     rx.close();
@@ -106,7 +109,17 @@ impl DownloaderHandle {
 
 /// Event to control the [`Downloader`].
 pub enum DownloaderEvent {
-    Request{uuid: Uuid, file_hash: Hash, from: u64, to: u64},
+    // Jobs
+    Accept(Arc<RwLock<Job>>),
+    
+    // Provision
+    Provision {
+        uuid: Uuid,
+        file_hash: Hash,
+        from: u64,
+        to: u64,
+    },
+
     // Actor
     Shutdown,
 }
