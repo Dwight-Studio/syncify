@@ -172,7 +172,7 @@ impl ProtocolHandler for SyncifyProtocol {
                 }
                 SyncifyPacket::Blobs(blobs_packet) => {
                     if let BlobsPacket::BlobRequest { file_hash, from, to } = *blobs_packet {
-                        downloader.send(DownloaderEvent::Request{uuid: dir.uuid, file_hash: Hash::from(file_hash), from, to}).await;
+                        downloader.send(DownloaderEvent::Provision {uuid: dir.uuid, file_hash: Hash::from(file_hash), from, to}).await;
                     }
                 }
             }
