@@ -40,13 +40,13 @@ use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 pub const PROVIDES_EXPIRATION_HOURS_DELTA: i64 = 2;
 
 #[derive(Archive, Serialize, Deserialize)]
-pub(crate) struct GossipHeader {
+pub struct GossipHeader {
     nonce: [u8; 24],
 }
 
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize)]
-pub(crate) enum Payload {
+pub enum Payload {
     FileRequest {
         hash: [u8; 32],
     } = 0,
@@ -59,12 +59,12 @@ pub(crate) enum Payload {
 }
 
 #[derive(Archive, Serialize, Deserialize)]
-pub(crate) struct Message {
+pub struct Message {
     header: GossipHeader,
     payload: Vec<u8>,
 }
 
-pub(crate) struct GossipManager {
+pub struct GossipManager {
     topic: GossipSender,
     dir: SharedDirectory,
     protocol: SyncifyProtocol,
@@ -72,7 +72,7 @@ pub(crate) struct GossipManager {
 }
 
 impl GossipManager {
-    pub(crate) async fn new(
+    pub async fn new(
         topic: GossipSender,
         dir: SharedDirectory,
         protocol: SyncifyProtocol,
@@ -87,10 +87,10 @@ impl GossipManager {
     }
 
     //noinspection RsTraitObligations
-    pub(crate) async fn handle_events(
+    pub async fn handle_events(
         &mut self,
         gossip_event: iroh_gossip::net::Event,
-        last_tree: &mut HashTree,
+        local_tree: &mut HashTree,
         downloader: DownloaderHandle
     ) {
         info!("Dir {}: {:?}", self.dir.uuid(), gossip_event);
@@ -127,7 +127,7 @@ impl GossipManager {
                             {
                                 match payload {
                                     Payload::FileRequest { hash } => {
-                                        if last_tree.map().contains_key(&Hash::from_bytes(hash)) {
+                                        if local_tree.map().contains_key(&Hash::from_bytes(hash)) {
                                             let expire = Utc::now()
                                                 .checked_add_signed(TimeDelta::hours(PROVIDES_EXPIRATION_HOURS_DELTA))
                                                 .unwrap();
