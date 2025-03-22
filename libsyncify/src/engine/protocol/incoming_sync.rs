@@ -101,7 +101,7 @@ impl FiniteStateMachine for IncomingSync {
                                     self.dir
                                         .handle()
                                         .await
-                                        .send(ManagerEvent::GenerateJobs(mutations))
+                                        .send(ManagerEvent::ApplyRemoteMutations(mutations))
                                         .await;
                                 }
                                 SyncPacket::Failed => {}

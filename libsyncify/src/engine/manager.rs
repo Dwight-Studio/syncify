@@ -20,43 +20,45 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::collections::HashMap;
 use crate::SharedDirectory;
+use crate::engine::downloader::DownloaderHandle;
+use crate::engine::manager::fs::FileSystemManager;
+use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
-use crate::engine::state::Mutation;
-use sync::SyncManager;
-use chrono::{DateTime, Utc};
+use crate::engine::state::{HashTree, Mutation};
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
-use log::{debug, error, info};
-use notify::{Config, EventHandler, RecommendedWatcher, Watcher};
+use log::{debug, error, info, warn};
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
-use blake3::Hash;
-use tokio::sync::{mpsc, RwLock};
+use std::time::Duration;
+use sync::SyncManager;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use crate::engine::downloader::DownloaderHandle;
-use crate::engine::manager::fs::{FileSystemManager, Job};
-use crate::engine::manager::gossip::GossipManager;
 
 pub mod fs;
 pub mod gossip;
 pub mod sync;
 
 pub const EVENT_BUFFER_SIZE: usize = 1024;
+pub const WATCHER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Actor responsible to handle all filesystem events for a [`SharedDirectory`].
+/// Actor responsible to handle all sync events for a [`SharedDirectory`].
 pub struct Manager {
-    _watcher: Option<notify::RecommendedWatcher>,
+    watcher_join_handle: Option<JoinHandle<()>>,
     join_handle: Option<JoinHandle<()>>,
     handle: ManagerHandle,
 }
 
 impl Manager {
-    pub async fn new(dir: SharedDirectory, topic: GossipTopic, protocol: SyncifyProtocol, downloader: DownloaderHandle) -> Result<Self, notify::Error> {
+    pub async fn new(
+        dir: SharedDirectory,
+        topic: GossipTopic,
+        protocol: SyncifyProtocol,
+        downloader: DownloaderHandle,
+    ) -> Self {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
@@ -69,6 +71,22 @@ impl Manager {
         let forward = gossip_rx.forward(handle.clone());
         tokio::spawn(forward);
 
+        let watcher_join_handle = {
+            if dir.is_read_only() {
+                None
+            } else {
+                let handle = handle.clone();
+                Some(tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(WATCHER_POLL_INTERVAL);
+
+                    loop {
+                        interval.tick().await;
+                        handle.send(ManagerEvent::PollFiles).await;
+                    }
+                }))
+            }
+        };
+
         // Spawn new thread
         let join_handle = Some(tokio::spawn(Self::handle_event(
             rx,
@@ -79,35 +97,21 @@ impl Manager {
             handle.clone(),
         )));
 
-        // Create and configure watcher
-        let path = dir.path();
-        let mut _watcher = None;
-        if dir.is_read_only() {
-            info!("{} is in read only", dir.uuid)
-        } else {
-            let mut watcher = RecommendedWatcher::new(
-                handle.clone(),
-                Config::default()
-                    .with_follow_symlinks(false)
-            )?;
-            watcher.watch(path.as_path(), notify::RecursiveMode::Recursive)?;
-            info!(
-                "{} is writable, attached '{:?}' file watcher",
-                dir.uuid,
-                RecommendedWatcher::kind()
-            );
-            _watcher = Some(watcher);
-        }
-
-        Ok(Self {
-            _watcher,
+        Self {
+            watcher_join_handle,
             join_handle,
             handle,
-        })
+        }
     }
 
     /// Gracefully shutdown.
     pub async fn shutdown(&mut self) {
+        if let Some(join_handle) = self.watcher_join_handle.take() {
+            join_handle.abort();
+            if let Err(e) = join_handle.await {
+                warn!("Cannot join watcher thread: {e}");
+            }
+        }
         self.tx.send(ManagerEvent::Shutdown).await.unwrap();
         self.join_handle.take().unwrap().await.unwrap();
     }
@@ -122,10 +126,17 @@ impl Manager {
         handle: ManagerHandle,
     ) {
         // Shared variables
-        let mut jobs_buffer: Vec<Arc<RwLock<Job>>> = Vec::new();
-        let mut last_tree = dir.read().await.state.hash_tree().clone();
-        
-        let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone(), &mut last_tree).await;
+        let mut local_tree = {
+            match HashTree::from_disk(&dir) {
+                Ok(tree) => tree,
+                Err(e) => {
+                    error!("Cannot get file tree from disk for {}: {e}", dir.uuid());
+                    return;
+                }
+            }
+        };
+
+        let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone()).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), protocol.clone(), handle.clone()).await;
         let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), protocol.clone()).await;
 
@@ -133,12 +144,20 @@ impl Manager {
         while let Some(event) = rx.recv().await {
             match event {
                 // FileSystem
-                ManagerEvent::FileSystem(fs_event, timestamp) => fs_manager.handle_events(fs_event, timestamp, &mut jobs_buffer, &mut last_tree).await,
-                ManagerEvent::ApplyLocalMutations => fs_manager.apply_local_mutations(&mut last_tree).await,
-                ManagerEvent::GenerateJobs(mutations) => fs_manager.generate_jobs(&mut jobs_buffer, mutations).await,
+                ManagerEvent::PollFiles => fs_manager.poll(&mut local_tree).await,
+                ManagerEvent::ApplyRemoteMutations(mutations) => {
+                    fs_manager.apply_remote_mutations(mutations, &mut local_tree).await
+                }
+                ManagerEvent::UpdateLocalTree(mutation) => {
+                    fs_manager.update_local_tree(mutation, &mut local_tree).await
+                }
 
                 // Gossip
-                ManagerEvent::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event, &mut last_tree, downloader.clone()).await,
+                ManagerEvent::Gossip(gossip_event) => {
+                    gossip_manager
+                        .handle_events(gossip_event, &mut local_tree, downloader.clone())
+                        .await
+                }
 
                 // Protocol
                 ManagerEvent::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
@@ -146,11 +165,11 @@ impl Manager {
                 // Actor
                 ManagerEvent::Shutdown => {
                     rx.close();
-                    debug!("Closing event channel for {}", dir.uuid())
+                    debug!("Closing manager event channel for {}", dir.uuid())
                 }
             }
         }
-        info!("Finished event processing for {}", dir.uuid());
+        info!("Finished manager event processing for {}", dir.uuid());
     }
 }
 
@@ -169,20 +188,16 @@ pub struct ManagerHandle {
 }
 
 impl ManagerHandle {
+    /// Send an [`ManagerEvent`] to the actor.
     pub async fn send(&self, event: ManagerEvent) {
         if let Err(e) = self.tx.send(event).await {
             error!("Error sending to manager: {e}");
         }
     }
-}
 
-impl EventHandler for ManagerHandle {
-    fn handle_event(&mut self, raw_event: notify::Result<notify::Event>) {
-        if let Ok(event) = raw_event {
-            if let Err(error) = self.tx.blocking_send(ManagerEvent::FileSystem(event, Utc::now())) {
-                log::error!("Failed to send event: {error}");
-            };
-        }
+    /// Check if the actor is still alive.
+    pub fn is_alive(&self) -> bool {
+        self.tx.is_closed()
     }
 }
 
@@ -217,9 +232,9 @@ impl Sink<iroh_gossip::net::Event> for ManagerHandle {
 /// Event to control the [`Manager`].
 pub enum ManagerEvent {
     // FileSystem
-    FileSystem(notify::Event, DateTime<Utc>),
-    ApplyLocalMutations,
-    GenerateJobs(Vec<Mutation>),
+    PollFiles,
+    ApplyRemoteMutations(Vec<Mutation>),
+    UpdateLocalTree(Mutation),
 
     // Gossip
     Gossip(iroh_gossip::net::Event),

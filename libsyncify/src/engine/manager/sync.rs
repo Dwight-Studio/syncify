@@ -34,14 +34,14 @@ use tokio::time::sleep;
 
 pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) struct SyncManager {
-    pub(crate) topic: GossipSender,
-    pub(crate) dir: SharedDirectory,
-    pub(crate) prot: SyncifyProtocol,
+pub struct SyncManager {
+    topic: GossipSender,
+    dir: SharedDirectory,
+    prot: SyncifyProtocol,
 }
 
 impl SyncManager {
-    pub(crate) async fn new(topic: GossipSender, dir: SharedDirectory, syncify_prot: SyncifyProtocol) -> Self {
+    pub async fn new(topic: GossipSender, dir: SharedDirectory, syncify_prot: SyncifyProtocol) -> Self {
         Self {
             topic,
             dir,
@@ -49,7 +49,7 @@ impl SyncManager {
         }
     }
 
-    pub(crate) async fn handle_events(&mut self, sync_event: SyncEvent) {
+    pub async fn handle_events(&mut self, sync_event: SyncEvent) {
         match sync_event {
             SyncEvent::RequestSync(conn, hash) => {
                 self.dir.write().await.received_initial_sync = true;
@@ -69,7 +69,7 @@ impl SyncManager {
         }
     }
 
-    pub(crate) async fn initial_sync(&mut self) {
+    pub async fn initial_sync(&mut self) {
         let neighbors = self.dir.read().await.neighbors.clone();
         for node in neighbors {
             if node.1 {

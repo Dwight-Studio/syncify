@@ -40,6 +40,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
+use crate::engine::manager::fs::FileSystemManager;
 
 pub const MAX_LOADED_DELTAS: u32 = 2048;
 pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
@@ -356,7 +357,6 @@ impl State {
 
 impl Display for State {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "State")?;
         writeln!(f, "Timestamp: {}", self.timestamp)?;
         writeln!(f)?;
         writeln!(f, "■ Current")?;
@@ -373,6 +373,7 @@ impl Display for State {
             }
 
             writeln!(f, "{prefix}  Timestamp: {}", head.timestamp)?;
+            writeln!(f, "{prefix}  Tree: {}", head.hash_tree.hash())?;
             writeln!(f, "{prefix}  {}", head.mutation)?;
         }
 
@@ -858,7 +859,7 @@ impl HashTree {
     /// Generate [`HashTree`] from disk.
     pub fn from_disk(dir: &SharedDirectory) -> Result<Self, std::io::Error> {
         let mut rtn = Directory {
-            name: dir.path.file_name().unwrap().to_string_lossy().to_string(),
+            name: dir.uuid.to_string(),
             content: vec![],
             hash: Hash::from_bytes([0; 32]),
         };
@@ -887,7 +888,7 @@ impl HashTree {
                         .update_mmap(file.path())
                         .inspect_err(|_| error!("Invalid path: {}", file.path().display()))?;
 
-                    let relative_path = crate::engine::manager::fs::relative(dir, file.path());
+                    let relative_path = FileSystemManager::relative(dir, file.path());
 
                     if relative_path.is_none() {
                         continue;
@@ -936,7 +937,7 @@ impl HashTree {
                             continue;
                         }
 
-                        if let Some(relative_path) = crate::engine::manager::fs::relative(dir, file.path()) {
+                        if let Some(relative_path) = FileSystemManager::relative(dir, file.path()) {
                             let relative_path_string = relative_path.to_string_lossy().to_string();
 
                             // Remove the file from the current file

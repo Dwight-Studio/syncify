@@ -29,6 +29,8 @@ use blake3::Hash;
 use iroh::NodeId;
 use log::{info, warn};
 
+// TODO: Add provision database sync
+
 #[derive(PartialEq, Debug)]
 pub enum OutgoingState {
     Connecting,
@@ -102,7 +104,7 @@ impl FiniteStateMachine for OutgoingSync {
                                     self.dir
                                         .handle()
                                         .await
-                                        .send(ManagerEvent::GenerateJobs(mutations))
+                                        .send(ManagerEvent::ApplyRemoteMutations(mutations))
                                         .await;
                                 }
                                 SyncPacket::Failed => {}

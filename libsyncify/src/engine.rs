@@ -22,13 +22,13 @@
  */
 
 use crate::engine::EngineError::AlreadyWatched;
+use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
-use crate::engine::protocol::SyncifyProtocol;
+use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol};
 use crate::store::StoreManager;
-use crate::{get_app_dir, SharedDirectory};
+use crate::{SharedDirectory, get_app_dir};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId};
-use iroh_blobs::net_protocol::Blobs;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use log::{info, warn};
@@ -38,13 +38,12 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::engine::downloader::Downloader;
 
+pub mod downloader;
+pub mod job;
 pub mod manager;
 pub mod protocol;
 pub mod state;
-pub mod downloader;
-mod job;
 
 pub const DOWNLOAD_DIRNAME: &str = "download";
 
@@ -52,7 +51,6 @@ pub struct Engine {
     store: Arc<RwLock<StoreManager>>,
     router: Router,
     gossip: Gossip,
-    blobs: Blobs<iroh_blobs::store::fs::Store>,
     protocol: SyncifyProtocol,
     downloader: Downloader,
     managers: HashMap<Uuid, Manager>,
@@ -65,7 +63,7 @@ impl Engine {
         info!("Initializing engine");
         let endpoint = Endpoint::builder()
             .secret_key(store.read().await.secret_key())
-            .alpns(vec![iroh_blobs::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
+            .alpns(vec![iroh_gossip::ALPN.to_vec(), SYNCIFY_ALPN.to_vec()])
             .discovery_n0()
             .discovery_local_network()
             .bind()
@@ -84,37 +82,24 @@ impl Engine {
                 .map_err(EngineError::IO)?
         }
 
-        let blobs = Blobs::persistent(download_dir)
-            .await
-            .map_err(EngineError::Blobs)?
-            .build(builder.endpoint());
-
         // Gossip protocol
         let gossip = Gossip::builder()
             .spawn(builder.endpoint().clone())
             .await
             .map_err(EngineError::Gossip)?;
 
-        let downloader = Downloader::new(
-            blobs.clone()
-        );
-        
-        let protocol = SyncifyProtocol::new(
-            store.clone(),
-            builder.endpoint().clone(),
-            downloader.clone()
-        );
+        let downloader = Downloader::new();
+
+        let protocol = SyncifyProtocol::new(store.clone(), builder.endpoint().clone(), downloader.clone());
 
         let mut engine = Self {
             store: store.clone(),
             router: builder
-                .accept(protocol::SYNCIFY_ALPN, protocol.clone())
-                .accept(iroh_blobs::ALPN, blobs.clone())
+                .accept(SYNCIFY_ALPN, protocol.clone())
                 .accept(iroh_gossip::ALPN, gossip.clone())
                 .spawn()
                 .await
                 .map_err(EngineError::Router)?,
-            blobs,
             gossip,
             protocol,
             downloader,
@@ -166,12 +151,7 @@ impl Engine {
                 .map_err(EngineError::Gossip)?;
 
             // Create manager
-            let manager = Manager::new(
-                dir.clone(),
-                topic,
-                self.protocol.clone(),
-                self.downloader.clone(),
-            ).await.map_err(EngineError::CannotWatch)?;
+            let manager = Manager::new(dir.clone(), topic, self.protocol.clone(), self.downloader.clone()).await;
 
             self.managers.insert(dir.uuid, manager);
             Ok(())
@@ -207,12 +187,6 @@ pub enum EngineError {
 
     #[error("Router error: {0}")]
     Router(anyhow::Error),
-
-    #[error("Filesystem Watcher error (is it a network filesystem?): {0}")]
-    CannotWatch(notify::Error),
-
-    #[error("Unable to unwatch directory: {0}")]
-    CannotUnwatch(notify::Error),
 
     #[error("Directory is already watched: {0}")]
     AlreadyWatched(Uuid),

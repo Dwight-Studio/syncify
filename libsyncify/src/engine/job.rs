@@ -28,22 +28,17 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 /// A sync job
 #[derive(Archive, Serialize, Deserialize, Clone)]
-pub enum Job {
-    Download {
-        path: String,
-        #[rkyv(with = crate::util::HashDef)]
-        hash: Hash,
-        state: JobState,
-    },
-    Remove {
-        path: String,
-        state: JobState,
-    },
-    Move {
-        from: String,
-        to: String,
-        state: JobState,
-    },
+pub struct JobDownload {
+    path: String,
+    #[rkyv(with = crate::util::HashDef)]
+    hash: Hash,
+    state: JobState,
+}
+
+impl JobDownload {
+    pub fn new(path: String, hash: Hash, state: JobState) -> Self {
+        Self { path, hash, state }
+    }
 }
 
 #[derive(Archive, Serialize, Deserialize, Clone)]

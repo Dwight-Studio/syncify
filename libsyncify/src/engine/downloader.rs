@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use blake3::Hash;
-use iroh_blobs::net_protocol::Blobs;
 use log::{debug, error, info, warn};
 use std::ops::Deref;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -32,7 +31,8 @@ use rkyv::{Archive, Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-use crate::engine::job::Job;
+use crate::engine::job::JobDownload;
+use crate::engine::manager::ManagerEvent;
 
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 pub const CHUNK_SIZE: usize = 16 * 1024;
@@ -61,7 +61,7 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new(blobs: Blobs<iroh_blobs::store::fs::Store>) -> Self {
+    pub fn new() -> Self {
         info!("Initializing downloader");
 
         // Initiate channel
@@ -136,17 +136,23 @@ pub struct DownloaderHandle {
 }
 
 impl DownloaderHandle {
+    /// Send an [`DownloaderEvent`] to the actor.
     pub async fn send(&self, event: DownloaderEvent) {
         if let Err(e) = self.tx.send(event).await {
             error!("Error sending to downloader: {e}");
         }
+    }
+
+    /// Check if the actor is still alive.
+    pub fn is_alive(&self) -> bool {
+        self.tx.is_closed()
     }
 }
 
 /// Event to control the [`Downloader`].
 pub enum DownloaderEvent {
     // Jobs
-    Accept(Arc<RwLock<Job>>),
+    Accept(Arc<RwLock<JobDownload>>),
     
     // Provision
     Supply {
@@ -157,7 +163,6 @@ pub enum DownloaderEvent {
     },
     Provide(Uuid, NodeId, Hash, DateTime<Utc>),
     Provision(Hash, DateTime<Utc>),
-    
 
     // Actor
     Shutdown,
