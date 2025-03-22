@@ -20,4 +20,36 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::path::PathBuf;
+use blake3::Hash;
+use chrono::{DateTime, Utc};
+use rkyv::{Archive, Deserialize, Serialize};
 
+
+/// A sync job
+#[derive(Archive, Serialize, Deserialize, Clone)]
+pub enum Job {
+    Download {
+        path: String,
+        #[rkyv(with = crate::util::HashDef)]
+        hash: Hash,
+        state: JobState,
+    },
+    Remove {
+        path: String,
+        state: JobState,
+    },
+    Move {
+        from: String,
+        to: String,
+        state: JobState,
+    },
+}
+
+#[derive(Archive, Serialize, Deserialize, Clone)]
+pub enum JobState {
+    Pending,
+    Ongoing(f32),
+    Done(#[rkyv(with = crate::util::DateTimeDef)] DateTime<Utc>),
+    Error(String),
+}
