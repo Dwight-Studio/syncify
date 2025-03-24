@@ -92,7 +92,7 @@ impl FiniteStateMachine for IncomingSync {
                                         .write()
                                         .await
                                         .state
-                                        .verify_and_add(state, self.dir.clone())
+                                        .verify_accept_all(state, self.dir.clone())
                                         .map_err(|e| match e {
                                             StateError::InvalidSignature => ProtocolError::InvalidSignature,
                                             _ => ProtocolError::Unexpected,

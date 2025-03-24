@@ -20,28 +20,87 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::path::PathBuf;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
+use log::error;
+use redb::{TypeName, Value};
+use rkyv::rancor::Error;
 use rkyv::{Archive, Deserialize, Serialize};
+use rkyv::util::AlignedVec;
 
-
-/// A sync job
-#[derive(Archive, Serialize, Deserialize, Clone)]
-pub struct JobDownload {
+/// A sync job.
+#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
+pub struct DownloadJob {
     path: String,
     #[rkyv(with = crate::util::HashDef)]
     hash: Hash,
+    #[rkyv(with = crate::util::DateTimeDef)]
+    issued: DateTime<Utc>,
     state: JobState,
 }
 
-impl JobDownload {
-    pub fn new(path: String, hash: Hash, state: JobState) -> Self {
-        Self { path, hash, state }
+impl DownloadJob {
+    pub fn new(path: String, hash: Hash, issued: DateTime<Utc>, state: JobState) -> Self {
+        Self { path, hash, issued, state }
+    }
+    
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    
+    pub fn hash(&self) -> &Hash {
+        &self.hash
+    }
+    
+    pub fn issued(&self) -> &DateTime<Utc> {
+        &self.issued
+    }
+    
+    pub fn state(&self) -> &JobState {
+        &self.state
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Clone)]
+impl Value for DownloadJob {
+    type SelfType<'a> = DownloadJob;
+    type AsBytes<'a> = &'a [u8];
+
+    fn fixed_width() -> Option<usize> {
+        Option::from(size_of::<DownloadJob>())
+    }
+
+    //noinspection RsTraitObligations
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        rkyv::from_bytes::<DownloadJob, Error>(data).unwrap_or_else(|e| {
+            error!("Failed to deserialize Download Job: {e}");
+            return DownloadJob::new(
+                "Error".to_string(),
+                Hash::from_bytes([0u8; 32]),
+                Utc::now(),
+                JobState::Error("Serialization".to_string()),
+            );
+        })
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b,
+    {
+        rkyv::to_bytes(value).unwrap_or_else(|e: Error| {
+            error!("Failed to serialize download job: {e}");
+            return AlignedVec::new();
+        }).to_vec().leak()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("DownloadJob")
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
 pub enum JobState {
     Pending,
     Ongoing(f32),

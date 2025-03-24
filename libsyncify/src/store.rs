@@ -20,8 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
-use crate::engine::state::State;
+use crate::engine::state::{Delta, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir, get_app_cache_dir};
 use base64::Engine;
@@ -31,35 +30,43 @@ use chacha20poly1305::aead::OsRng;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use log::{error, info, warn};
-use redb::{
-    CommitError, Database, DatabaseError, ReadableTable, StorageError, TableDefinition, TableError, TableHandle,
-    TransactionError,
-};
+use redb::{CommitError, Database, DatabaseError, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, StorageError, TableDefinition, TableError, TableHandle, TransactionError};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use chrono::{DateTime, TimeDelta, Utc};
 use iroh_base::PublicKey;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::engine::downloader::Provision;
+use crate::engine::job::{DownloadJob, JobState};
 
 pub mod keyring;
 pub mod link;
 
+/// Store file name.
 pub const STORE_FILENAME: &str = "store.db";
+/// Time after which a job is no longer automatically loaded into memory.
+pub const JOBS_EXPIRATION: TimeDelta = TimeDelta::days(7);
 
-// Base table linking Path to UUID
+// Database tables
 pub const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
 pub const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
-pub const LOCAL_HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("local_head");
 pub const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
+pub const REMOTE_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], Provision> = MultimapTableDefinition::new("remote-provision");
+pub const JOBS_TABLE: TableDefinition<[u8; 32], DownloadJob> = TableDefinition::new("jobs");
+pub const LOCAL_PROVISIONS_TABLE: TableDefinition<[u8; 32], i64> = TableDefinition::new("local-provision");
 
 /// Store manager.
 pub struct StoreManager {
     cache: HashMap<Uuid, SharedDirectory>,
+    jobs: HashMap<Hash, Arc<RwLock<DownloadJob>>>,
+    active_jobs: Vec<Arc<RwLock<DownloadJob>>>,
+    local_provisions: HashMap<Hash, DateTime<Utc>>,
     secret_key: SecretKey,
     keyring: Keyring,
-    file_path: PathBuf,
+    store_file_path: PathBuf,
 }
 
 impl StoreManager {
@@ -76,12 +83,17 @@ impl StoreManager {
         let keyring = Keyring::new();
         let secret_key = Self::load_secret_key(&keyring);
         let cache = Self::build_cache(&keyring, database_file.as_path())?;
+        let (jobs, active_jobs) = Self::load_jobs(database_file.as_path(), Utc::now() - JOBS_EXPIRATION)?;
+        let local_provisions = Self::load_local_provisions(database_file.as_path())?;
 
         Ok(StoreManager {
             cache,
+            jobs,
+            active_jobs,
+            local_provisions,
             secret_key,
             keyring,
-            file_path: database_file,
+            store_file_path: database_file,
         })
     }
 
@@ -173,23 +185,25 @@ impl StoreManager {
         {
             let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
-            let local_head_table = transaction.open_table(LOCAL_HEAD_TABLE).map_err(StoreError::Table)?;
             let neighbors_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
+            let remote_provisions_table = transaction.open_multimap_table(REMOTE_PROVISIONS_TABLE).map_err(StoreError::Table)?;
 
             for range in base_table.iter().map_err(StoreError::Storage)? {
                 let (path, uuid_bytes) = range.unwrap();
                 let head_opt = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
-                let local_head_opt = local_head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
                 let neighbors_opt = neighbors_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let provisions_opt = remote_provisions_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
 
                 let uuid = Uuid::from_bytes(uuid_bytes.value());
 
-                if let (Some(head), Some(neighbors), Some(local_head)) = (head_opt, neighbors_opt, local_head_opt) {
+                if let (Some(head), Some(neighbors)) = (head_opt, neighbors_opt) {
                     if let Some((sign_key, verif_key)) = Self::get_keys(&keyring, uuid) {
                         let uuid_string = uuid.to_string();
+                        
+                        // TODO: Add provision loading
 
                         // Reading state table
-                        let state_table_def: TableDefinition<[u8; 32], &[u8]> =
+                        let state_table_def: TableDefinition<[u8; 32], Delta> =
                             TableDefinition::new(uuid_string.as_str());
                         if transaction
                             .list_tables()
@@ -208,7 +222,6 @@ impl StoreManager {
                                         uuid,
                                         path: PathBuf::from(path.value()),
                                         inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                                            Hash::from_bytes(local_head.value()),
                                             state,
                                             neighbors.value().iter().map(|e| (*e, false)).collect(),
                                         ))),
@@ -225,7 +238,7 @@ impl StoreManager {
                     }
                 } else {
                     error!(
-                        "Unable to load state for {}: Head, Local Head or Neighbors is missing",
+                        "Unable to load state for {}: Head, Neighbors or Provisions are missing",
                         uuid
                     );
                 }
@@ -235,6 +248,47 @@ impl StoreManager {
         transaction.commit().map_err(StoreError::Commit)?;
 
         Ok(cache)
+    }
+    
+    /// Load the [`DownloadJob`]s (for initialization).
+    fn load_jobs(path: &Path, since: DateTime<Utc>) -> Result<(HashMap<Hash, Arc<RwLock<DownloadJob>>>, Vec<Arc<RwLock<DownloadJob>>>), StoreError> {
+        let mut jobs = HashMap::new();
+        let mut active_jobs = Vec::new();
+        
+        let db = Database::create(path).map_err(StoreError::Database)?;
+        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
+
+        {
+            let jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
+
+            for result in jobs_table.iter().map_err(StoreError::Storage)? {
+                if let Ok((hash_access, job_access)) = result {
+                    let hash = Hash::from_bytes(hash_access.value());
+                    let job = job_access.value();
+                    
+                    // If it is still active, add in the active vec
+                    if matches!(job.state(), JobState::Pending | JobState::Ongoing(_)) {
+                        let job_ref = Arc::new(RwLock::new(job));
+                        active_jobs.push(job_ref.clone());
+                        jobs.insert(hash, job_ref);
+                    } else if *job.issued() > since {
+                        jobs.insert(hash, Arc::new(RwLock::new(job)));
+                    }
+                }
+            }
+        }
+
+        Ok((jobs, active_jobs))
+    }
+
+    /// Load the local and remote [`Provision`]s (for initialization).
+    fn load_local_provisions(path: &Path) -> Result<HashMap<Hash, DateTime<Utc>>, StoreError> {
+        let local_provisions = HashMap::new();
+
+        let db = Database::create(path).map_err(StoreError::Database)?;
+        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
+        
+        Ok(local_provisions)
     }
 
     /// Add a [`SharedDirectory`] to the store.
@@ -287,13 +341,12 @@ impl StoreManager {
     pub async fn flush(&self) -> Result<(), StoreError> {
         info!("Saving store...");
 
-        let db = Database::create(self.file_path.as_path()).map_err(StoreError::Database)?;
+        let db = Database::create(self.store_file_path.as_path()).map_err(StoreError::Database)?;
         let transaction = db.begin_write().map_err(StoreError::Transaction)?;
 
         {
             let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
-            let mut local_head_table = transaction.open_table(LOCAL_HEAD_TABLE).map_err(StoreError::Table)?;
             let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
 
             // Save each SharedDirectory
@@ -308,9 +361,6 @@ impl StoreManager {
                 head_table
                     .insert(uuid.as_bytes(), inner.state.hash().as_bytes())
                     .map_err(StoreError::Storage)?;
-                local_head_table
-                    .insert(uuid.as_bytes(), inner.local_head.as_bytes())
-                    .map_err(StoreError::Storage)?;
                 neighbor_table
                     .insert(
                         uuid.as_bytes(),
@@ -320,7 +370,7 @@ impl StoreManager {
 
                 let uuid_string = uuid.to_string();
 
-                let state_table_def: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new(uuid_string.as_str());
+                let state_table_def: TableDefinition<[u8; 32], Delta> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
                 
                 inner.state.flush_in_table(&mut state_table)?;

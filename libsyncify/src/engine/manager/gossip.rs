@@ -28,7 +28,7 @@ use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Duration, TimeDelta, Utc};
 use iroh::{NodeAddr, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{info, warn};
@@ -38,7 +38,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 
-pub const PROVIDES_EXPIRATION_HOURS_DELTA: i64 = 2;
+/// Duration after which provision expires.
+pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
 
 #[derive(Archive, Serialize, Deserialize)]
 pub struct GossipHeader {
@@ -132,7 +133,7 @@ impl GossipManager {
                                         let file_hash = Hash::from_bytes(hash);
                                         if let Some(file_path) = local_tree.get(&file_hash) {
                                             let expire = Utc::now()
-                                                .checked_add_signed(TimeDelta::hours(PROVIDES_EXPIRATION_HOURS_DELTA))
+                                                .checked_add_signed(PROVISION_EXPIRATION)
                                                 .unwrap();
                                             if let Ok(resp_msg) =
                                                 self.create_message(Payload::Provides {
@@ -142,7 +143,7 @@ impl GossipManager {
                                                 })
                                             {
                                                 if self.topic.broadcast(resp_msg).await.is_ok() {
-                                                    downloader.send(DownloaderEvent::Provision(file_hash, PathBuf::from(file_path), expire)).await;
+                                                    downloader.send(DownloaderEvent::LocalProvision(file_hash, PathBuf::from(file_path), expire)).await;
                                                 } else {
                                                     warn!("Cannot broadcast Provides message!");
                                                 }
@@ -153,7 +154,7 @@ impl GossipManager {
                                     }
                                     Payload::Provides { hash, node_id, expire } => {
                                         if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                                            downloader.send(DownloaderEvent::Provide(self.dir.uuid, node_id, Hash::from_bytes(hash), expire)).await;
+                                            downloader.send(DownloaderEvent::RemoteProvision(self.dir.uuid, node_id, Hash::from_bytes(hash), expire)).await;
                                         } else {
                                             warn!("Invalid NodeID!");
                                         }

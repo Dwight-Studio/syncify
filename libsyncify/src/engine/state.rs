@@ -22,6 +22,7 @@
  */
 
 use crate::SharedDirectory;
+use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::{InvalidSignature, NotADirectory, UnexpectedHash};
 use crate::store::StoreError;
@@ -30,17 +31,19 @@ use chrono::{DateTime, Utc};
 use ed25519_dalek::ed25519::SignatureBytes;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use log::{error, warn};
-use redb::{ReadableTable, Table, Value};
+use redb::{ReadableTable, Table, TypeName, Value};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::iter::Peekable;
 use std::sync::Arc;
+use rkyv::rancor::Error;
+use rkyv::util::AlignedVec;
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
-use crate::engine::manager::fs::FileSystemManager;
+use crate::engine::job::{DownloadJob, JobState};
 
 pub const MAX_LOADED_DELTAS: u32 = 2048;
 pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
@@ -88,52 +91,38 @@ impl State {
 
     //noinspection RsTraitObligations
     /// Load a [`State`] from a table storing each [`Delta`].
-    pub(crate) fn from_table(state_table: &Table<[u8; 32], &[u8]>, head_hash: [u8; 32]) -> Option<State> {
+    pub(crate) fn from_table(state_table: &Table<[u8; 32], Delta>, head_hash: [u8; 32]) -> Option<State> {
         if let Ok(Some(head_access)) = state_table.get(&head_hash) {
-            match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(head_access.value()) {
-                Ok(head) => {
-                    let mut pool = HashMap::new();
+            let head = head_access.value();
+            let mut pool = HashMap::new();
 
-                    let mut parent_opt = head.parent;
+            let mut parent_opt = head.parent;
 
-                    // Insert head into the pool
-                    pool.insert(head_hash, Arc::new(head));
+            // Insert head into the pool
+            pool.insert(head_hash, Arc::new(head));
 
-                    for _ in 0..MAX_LOADED_DELTAS {
-                        if let Some(parent_hash) = parent_opt {
-                            if let Ok(Some(parent_access)) = state_table.get(parent_hash.as_bytes()) {
-                                match rkyv::from_bytes::<Delta, rkyv::rancor::Error>(parent_access.value()) {
-                                    Ok(parent) => {
-                                        parent_opt = parent.parent;
-                                        pool.insert(*parent_hash.as_bytes(), Arc::new(parent));
-                                    }
-                                    Err(e) => {
-                                        error!("Could not deserialize delta {} ({})", parent_hash, e);
-                                        return None;
-                                    }
-                                };
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if pool.len() != 0 {
-                        Some(State {
-                            head: Hash::from_bytes(head_hash),
-                            pool,
-                            timestamp: Utc::now(),
-                        })
+            for _ in 0..MAX_LOADED_DELTAS {
+                if let Some(parent_hash) = parent_opt {
+                    if let Ok(Some(parent_access)) = state_table.get(parent_hash.as_bytes()) {
+                        let parent = parent_access.value();
+                        parent_opt = parent.parent;
+                        pool.insert(*parent_hash.as_bytes(), Arc::new(parent));
                     } else {
-                        None
+                        break;
                     }
+                } else {
+                    break;
                 }
-                Err(e) => {
-                    error!("Could not deserialize head {} ({})", Hash::from_bytes(head_hash), e);
-                    None
-                }
+            }
+
+            if pool.len() != 0 {
+                Some(State {
+                    head: Hash::from_bytes(head_hash),
+                    pool,
+                    timestamp: Utc::now(),
+                })
+            } else {
+                None
             }
         } else {
             error!("Unable to find head {}", Hash::from_bytes(head_hash));
@@ -141,17 +130,11 @@ impl State {
         }
     }
 
-    pub(crate) fn flush_in_table(&self, state_table: &mut Table<[u8; 32], &[u8]>) -> Result<(), StoreError> {
+    pub(crate) fn flush_in_table(&self, state_table: &mut Table<[u8; 32], Delta>) -> Result<(), StoreError> {
         for (hash, delta) in self.pool.iter() {
-            match rkyv::to_bytes::<rkyv::rancor::Error>(delta.as_ref()) {
-                Ok(value) => state_table
-                    .insert(hash, value.as_slice())
-                    .map_err(StoreError::Storage)?,
-                Err(e) => {
-                    error!("Could not serialize {}", Hash::from_bytes(*hash));
-                    return Err(StoreError::Serialize(e));
-                }
-            };
+            state_table
+                .insert(hash, delta.as_ref())
+                .map_err(StoreError::Storage)?;
         }
 
         Ok(())
@@ -249,7 +232,12 @@ impl State {
         }
     }
 
-    pub fn verify_and_add(&mut self, other_state: State, dir: SharedDirectory) -> Result<Vec<Mutation>, StateError> {
+    /// Verify the signature and the consistency of another [`State`] against self, and accept all the [`Delta`]s.
+    /// 
+    /// # Return
+    /// 
+    /// Returns a vec of all accepted mutations in chronological order.
+    pub fn verify_accept_all(&mut self, other_state: State, dir: SharedDirectory) -> Result<Vec<Mutation>, StateError> {
         let mut stack: Vec<Arc<Delta>> = Vec::new();
         let mut mutations: Vec<Mutation> = Vec::new();
 
@@ -420,6 +408,47 @@ pub struct Delta {
     timestamp: DateTime<Utc>,
     mutation: Mutation,
     hash_tree: HashTree,
+}
+
+impl Value for Delta {
+    type SelfType<'a> = Delta;
+    type AsBytes<'a> = &'a [u8];
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    //noinspection RsTraitObligations
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        rkyv::from_bytes::<Delta, Error>(data).unwrap_or_else(|e| {
+            error!("Failed to deserialize download job: {e}");
+            return Delta {
+                parent: None,
+                hash: Hash::from_bytes([0u8; 32]),
+                signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
+                timestamp: Default::default(),
+                mutation: Mutation::Init { timestamp: Default::default() },
+                hash_tree: Void,
+            };
+        })
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b,
+    {
+        rkyv::to_bytes(value).unwrap_or_else(|e: Error| {
+            error!("Failed to serialize Delta: {e}");
+            return AlignedVec::new();
+        }).to_vec().leak()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("Delta")
+    }
 }
 
 impl Delta {
@@ -842,7 +871,7 @@ impl HashTree {
                 let mut rtn = HashMap::new();
                 rtn.insert(*hash, prefix + name.as_str());
                 rtn
-            },
+            }
             Directory { name, content, .. } => {
                 let new_prefix = prefix + name.as_str() + "/";
                 let mut rtn = HashMap::new();

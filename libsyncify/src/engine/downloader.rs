@@ -20,6 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
@@ -30,26 +31,82 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use chrono::{DateTime, TimeDelta, Utc};
 use iroh_base::NodeId;
+use redb::{Key, TypeName, Value};
 use rkyv::{Archive, Deserialize, Serialize};
+use rkyv::util::AlignedVec;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-use crate::engine::job::JobDownload;
-use crate::engine::manager::ManagerEvent;
+use crate::engine::job::DownloadJob;
 use crate::get_app_cache_dir;
-use crate::store::StoreError;
+use crate::store::StoreManager;
 
+/// Size of the event buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
+/// Size of the chunk of file that are sent per packet.
 pub const CHUNK_SIZE: usize = 16 * 1024;
 
-#[derive(Archive, Serialize, Deserialize)]
-pub(crate) struct Provided {
+#[derive(Archive, Serialize, Deserialize, Debug)]
+pub(crate) struct Provision {
     node: [u8; 32],
+    hash: [u8; 32],
     #[rkyv(with = crate::util::DateTimeDef)]
     expire: DateTime<Utc>,
 }
 
-impl Provided {
+impl Value for Provision {
+    type SelfType<'a> = Provision;
+    type AsBytes<'a> = &'a [u8];
+
+    fn fixed_width() -> Option<usize> {
+        Option::from(size_of::<Provision>())
+    }
+
+    //noinspection RsTraitObligations
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        rkyv::from_bytes::<Provision, rkyv::rancor::Error>(data).unwrap_or_else(|e| {
+            error!("Failed to deserialize download job: {e}");
+            return Provision {
+                node: [0u8; 32],
+                hash: [0u8; 32],
+                expire: Default::default(),
+            }
+        })
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b,
+    {
+        rkyv::to_bytes(value).unwrap_or_else(|e: rkyv::rancor::Error| {
+            error!("Failed to serialize download job: {e}");
+            return AlignedVec::new();
+        }).to_vec().leak()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("Provided")
+    }
+}
+
+impl Key for Provision {
+    //noinspection RsTraitObligations
+    fn compare(data1_bytes: &[u8], data2_bytes: &[u8]) -> Ordering {
+        if let (Ok(data1), Ok(data2)) = (rkyv::from_bytes::<Provision, rkyv::rancor::Error>(data1_bytes), rkyv::from_bytes::<Provision, rkyv::rancor::Error>(data2_bytes)) {
+            match data1.hash.cmp(&data2.hash) {
+                Ordering::Equal => data1.node.cmp(&data2.node),
+                other => other,
+            }
+        } else {
+            Ordering::Greater
+        }
+    }
+}
+
+impl Provision {
     /// Check expiration.
     ///
     /// # Return
@@ -66,17 +123,18 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new() -> Self {
+    pub fn new(store: Arc<RwLock<StoreManager>>) -> Self {
         info!("Initializing downloader");
 
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = DownloaderHandle { tx };
-        let files_they_provide: HashMap<Uuid, HashMap<[u8; 32], Vec<Provided>>> = HashMap::new();
-        let files_i_provide: HashMap<Hash, DateTime<Utc>> = HashMap::new();
 
         // Spawn new thread
-        let join_handle = Some(tokio::spawn(Self::handle_event(rx, files_they_provide, files_i_provide)));
+        let join_handle = Some(tokio::spawn(Self::handle_event(
+            rx,
+            store
+        )));
 
         Downloader { join_handle, handle }
     }
@@ -88,22 +146,31 @@ impl Downloader {
     }
 
     /// Main method of the [`Downloader`].
-    async fn handle_event(mut rx: mpsc::Receiver<DownloaderEvent>, mut files_they_provide: HashMap<Uuid, HashMap<[u8; 32], Vec<Provided>>>, mut files_i_provide: HashMap<Hash, DateTime<Utc>>) {
+    async fn handle_event(
+        mut rx: mpsc::Receiver<DownloaderEvent>,
+        store: Arc<RwLock<StoreManager>>
+    ) {
+        // TODO: Load files_they_provide and files_i_provide from store (provisions)
+        
+        // Process events
         while let Some(event) = rx.recv().await {
             match event {
                 // Jobs
-                DownloaderEvent::Accept(download_job) => {}
+                DownloaderEvent::Accept(download_job) => {
+                    
+                }
                 
                 // Provision
-                DownloaderEvent::Provide(uuid, node_id, file_hash, expire) => {
+                DownloaderEvent::RemoteProvision(uuid, node_id, file_hash, expire) => {
                     let file_map = &mut *files_they_provide.get_mut(&uuid).unwrap();
-                    file_map.entry(*file_hash.as_bytes()).or_default().push(Provided {
+                    file_map.entry(file_hash).or_default().push(Provision {
                         node: *node_id.as_bytes(),
+                        hash: *file_hash.as_bytes(),
                         expire,
                     });
                 }
 
-                DownloaderEvent::Provision(file_hash, file_path, expire) => {
+                DownloaderEvent::LocalProvision(file_hash, file_path, expire) => {
                     if !get_app_cache_dir().exists() {
                         if let Err(err) = tokio::fs::create_dir_all(&get_app_cache_dir()).await {
                             error!("Cannot create cache directory: {err}");
@@ -156,6 +223,10 @@ impl Downloader {
 
         info!("Finished event processing for the downloader");
     }
+
+    fn garbage_collect() {
+
+    }
 }
 
 impl Deref for Downloader {
@@ -189,7 +260,7 @@ impl DownloaderHandle {
 /// Event to control the [`Downloader`].
 pub enum DownloaderEvent {
     // Jobs
-    Accept(Arc<RwLock<JobDownload>>),
+    Accept(Arc<RwLock<DownloadJob>>),
     
     // Provision
     Supply {
@@ -198,8 +269,8 @@ pub enum DownloaderEvent {
         from: u64,
         to: u64,
     },
-    Provide(Uuid, NodeId, Hash, DateTime<Utc>),
-    Provision(Hash, PathBuf, DateTime<Utc>),
+    RemoteProvision(Uuid, NodeId, Hash, DateTime<Utc>),
+    LocalProvision(Hash, PathBuf, DateTime<Utc>),
 
     // Actor
     Shutdown,

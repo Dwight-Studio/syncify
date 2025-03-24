@@ -37,15 +37,15 @@ pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct SyncManager {
     topic: GossipSender,
     dir: SharedDirectory,
-    prot: SyncifyProtocol,
+    protocol: SyncifyProtocol,
 }
 
 impl SyncManager {
-    pub async fn new(topic: GossipSender, dir: SharedDirectory, syncify_prot: SyncifyProtocol) -> Self {
+    pub async fn new(topic: GossipSender, dir: SharedDirectory, protocol: SyncifyProtocol) -> Self {
         Self {
             topic,
             dir,
-            prot: syncify_prot,
+            protocol,
         }
     }
 
@@ -74,9 +74,9 @@ impl SyncManager {
         for node in neighbors {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.prot.clone());
+                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.protocol.clone());
 
-                if self.prot.endpoint().node_id() > node_id {
+                if self.protocol.endpoint().node_id() > node_id {
                     Self::start_sync(outgoing).await;
                 } else {
                     let dir = self.dir.clone();

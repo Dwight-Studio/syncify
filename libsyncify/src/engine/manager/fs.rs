@@ -22,17 +22,13 @@
  */
 use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
-use crate::engine::job::{JobDownload, JobState};
-use crate::engine::manager::ManagerEvent;
+use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::state::{HashTree, Mutation};
-use blake3::Hash;
 use chrono::{DateTime, TimeDelta, Utc};
 use iroh_gossip::net::GossipSender;
 use log::{debug, error, info};
-use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::fs;
 use tokio::sync::RwLock;
 
@@ -161,9 +157,10 @@ impl FileSystemManager {
                     file_path, file_hash, ..
                 } => {
                     // Creating DownloadJob
-                    let job_ref = Arc::new(RwLock::new(JobDownload::new(
+                    let job_ref = Arc::new(RwLock::new(DownloadJob::new(
                         self.dir.path.join(file_path).to_string_lossy().to_string(),
                         *file_hash,
+                        Utc::now(),
                         JobState::Pending,
                     )));
 

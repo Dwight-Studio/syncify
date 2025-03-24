@@ -37,10 +37,13 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
+use chrono::{DateTime, Utc};
+use iroh_base::NodeId;
 use thiserror::Error;
 use tokio::sync::RwLockReadGuard;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use uuid::Uuid;
+use crate::engine::downloader::Provision;
 
 pub mod engine;
 pub mod store;
@@ -153,7 +156,6 @@ impl Syncify {
             uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                state.hash(),
                 state,
                 HashMap::new(),
             ))),
@@ -265,7 +267,6 @@ impl Syncify {
             uuid: link.uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                state.hash(),
                 state,
                 link.neighbors,
             ))),
@@ -340,18 +341,18 @@ impl SharedDirectory {
 
 pub(crate) struct InnerSharedDirectory {
     pub(crate) state: State,
-    pub(crate) local_head: Hash,
     pub(crate) neighbors: HashMap<[u8; 32], bool>,
+    pub(crate) provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
     pub(crate) handle: Option<ManagerHandle>,
     pub(crate) received_initial_sync: bool,
 }
 
 impl InnerSharedDirectory {
-    pub(crate) fn new(local_head: Hash, state: State, neighbors: HashMap<[u8; 32], bool>) -> Self {
+    pub(crate) fn new(state: State, neighbors: HashMap<[u8; 32], bool>) -> Self {
         Self {
             state,
-            local_head,
             neighbors,
+            provisions: HashMap::new(),
             handle: None,
             received_initial_sync: false,
         }

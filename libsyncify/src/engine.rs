@@ -45,6 +45,7 @@ pub mod manager;
 pub mod protocol;
 pub mod state;
 
+/// Download cache directory name.
 pub const DOWNLOAD_DIRNAME: &str = "download";
 
 pub struct Engine {
@@ -88,7 +89,9 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let downloader = Downloader::new();
+        let downloader = Downloader::new(
+            store.clone()
+        );
 
         let protocol = SyncifyProtocol::new(store.clone(), builder.endpoint().clone(), downloader.clone());
 

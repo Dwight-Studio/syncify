@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::downloader::DownloaderHandle;
+use crate::engine::downloader::{Downloader, DownloaderHandle};
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
@@ -42,7 +42,9 @@ pub mod fs;
 pub mod gossip;
 pub mod sync;
 
+/// Size of the event buffer for [`Manager`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
+/// Interval between each filesystem polling.
 pub const WATCHER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Actor responsible to handle all sync events for a [`SharedDirectory`].
