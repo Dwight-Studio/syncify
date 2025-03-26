@@ -25,10 +25,12 @@ pub mod incoming_sync;
 pub mod outgoing_sync;
 
 use crate::SharedDirectory;
+use crate::engine::downloader::{CHUNK_SIZE, DownloaderEvent, DownloaderHandle};
 use crate::engine::manager::ManagerEvent::Sync;
 use crate::engine::manager::SyncEvent;
 use crate::engine::state::State;
 use crate::store::StoreManager;
+use blake3::Hash;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
@@ -40,11 +42,9 @@ use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use blake3::Hash;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::engine::downloader::{DownloaderEvent, DownloaderHandle, CHUNK_SIZE};
 
 /// The size in bytes of the SyncifyPacket::Header packet variant
 pub const HEADER_SIZE: usize = 48;
@@ -66,7 +66,7 @@ pub(crate) struct HeaderPacket {
 /// Enumeration representing the data that can be transferred using SyncifyConnection
 pub enum SyncifyPacket {
     Sync(SyncPacket),
-    Blobs(Box<BlobsPacket>)
+    Blobs(Box<BlobsPacket>),
 }
 
 #[repr(u8)]
@@ -81,7 +81,7 @@ pub enum SyncPacket {
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub enum BlobsPacket {
     BlobRequest { file_hash: [u8; 32], from: u64, to: u64 } = 3,
-    Blob { chunk: Box<[u8; CHUNK_SIZE]> } = 4
+    Blob { chunk: Box<[u8; CHUNK_SIZE]> } = 4,
 }
 
 #[derive(Clone)]
@@ -89,7 +89,7 @@ pub enum BlobsPacket {
 pub struct SyncifyProtocol {
     store: Arc<RwLock<StoreManager>>,
     endpoint: Endpoint,
-    downloader: DownloaderHandle
+    downloader: DownloaderHandle,
 }
 
 impl SyncifyProtocol {
@@ -97,10 +97,10 @@ impl SyncifyProtocol {
         Self {
             store,
             endpoint,
-            downloader
+            downloader,
         }
     }
-    
+
     /// Connect to a node using `node_id`.
     ///
     /// # Return
@@ -109,7 +109,7 @@ impl SyncifyProtocol {
     pub async fn connect(&self, node_id: NodeId) -> Result<SyncifyConnection, anyhow::Error> {
         SyncifyConnection::open_new(node_id, self.endpoint.clone()).await
     }
-    
+
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
@@ -152,7 +152,7 @@ impl ProtocolHandler for SyncifyProtocol {
                 .await
                 .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
 
-            let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
+            let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
             let decrypted_bytes = cipher
                 .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
                 .map_err(SyncifyProtocolError::DecryptionError)?;
@@ -172,7 +172,14 @@ impl ProtocolHandler for SyncifyProtocol {
                 }
                 SyncifyPacket::Blobs(blobs_packet) => {
                     if let BlobsPacket::BlobRequest { file_hash, from, to } = *blobs_packet {
-                        downloader.send(DownloaderEvent::Supply {uuid: dir.uuid, file_hash: Hash::from(file_hash), from, to}).await;
+                        downloader
+                            .send(DownloaderEvent::Supply {
+                                uuid: dir.uuid,
+                                file_hash: Hash::from(file_hash),
+                                from,
+                                to,
+                            })
+                            .await;
                     }
                 }
             }
@@ -207,7 +214,7 @@ impl SyncifyConnection {
         packet: SyncifyPacket,
     ) -> Result<(), SyncifyProtocolError> {
         let (mut tx, _rx) = self.connection.open_bi().await.unwrap();
-        let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
+        let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
 
         let packet_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&packet).unwrap();
@@ -258,7 +265,7 @@ impl SyncifyConnection {
             .await
             .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
 
-        let cipher = XChaCha20Poly1305::new(&Key::from(dir.verif_key.to_bytes()));
+        let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
         let decrypted_bytes = cipher
             .decrypt(&XNonce::from(header_packet.nonce), packet_buffer.as_ref())
             .map_err(SyncifyProtocolError::DecryptionError)?;

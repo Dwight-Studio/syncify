@@ -20,27 +20,31 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use crate::engine::job::{DownloadJob, JobState, Provision};
 use crate::engine::state::{Delta, State};
 use crate::store::keyring::{Keyring, Keys};
-use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir, get_app_cache_dir};
+use crate::{InnerSharedDirectory, SharedDirectory, get_app_cache_dir, get_app_config_dir};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
+use chrono::{DateTime, TimeDelta, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use iroh::RelayMode::Default;
 use iroh::SecretKey;
+use iroh_base::{NodeId, PublicKey};
 use log::{error, info, warn};
-use redb::{CommitError, Database, DatabaseError, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, StorageError, TableDefinition, TableError, TableHandle, TransactionError};
+use redb::{
+    CommitError, Database, DatabaseError, MultimapTable, MultimapTableDefinition, MultimapValue, ReadableMultimapTable,
+    ReadableTable, StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError,
+};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use chrono::{DateTime, TimeDelta, Utc};
-use iroh_base::PublicKey;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::engine::downloader::Provision;
-use crate::engine::job::{DownloadJob, JobState};
 
 pub mod keyring;
 pub mod link;
@@ -51,19 +55,29 @@ pub const STORE_FILENAME: &str = "store.db";
 pub const JOBS_EXPIRATION: TimeDelta = TimeDelta::days(7);
 
 // Database tables
+
+/// Base table (Directory path -> UUID).
 pub const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
+/// Head table (UUID -> State head hash).
 pub const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
+/// Neighbors table (UUID -> Vec of all neighbors NodeIDs).
 pub const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
-pub const REMOTE_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], Provision> = MultimapTableDefinition::new("remote-provision");
+/// Local provisions table (UUID -> * Provision), describing the files that are provided to other pairs.
+pub const LOCAL_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], Provision> =
+    MultimapTableDefinition::new("local-provision");
+/// Remote provisions table (UUID -> * Provision), describing the files that are provided by other pairs.
+pub const REMOTE_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], Provision> =
+    MultimapTableDefinition::new("remote-provision");
+/// Jobs table (Hash of the file -> DownloadJob).
 pub const JOBS_TABLE: TableDefinition<[u8; 32], DownloadJob> = TableDefinition::new("jobs");
-pub const LOCAL_PROVISIONS_TABLE: TableDefinition<[u8; 32], i64> = TableDefinition::new("local-provision");
 
 /// Store manager.
 pub struct StoreManager {
+    /// The timestamp is dated from last time the store was flushed.
+    timestamp: DateTime<Utc>,
     cache: HashMap<Uuid, SharedDirectory>,
     jobs: HashMap<Hash, Arc<RwLock<DownloadJob>>>,
     active_jobs: Vec<Arc<RwLock<DownloadJob>>>,
-    local_provisions: HashMap<Hash, DateTime<Utc>>,
     secret_key: SecretKey,
     keyring: Keyring,
     store_file_path: PathBuf,
@@ -84,13 +98,12 @@ impl StoreManager {
         let secret_key = Self::load_secret_key(&keyring);
         let cache = Self::build_cache(&keyring, database_file.as_path())?;
         let (jobs, active_jobs) = Self::load_jobs(database_file.as_path(), Utc::now() - JOBS_EXPIRATION)?;
-        let local_provisions = Self::load_local_provisions(database_file.as_path())?;
 
         Ok(StoreManager {
+            timestamp: Utc::now(),
             cache,
             jobs,
             active_jobs,
-            local_provisions,
             secret_key,
             keyring,
             store_file_path: database_file,
@@ -186,21 +199,29 @@ impl StoreManager {
             let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
             let neighbors_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
-            let remote_provisions_table = transaction.open_multimap_table(REMOTE_PROVISIONS_TABLE).map_err(StoreError::Table)?;
+            let local_provision_table = transaction
+                .open_multimap_table(LOCAL_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
+            let remote_provisions_table = transaction
+                .open_multimap_table(REMOTE_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
 
             for range in base_table.iter().map_err(StoreError::Storage)? {
                 let (path, uuid_bytes) = range.unwrap();
                 let head_opt = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
                 let neighbors_opt = neighbors_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
-                let provisions_opt = remote_provisions_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let local_provisions = local_provision_table
+                    .get(uuid_bytes.value())
+                    .map_err(StoreError::Storage)?;
+                let remote_provisions = remote_provisions_table
+                    .get(uuid_bytes.value())
+                    .map_err(StoreError::Storage)?;
 
                 let uuid = Uuid::from_bytes(uuid_bytes.value());
 
                 if let (Some(head), Some(neighbors)) = (head_opt, neighbors_opt) {
                     if let Some((sign_key, verif_key)) = Self::get_keys(&keyring, uuid) {
                         let uuid_string = uuid.to_string();
-                        
-                        // TODO: Add provision loading
 
                         // Reading state table
                         let state_table_def: TableDefinition<[u8; 32], Delta> =
@@ -213,6 +234,9 @@ impl StoreManager {
                         {
                             let state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
 
+                            let (local_provisions, remote_provisions) =
+                                Self::load_provisions(local_provisions, remote_provisions)?;
+
                             // Build state
                             info!("Building state for {}", uuid);
                             if let Some(state) = State::from_table(&state_table, head.value()) {
@@ -224,9 +248,11 @@ impl StoreManager {
                                         inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                                             state,
                                             neighbors.value().iter().map(|e| (*e, false)).collect(),
+                                            local_provisions,
+                                            remote_provisions,
                                         ))),
-                                        sign_key,
-                                        verif_key,
+                                        write_key: sign_key,
+                                        read_key: verif_key,
                                     },
                                 );
                             } else {
@@ -249,31 +275,32 @@ impl StoreManager {
 
         Ok(cache)
     }
-    
+
     /// Load the [`DownloadJob`]s (for initialization).
-    fn load_jobs(path: &Path, since: DateTime<Utc>) -> Result<(HashMap<Hash, Arc<RwLock<DownloadJob>>>, Vec<Arc<RwLock<DownloadJob>>>), StoreError> {
+    fn load_jobs(
+        path: &Path,
+        since: DateTime<Utc>,
+    ) -> Result<(HashMap<Hash, Arc<RwLock<DownloadJob>>>, Vec<Arc<RwLock<DownloadJob>>>), StoreError> {
         let mut jobs = HashMap::new();
         let mut active_jobs = Vec::new();
-        
+
         let db = Database::create(path).map_err(StoreError::Database)?;
         let transaction = db.begin_write().map_err(StoreError::Transaction)?;
 
         {
             let jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
 
-            for result in jobs_table.iter().map_err(StoreError::Storage)? {
-                if let Ok((hash_access, job_access)) = result {
-                    let hash = Hash::from_bytes(hash_access.value());
-                    let job = job_access.value();
-                    
-                    // If it is still active, add in the active vec
-                    if matches!(job.state(), JobState::Pending | JobState::Ongoing(_)) {
-                        let job_ref = Arc::new(RwLock::new(job));
-                        active_jobs.push(job_ref.clone());
-                        jobs.insert(hash, job_ref);
-                    } else if *job.issued() > since {
-                        jobs.insert(hash, Arc::new(RwLock::new(job)));
-                    }
+            for (hash_access, job_access) in (jobs_table.iter().map_err(StoreError::Storage)?).flatten() {
+                let hash = Hash::from_bytes(hash_access.value());
+                let job = job_access.value();
+
+                // If it is still active, add in the active vec
+                if matches!(job.state(), JobState::Pending | JobState::Ongoing(_)) {
+                    let job_ref = Arc::new(RwLock::new(job));
+                    active_jobs.push(job_ref.clone());
+                    jobs.insert(hash, job_ref);
+                } else if *job.issued() > since {
+                    jobs.insert(hash, Arc::new(RwLock::new(job)));
                 }
             }
         }
@@ -281,25 +308,108 @@ impl StoreManager {
         Ok((jobs, active_jobs))
     }
 
-    /// Load the local and remote [`Provision`]s (for initialization).
-    fn load_local_provisions(path: &Path) -> Result<HashMap<Hash, DateTime<Utc>>, StoreError> {
-        let local_provisions = HashMap::new();
+    /// Save the [`DownloadJob`]s.
+    async fn flush_jobs(
+        jobs: &mut HashMap<Hash, Arc<RwLock<DownloadJob>>>,
+        jobs_table: &mut Table<'_, [u8; 32], DownloadJob>,
+    ) {
+        for (hash, job_ref) in jobs.iter() {
+            if jobs_table
+                .insert(hash.as_bytes(), job_ref.read().await.deref())
+                .is_err()
+            {
+                error!("Unable to flush job {}", hash);
+            }
+        }
 
-        let db = Database::create(path).map_err(StoreError::Database)?;
-        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
-        
-        Ok(local_provisions)
+        let since: DateTime<Utc> = Utc::now() - JOBS_EXPIRATION;
+
+        // Drop all old jobs
+        jobs.retain(|_, j| {
+            if let Ok(job) = j.try_read() {
+                job.issued() > &since
+            } else {
+                true
+            }
+        })
+    }
+
+    /// Load the local and remote [`Provision`]s of a [`SharedDirectory`] (for initialization).
+    fn load_provisions(
+        local_provision: MultimapValue<Provision>,
+        remote_provisions: MultimapValue<Provision>,
+    ) -> Result<
+        (
+            HashMap<Hash, DateTime<Utc>>,
+            HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
+        ),
+        StoreError,
+    > {
+        let mut local = HashMap::new();
+        let mut remote = HashMap::new();
+
+        for provision_access in local_provision.into_iter().flatten() {
+            let provision = provision_access.value();
+            if !provision.is_expired() {
+                local.insert(provision.hash(), provision.expiration());
+            }
+        }
+
+        for provision_access in remote_provisions.into_iter().flatten() {
+            let provision = provision_access.value();
+            if !provision.is_expired() {
+                remote
+                    .entry(provision.hash())
+                    .or_insert(HashMap::new())
+                    .insert(provision.node_id(), provision.expiration());
+            }
+        }
+
+        Ok((local, remote))
+    }
+
+    /// Save the local and remote [`Provision`]s of a [`SharedDirectory`].
+    async fn flush_provisions(
+        dir: &SharedDirectory,
+        local_table: &mut MultimapTable<'_, [u8; 16], Provision>,
+        remote_table: &mut MultimapTable<'_, [u8; 16], Provision>,
+    ) -> Result<(), StoreError> {
+        local_table
+            .remove_all(dir.uuid.as_bytes())
+            .map_err(StoreError::Storage)?;
+
+        for (hash, expiration) in dir.read().await.local_provisions.iter() {
+            let provision = Provision::local(*hash, *expiration);
+            if !provision.is_expired() && local_table.insert(dir.uuid.as_bytes(), provision).is_err() {
+                error!("Unable to flush local provision {}", hash);
+            }
+        }
+
+        remote_table
+            .remove_all(dir.uuid.as_bytes())
+            .map_err(StoreError::Storage)?;
+
+        for (hash, table) in dir.read().await.remote_provisions.iter() {
+            for (node_id, expiration) in table {
+                let provision = Provision::remote(*node_id, *hash, *expiration);
+                if !provision.is_expired() && local_table.insert(dir.uuid.as_bytes(), provision).is_err() {
+                    error!("Unable to flush remote provision {} of {}", hash, node_id);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Add a [`SharedDirectory`] to the store.
     pub async fn add_shared_dir(&mut self, dir: &SharedDirectory) -> Result<(), StoreError> {
         let sign_key_base64: String = {
-            match dir.sign_key.clone() {
+            match dir.write_key.clone() {
                 Some(key) => BASE64_STANDARD.encode(key.to_bytes()),
                 None => String::from("*"),
             }
         };
-        let verif_key_base64 = BASE64_STANDARD.encode(dir.verif_key);
+        let verif_key_base64 = BASE64_STANDARD.encode(dir.read_key);
 
         self.keyring
             .set_key(
@@ -338,7 +448,7 @@ impl StoreManager {
 
     //noinspection RsTraitObligations
     /// Flush cache to database.
-    pub async fn flush(&self) -> Result<(), StoreError> {
+    pub async fn flush(&mut self) -> Result<(), StoreError> {
         info!("Saving store...");
 
         let db = Database::create(self.store_file_path.as_path()).map_err(StoreError::Database)?;
@@ -348,6 +458,15 @@ impl StoreManager {
             let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
             let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
+            let mut local_provision_table = transaction
+                .open_multimap_table(LOCAL_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
+            let mut remote_provisions_table = transaction
+                .open_multimap_table(REMOTE_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
+            let mut jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
+
+            Self::flush_jobs(&mut self.jobs, &mut jobs_table).await;
 
             // Save each SharedDirectory
             for (uuid, dir) in &self.cache {
@@ -372,8 +491,10 @@ impl StoreManager {
 
                 let state_table_def: TableDefinition<[u8; 32], Delta> = TableDefinition::new(uuid_string.as_str());
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
-                
+
                 inner.state.flush_in_table(&mut state_table)?;
+
+                Self::flush_provisions(dir, &mut local_provision_table, &mut remote_provisions_table).await?;
 
                 if inner.state.trim() {
                     info!("Pruned state {}", uuid_string);
@@ -383,13 +504,15 @@ impl StoreManager {
 
         transaction.commit().map_err(StoreError::Commit)?;
 
+        self.timestamp = Utc::now();
+
         Ok(())
     }
 
     pub fn secret_key(&self) -> SecretKey {
         self.secret_key.clone()
     }
-    
+
     pub fn public_key(&self) -> PublicKey {
         self.secret_key.public()
     }

@@ -22,6 +22,7 @@
  */
 
 use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
+use crate::engine::job::Provision;
 use crate::engine::manager::ManagerHandle;
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};
@@ -29,7 +30,9 @@ use crate::store::StoreManager;
 use crate::store::link::Link;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
+use chrono::{DateTime, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use iroh_base::NodeId;
 use log::info;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
@@ -37,13 +40,10 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
-use chrono::{DateTime, Utc};
-use iroh_base::NodeId;
 use thiserror::Error;
 use tokio::sync::RwLockReadGuard;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use uuid::Uuid;
-use crate::engine::downloader::Provision;
 
 pub mod engine;
 pub mod store;
@@ -158,9 +158,11 @@ impl Syncify {
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                 state,
                 HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
             ))),
-            sign_key: Some(sign_key.clone()),
-            verif_key: sign_key.verifying_key(),
+            write_key: Some(sign_key.clone()),
+            read_key: sign_key.verifying_key(),
         };
 
         info!(
@@ -269,9 +271,11 @@ impl Syncify {
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                 state,
                 link.neighbors,
+                HashMap::new(),
+                HashMap::new(),
             ))),
-            sign_key: sign_key.clone(),
-            verif_key: if let Some(key) = sign_key {
+            write_key: sign_key.clone(),
+            read_key: if let Some(key) = sign_key {
                 key.verifying_key()
             } else {
                 VerifyingKey::from_bytes(&link.key).unwrap()
@@ -304,8 +308,8 @@ pub struct SharedDirectory {
     uuid: Uuid,
     path: PathBuf,
     inner: Arc<RwLock<InnerSharedDirectory>>,
-    sign_key: Option<SigningKey>,
-    verif_key: VerifyingKey,
+    write_key: Option<SigningKey>,
+    read_key: VerifyingKey,
 }
 
 impl SharedDirectory {
@@ -318,7 +322,7 @@ impl SharedDirectory {
     }
 
     pub fn is_read_only(&self) -> bool {
-        self.sign_key.is_none()
+        self.write_key.is_none()
     }
 
     pub(crate) async fn read(&self) -> RwLockReadGuard<InnerSharedDirectory> {
@@ -328,7 +332,7 @@ impl SharedDirectory {
     pub(crate) async fn write(&self) -> RwLockWriteGuard<InnerSharedDirectory> {
         self.inner.write().await
     }
-    
+
     /// Get the handle. Panics if not available.
     pub(crate) async fn handle(&self) -> ManagerHandle {
         if let Some(handle) = &self.read().await.handle {
@@ -342,17 +346,24 @@ impl SharedDirectory {
 pub(crate) struct InnerSharedDirectory {
     pub(crate) state: State,
     pub(crate) neighbors: HashMap<[u8; 32], bool>,
-    pub(crate) provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
+    pub(crate) local_provisions: HashMap<Hash, DateTime<Utc>>,
+    pub(crate) remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
     pub(crate) handle: Option<ManagerHandle>,
     pub(crate) received_initial_sync: bool,
 }
 
 impl InnerSharedDirectory {
-    pub(crate) fn new(state: State, neighbors: HashMap<[u8; 32], bool>) -> Self {
+    pub(crate) fn new(
+        state: State,
+        neighbors: HashMap<[u8; 32], bool>,
+        local_provisions: HashMap<Hash, DateTime<Utc>>,
+        remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
+    ) -> Self {
         Self {
             state,
             neighbors,
-            provisions: HashMap::new(),
+            local_provisions,
+            remote_provisions,
             handle: None,
             received_initial_sync: false,
         }

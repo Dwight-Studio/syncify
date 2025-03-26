@@ -110,7 +110,7 @@ impl FiniteStateMachine for OutgoingSync {
                                 SyncPacket::Failed => {}
                             }
                         } else {
-                            return Err(ProtocolError::Unexpected)
+                            return Err(ProtocolError::Unexpected);
                         }
 
                         Ok(OutgoingState::ReceivingRequest)

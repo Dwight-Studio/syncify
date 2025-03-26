@@ -21,12 +21,14 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::downloader::{Downloader, DownloaderHandle};
+use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
 use crate::engine::state::{HashTree, Mutation};
+use blake3::Hash;
+use chrono::{DateTime, Utc};
 use futures::{Sink, StreamExt};
 use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info, warn};
@@ -160,6 +162,9 @@ impl Manager {
                         .handle_events(gossip_event, &mut local_tree, downloader.clone())
                         .await
                 }
+                ManagerEvent::ConfirmLocalProvision(hash, expiration) => {
+                    gossip_manager.confirm_local_provision(hash, expiration).await
+                }
 
                 // Protocol
                 ManagerEvent::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
@@ -240,6 +245,7 @@ pub enum ManagerEvent {
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
+    ConfirmLocalProvision(Hash, DateTime<Utc>),
 
     // Protocol
     Sync(SyncEvent),

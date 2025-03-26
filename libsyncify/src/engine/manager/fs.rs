@@ -119,7 +119,7 @@ impl FileSystemManager {
 
     /// Apply [`Mutation`] to a [`SharedDirectory`].
     pub async fn apply_local_mutations(dir: &SharedDirectory, mutations: Vec<Mutation>, local_tree: &mut HashTree) {
-        let write_key = match &dir.sign_key {
+        let write_key = match &dir.write_key {
             Some(key) => key,
             None => return,
         };

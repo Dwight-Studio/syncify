@@ -107,9 +107,9 @@ impl LinkBuilder {
         if let Some(dir) = dir {
             let key = {
                 match self.permission {
-                    SharedDirPermission::ReadOnly => dir.verif_key.to_bytes(),
+                    SharedDirPermission::ReadOnly => dir.read_key.to_bytes(),
                     SharedDirPermission::Write => {
-                        if let Some(key) = &dir.sign_key {
+                        if let Some(key) = &dir.write_key {
                             key.to_bytes()
                         } else {
                             return Err(SyncifyError::DirectoryReadOnly());

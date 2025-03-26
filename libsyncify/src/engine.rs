@@ -26,7 +26,7 @@ use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol};
 use crate::store::StoreManager;
-use crate::{get_app_config_dir, SharedDirectory};
+use crate::{SharedDirectory, get_app_config_dir};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::Gossip;
@@ -89,9 +89,7 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let downloader = Downloader::new(
-            store.clone()
-        );
+        let downloader = Downloader::new(store.clone());
 
         let protocol = SyncifyProtocol::new(store.clone(), builder.endpoint().clone(), downloader.clone());
 

@@ -80,7 +80,11 @@ impl FiniteStateMachine for IncomingSync {
                     head: *self.dir.read().await.state.hash().as_bytes(),
                 };
 
-                if let Ok(()) = self.connection.send_packet(self.dir.clone(), SyncifyPacket::Sync(packet)).await {
+                if let Ok(()) = self
+                    .connection
+                    .send_packet(self.dir.clone(), SyncifyPacket::Sync(packet))
+                    .await
+                {
                     if let Ok(packet) = self.connection.receive_packet(self.dir.clone()).await {
                         if let SyncifyPacket::Sync(sync_packet) = packet {
                             match sync_packet {
@@ -107,7 +111,7 @@ impl FiniteStateMachine for IncomingSync {
                                 SyncPacket::Failed => {}
                             }
                         } else {
-                            return Err(ProtocolError::Unexpected)
+                            return Err(ProtocolError::Unexpected);
                         }
 
                         Ok(IncomingState::Finish)

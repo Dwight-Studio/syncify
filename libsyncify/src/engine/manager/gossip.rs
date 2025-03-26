@@ -21,22 +21,22 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::manager::{ManagerHandle, ManagerEvent, SyncEvent};
+use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
+use crate::engine::job::Provision;
+use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::state::HashTree;
-use blake3::Hash;
+use blake3::{Hash, hash};
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
-use iroh::{NodeAddr, NodeId};
+use iroh::NodeId;
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use thiserror::Error;
-use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
@@ -49,10 +49,10 @@ pub struct GossipHeader {
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize)]
 pub enum Payload {
-    FileRequest {
+    ProvisionRequest {
         hash: [u8; 32],
     } = 0,
-    Provides {
+    Provision {
         hash: [u8; 32],
         node_id: [u8; 32],
         #[rkyv(with= crate::util::DateTimeDef)]
@@ -93,7 +93,7 @@ impl GossipManager {
         &mut self,
         gossip_event: iroh_gossip::net::Event,
         local_tree: &mut HashTree,
-        downloader: DownloaderHandle
+        downloader: DownloaderHandle,
     ) {
         info!("Dir {}: {:?}", self.dir.uuid(), gossip_event);
         match gossip_event {
@@ -120,7 +120,7 @@ impl GossipManager {
                     if let Ok(msg) =
                         rkyv::from_bytes::<Message, rkyv::rancor::Error>(message.content.to_vec().as_slice())
                     {
-                        let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.verif_key.to_bytes()));
+                        let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.read_key.to_bytes()));
                         if let Ok(decrypted_payload) =
                             cipher.decrypt(&XNonce::from(msg.header.nonce), msg.payload.as_slice())
                         {
@@ -128,33 +128,30 @@ impl GossipManager {
                                 rkyv::from_bytes::<Payload, rkyv::rancor::Error>(decrypted_payload.as_slice())
                             {
                                 match payload {
-                                    Payload::FileRequest { hash } => {
+                                    Payload::ProvisionRequest { hash } => {
                                         let local_tree = local_tree.map();
                                         let file_hash = Hash::from_bytes(hash);
                                         if let Some(file_path) = local_tree.get(&file_hash) {
-                                            let expire = Utc::now()
-                                                .checked_add_signed(PROVISION_EXPIRATION)
-                                                .unwrap();
-                                            if let Ok(resp_msg) =
-                                                self.create_message(Payload::Provides {
-                                                    hash,
-                                                    node_id: *self.protocol.endpoint().node_id().as_bytes(),
-                                                    expire,
-                                                })
-                                            {
-                                                if self.topic.broadcast(resp_msg).await.is_ok() {
-                                                    downloader.send(DownloaderEvent::LocalProvision(file_hash, PathBuf::from(file_path), expire)).await;
-                                                } else {
-                                                    warn!("Cannot broadcast Provides message!");
-                                                }
-                                            } else {
-                                                warn!("Cannot create Provides message!");
-                                            }
+                                            downloader
+                                                .send(DownloaderEvent::LocalProvisionUpdate(
+                                                    self.dir.uuid(),
+                                                    file_hash,
+                                                    self.dir.path.join(file_path),
+                                                ))
+                                                .await;
                                         }
                                     }
-                                    Payload::Provides { hash, node_id, expire } => {
+                                    Payload::Provision { hash, node_id, expire } => {
                                         if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                                            downloader.send(DownloaderEvent::RemoteProvision(self.dir.uuid, node_id, Hash::from_bytes(hash), expire)).await;
+                                            let hash = Hash::from_bytes(hash);
+
+                                            self.dir
+                                                .write()
+                                                .await
+                                                .remote_provisions
+                                                .entry(hash)
+                                                .or_insert(HashMap::new())
+                                                .insert(node_id, expire);
                                         } else {
                                             warn!("Invalid NodeID!");
                                         }
@@ -175,6 +172,20 @@ impl GossipManager {
         }
     }
 
+    pub async fn confirm_local_provision(&self, hash: Hash, expiration: DateTime<Utc>) {
+        if let Ok(resp_msg) = self.create_message(Payload::Provision {
+            hash: *hash.as_bytes(),
+            node_id: *self.protocol.endpoint().node_id().as_bytes(),
+            expire: expiration,
+        }) {
+            if self.topic.broadcast(resp_msg).await.is_err() {
+                warn!("Cannot broadcast Provision message!");
+            }
+        } else {
+            warn!("Cannot create Provision message!");
+        }
+    }
+
     fn update_neighbors(neighbors: &mut HashMap<[u8; 32], bool>, node_id: &NodeId) {
         if !neighbors.keys().any(|e| node_id.as_bytes() == e) {
             neighbors.insert(*node_id.as_bytes(), true);
@@ -185,7 +196,7 @@ impl GossipManager {
 
     fn create_message(&self, payload: Payload) -> Result<Bytes, GossipError> {
         if let Ok(ser_payload) = rkyv::to_bytes::<rkyv::rancor::Error>(&payload) {
-            let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.verif_key.to_bytes()));
+            let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.read_key.to_bytes()));
             let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
 
             if let Ok(encrypted_payload) = cipher.encrypt(&nonce, ser_payload.as_slice()) {

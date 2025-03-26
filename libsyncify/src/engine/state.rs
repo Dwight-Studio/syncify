@@ -22,6 +22,7 @@
  */
 
 use crate::SharedDirectory;
+use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::{InvalidSignature, NotADirectory, UnexpectedHash};
@@ -32,18 +33,17 @@ use ed25519_dalek::ed25519::SignatureBytes;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use log::{error, warn};
 use redb::{ReadableTable, Table, TypeName, Value};
+use rkyv::rancor::Error;
+use rkyv::util::AlignedVec;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::iter::Peekable;
 use std::sync::Arc;
-use rkyv::rancor::Error;
-use rkyv::util::AlignedVec;
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
-use crate::engine::job::{DownloadJob, JobState};
 
 pub const MAX_LOADED_DELTAS: u32 = 2048;
 pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
@@ -54,7 +54,7 @@ pub struct State {
     #[rkyv(with = crate::util::HashDef)]
     head: Hash,
     pool: HashMap<[u8; 32], Arc<Delta>>,
-    /// The timestamp is dated from last time it was "seen" out of the cache
+    /// The timestamp is dated from last time it was "seen" out of the store
     /// i.e. last time it was saved, loaded or synced.
     #[rkyv(with = crate::util::DateTimeDef)]
     timestamp: DateTime<Utc>,
@@ -91,7 +91,7 @@ impl State {
 
     //noinspection RsTraitObligations
     /// Load a [`State`] from a table storing each [`Delta`].
-    pub(crate) fn from_table(state_table: &Table<[u8; 32], Delta>, head_hash: [u8; 32]) -> Option<State> {
+    pub fn from_table(state_table: &Table<[u8; 32], Delta>, head_hash: [u8; 32]) -> Option<State> {
         if let Ok(Some(head_access)) = state_table.get(&head_hash) {
             let head = head_access.value();
             let mut pool = HashMap::new();
@@ -130,12 +130,12 @@ impl State {
         }
     }
 
-    pub(crate) fn flush_in_table(&self, state_table: &mut Table<[u8; 32], Delta>) -> Result<(), StoreError> {
+    pub fn flush_in_table(&mut self, state_table: &mut Table<[u8; 32], Delta>) -> Result<(), StoreError> {
         for (hash, delta) in self.pool.iter() {
-            state_table
-                .insert(hash, delta.as_ref())
-                .map_err(StoreError::Storage)?;
+            state_table.insert(hash, delta.as_ref()).map_err(StoreError::Storage)?;
         }
+
+        self.timestamp = Utc::now();
 
         Ok(())
     }
@@ -233,9 +233,9 @@ impl State {
     }
 
     /// Verify the signature and the consistency of another [`State`] against self, and accept all the [`Delta`]s.
-    /// 
+    ///
     /// # Return
-    /// 
+    ///
     /// Returns a vec of all accepted mutations in chronological order.
     pub fn verify_accept_all(&mut self, other_state: State, dir: SharedDirectory) -> Result<Vec<Mutation>, StateError> {
         let mut stack: Vec<Arc<Delta>> = Vec::new();
@@ -254,7 +254,7 @@ impl State {
                 if curr_parent != parent {
                     return Err(UnexpectedHash(parent));
                 }
-                if !delta.verify_signature(dir.verif_key) {
+                if !delta.verify_signature(dir.read_key) {
                     return Err(InvalidSignature);
                 }
                 mutations.push(delta.mutation());
@@ -430,7 +430,9 @@ impl Value for Delta {
                 hash: Hash::from_bytes([0u8; 32]),
                 signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
                 timestamp: Default::default(),
-                mutation: Mutation::Init { timestamp: Default::default() },
+                mutation: Mutation::Init {
+                    timestamp: Default::default(),
+                },
                 hash_tree: Void,
             };
         })
@@ -440,10 +442,13 @@ impl Value for Delta {
     where
         Self: 'b,
     {
-        rkyv::to_bytes(value).unwrap_or_else(|e: Error| {
-            error!("Failed to serialize Delta: {e}");
-            return AlignedVec::new();
-        }).to_vec().leak()
+        rkyv::to_bytes(value)
+            .unwrap_or_else(|e: Error| {
+                error!("Failed to serialize Delta: {e}");
+                return AlignedVec::new();
+            })
+            .to_vec()
+            .leak()
     }
 
     fn type_name() -> TypeName {

@@ -42,11 +42,7 @@ pub struct SyncManager {
 
 impl SyncManager {
     pub async fn new(topic: GossipSender, dir: SharedDirectory, protocol: SyncifyProtocol) -> Self {
-        Self {
-            topic,
-            dir,
-            protocol,
-        }
+        Self { topic, dir, protocol }
     }
 
     pub async fn handle_events(&mut self, sync_event: SyncEvent) {
@@ -88,8 +84,11 @@ impl SyncManager {
 
                         if !received_request {
                             info!("Initial sync: No sync request received. Initiating sync myself.");
-                            
-                            dir.handle().await.send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
+
+                            dir.handle()
+                                .await
+                                .send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing))))
+                                .await;
                         } else {
                             info!("Initial sync: Sync request received. No need to start sync.");
                         }
