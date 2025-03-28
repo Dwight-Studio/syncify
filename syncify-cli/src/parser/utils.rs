@@ -22,46 +22,9 @@
  */
 
 use colored::Colorize;
-use fern::colors::ColoredLevelConfig;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Write;
-use std::time::SystemTime;
-
-pub fn setup_logger() -> Result<(), fern::InitError> {
-    fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "[{} {} {}] {}",
-                humantime::format_rfc3339_seconds(SystemTime::now()),
-                ColoredLevelConfig::new().color(record.level()),
-                record.target(),
-                message
-            ))
-        })
-        .level(log::LevelFilter::Debug)
-        .level_for("iroh", log::LevelFilter::Off)
-        .level_for("iroh_quinn", log::LevelFilter::Off)
-        .level_for("iroh_gossip", log::LevelFilter::Off)
-        .level_for("iroh_relay", log::LevelFilter::Off)
-        .level_for("iroh_net_report", log::LevelFilter::Off)
-        .level_for("iroh_quinn_proto", log::LevelFilter::Off)
-        .level_for("events.net.relay.connected", log::LevelFilter::Off)
-        .level_for("hyper_util", log::LevelFilter::Off)
-        .level_for("acto", log::LevelFilter::Off)
-        .level_for("portmapper", log::LevelFilter::Off)
-        .level_for("zbus", log::LevelFilter::Off)
-        .level_for("tracing", log::LevelFilter::Off)
-        .level_for("swarm_discovery", log::LevelFilter::Off)
-        .level_for("rustls", log::LevelFilter::Off)
-        .level_for("hickory_proto", log::LevelFilter::Off)
-        .level_for("reqwest", log::LevelFilter::Off)
-        .level_for("hickory_resolver", log::LevelFilter::Off)
-        .level_for("igd_next", log::LevelFilter::Off)
-        .chain(std::io::stdout())
-        .apply()?;
-    Ok(())
-}
 
 pub async fn number_choice<T: Display>(vec: Vec<T>, head_message: Option<&str>) -> usize {
     loop {

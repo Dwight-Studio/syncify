@@ -18,6 +18,8 @@ iroh-base = "0.34.0"
 anyhow = "1.0.97"
 directories = "6.0.0"
 log = "0.4.26"
+fern = { version = "0.7.1", features = ["colored"] }
+humantime = "2.2.0"
 tokio = "1.44.0"
 thiserror = "2.0.12"
 uuid = "1.15.1"

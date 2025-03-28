@@ -30,6 +30,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
 use uuid::Uuid;
+use libsyncify::util::setup_logger;
 
 mod utils;
 
@@ -92,7 +93,7 @@ impl Commands {
     pub(crate) async fn run() {
         let cli = Commands::parse();
         if cli.verbose {
-            utils::setup_logger().unwrap();
+            setup_logger().unwrap();
         }
         let mut syncify = Syncify::new().await.unwrap();
 
