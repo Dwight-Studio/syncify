@@ -43,7 +43,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockWriteGuard};
 use uuid::Uuid;
 
 pub mod keyring;
@@ -84,11 +84,10 @@ pub struct StoreManager {
 }
 
 impl StoreManager {
-    pub async fn new() -> Result<Self, StoreError> {
+    pub fn new() -> Result<Self, StoreError> {
         // Create app dir (and parents)
         if !get_app_config_dir().exists() {
-            tokio::fs::create_dir_all(&get_app_config_dir())
-                .await
+            std::fs::create_dir_all(&get_app_config_dir())
                 .map_err(StoreError::IO)?;
         }
 
@@ -369,8 +368,9 @@ impl StoreManager {
     }
 
     /// Save the local and remote [`Provision`]s of a [`SharedDirectory`].
-    async fn flush_provisions(
+    fn flush_provisions(
         dir: &SharedDirectory,
+        inner: &RwLockWriteGuard<'_, InnerSharedDirectory>,
         local_table: &mut MultimapTable<'_, [u8; 16], Provision>,
         remote_table: &mut MultimapTable<'_, [u8; 16], Provision>,
     ) -> Result<(), StoreError> {
@@ -378,7 +378,7 @@ impl StoreManager {
             .remove_all(dir.uuid.as_bytes())
             .map_err(StoreError::Storage)?;
 
-        for (hash, expiration) in dir.read().await.local_provisions.iter() {
+        for (hash, expiration) in inner.local_provisions.iter() {
             let provision = Provision::local(*hash, *expiration);
             if !provision.is_expired() && local_table.insert(dir.uuid.as_bytes(), provision).is_err() {
                 error!("Unable to flush local provision {}", hash);
@@ -389,7 +389,7 @@ impl StoreManager {
             .remove_all(dir.uuid.as_bytes())
             .map_err(StoreError::Storage)?;
 
-        for (hash, table) in dir.read().await.remote_provisions.iter() {
+        for (hash, table) in inner.remote_provisions.iter() {
             for (node_id, expiration) in table {
                 let provision = Provision::remote(*node_id, *hash, *expiration);
                 if !provision.is_expired() && local_table.insert(dir.uuid.as_bytes(), provision).is_err() {
@@ -493,8 +493,8 @@ impl StoreManager {
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
 
                 inner.state.flush_in_table(&mut state_table)?;
-
-                Self::flush_provisions(dir, &mut local_provision_table, &mut remote_provisions_table).await?;
+                
+                Self::flush_provisions(dir, &inner, &mut local_provision_table, &mut remote_provisions_table)?;
 
                 if inner.state.trim() {
                     info!("Pruned state {}", uuid_string);
@@ -505,6 +505,8 @@ impl StoreManager {
         transaction.commit().map_err(StoreError::Commit)?;
 
         self.timestamp = Utc::now();
+        
+        info!("Save complete");
 
         Ok(())
     }

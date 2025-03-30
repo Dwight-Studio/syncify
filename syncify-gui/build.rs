@@ -20,42 +20,31 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use libsyncify::Syncify;
-use libsyncify::util::setup_logger;
-use relm4::{RelmApp};
-use tr::tr_init;
-use crate::error::Error;
-use crate::app::App;
-
-mod app;
-mod error;
-mod widget;
-
-mod icon_names {
-    include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
-}
-
 
 fn main() {
-    setup_logger().unwrap();
+    relm4_icons_build::bundle_icons(
+        // Name of the file that will be generated at `OUT_DIR`
+        "icon_names.rs",
+        // Optional app ID
+        Some("fr.dwightstudio.syncify"),
+        // Custom base resource path:
+        // * defaults to `/com/example/myapp` in this case if not specified explicitly
+        // * or `/org/relm4` if app ID was not specified either
+        None::<&str>,
+        // Directory with custom icons (if any)
+        None::<&str>,
+        // List of icons to include
+        [
+            "plus-large",
+            "menu-large",
+            "sentiment-dissatisfied",
+            "right-large",
+            "folder-remote",
+            "settings",
+            "update",
+            "check-round-outline",
+            "cross-large-circle-outline",
 
-    // Initialize Syncify
-    let result = Syncify::new();
-
-    // Initialize tr
-    tr_init!("/usr/share/locale");
-
-    match result {
-        Ok(syncify) => {
-            relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
-
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run_async::<App>(syncify)
-        }
-        
-        Err(e) => {
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run::<Error>(e)
-        }
-    }
+        ],
+    );
 }

@@ -20,42 +20,5 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use libsyncify::Syncify;
-use libsyncify::util::setup_logger;
-use relm4::{RelmApp};
-use tr::tr_init;
-use crate::error::Error;
-use crate::app::App;
-
-mod app;
-mod error;
-mod widget;
-
-mod icon_names {
-    include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
-}
-
-
-fn main() {
-    setup_logger().unwrap();
-
-    // Initialize Syncify
-    let result = Syncify::new();
-
-    // Initialize tr
-    tr_init!("/usr/share/locale");
-
-    match result {
-        Ok(syncify) => {
-            relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
-
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run_async::<App>(syncify)
-        }
-        
-        Err(e) => {
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run::<Error>(e)
-        }
-    }
-}
+pub mod overview;
+pub mod details;

@@ -95,7 +95,7 @@ impl Commands {
         if cli.verbose {
             setup_logger().unwrap();
         }
-        let mut syncify = Syncify::new().await.unwrap();
+        let mut syncify = Syncify::new().unwrap();
 
         match &cli.command {
             Subcommands::Sync => {

@@ -20,42 +20,46 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use libsyncify::Syncify;
-use libsyncify::util::setup_logger;
-use relm4::{RelmApp};
-use tr::tr_init;
-use crate::error::Error;
-use crate::app::App;
+use relm4::adw::prelude::NavigationPageExt;
+use relm4::prelude::*;
+use tr::tr;
+use uuid::Uuid;
+use libsyncify::SharedDirectory;
 
-mod app;
-mod error;
-mod widget;
-
-mod icon_names {
-    include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
+pub struct Details {
+    dir: SharedDirectory
 }
 
+#[derive(Debug)]
+pub enum DetailsMsg {}
 
-fn main() {
-    setup_logger().unwrap();
+#[derive(Debug)]
+pub enum DetailsOutput {
+    Remove(Uuid),
+}
 
-    // Initialize Syncify
-    let result = Syncify::new();
+//noinspection RsSortImplTraitMembers
+#[relm4::component(pub async)]
+impl AsyncComponent for Details {
+    type Init = SharedDirectory;
+    type Input = DetailsMsg;
+    type Output = DetailsOutput;
+    type CommandOutput = ();
 
-    // Initialize tr
-    tr_init!("/usr/share/locale");
-
-    match result {
-        Ok(syncify) => {
-            relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
-
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run_async::<App>(syncify)
+    view! {
+        #[name("page")]
+        adw::NavigationPage {
+            set_title: &tr!("{} - Details", model.dir.path().file_name().unwrap().to_string_lossy()),
         }
-        
-        Err(e) => {
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run::<Error>(e)
-        }
+    }
+
+    async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
+        let model = Self {
+            dir: init
+        };
+
+        let widgets = view_output!();
+
+        AsyncComponentParts { model, widgets }
     }
 }

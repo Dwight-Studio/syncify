@@ -84,8 +84,8 @@ pub struct Syncify {
 
 impl Syncify {
     /// Construct new instance.
-    pub async fn new() -> Result<Self, SyncifyError> {
-        let store = StoreManager::new().await.map_err(SyncifyError::Store)?;
+    pub fn new() -> Result<Self, SyncifyError> {
+        let store = StoreManager::new().map_err(SyncifyError::Store)?;
 
         Ok(Self {
             store: Arc::new(RwLock::new(store)),
