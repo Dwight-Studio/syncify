@@ -58,7 +58,7 @@ impl AsyncComponent for Details {
                         set_title: Some(&tr!("Overview")),
                         set_icon_name: Some(icon_names::FOLDER_VISITING),
                     },
-                    
+
                     #[name="history"]
                     add = &adw::Clamp {
                         // Nothing
@@ -66,7 +66,7 @@ impl AsyncComponent for Details {
                         set_title: Some(&tr!("History")),
                         set_icon_name: Some(icon_names::HISTORY_UNDO),
                     },
-                    
+
                     #[name="provision"]
                     add = &adw::Clamp {
                         // Nothing
@@ -74,7 +74,7 @@ impl AsyncComponent for Details {
                         set_title: Some(&tr!("Provision")),
                         set_icon_name: Some(icon_names::PACKAGE_X_GENERIC),
                     },
-                    
+
                     #[name="peers"]
                     add = &adw::Clamp {
                         // Nothing
