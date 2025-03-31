@@ -59,10 +59,8 @@ impl SimpleComponent for Error {
 
                     adw::PreferencesGroup {
                         adw::ActionRow {
-                            set_title: "Error",
-                            set_subtitle: &model.error.to_string(),
-                            set_subtitle_selectable: true,
-                            set_use_markup: false,
+                            set_title: &model.error.to_string(),
+                            set_title_selectable: true,
                             add_css_class: "monospace"
                         }
                     },

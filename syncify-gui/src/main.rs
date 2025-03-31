@@ -39,16 +39,15 @@ mod icon_names {
 fn main() {
     setup_logger().unwrap();
 
-    // Initialize Syncify
+    // Initialize
     let result = Syncify::new();
+    relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
 
     // Initialize tr
     tr_init!("/usr/share/locale");
 
     match result {
         Ok(syncify) => {
-            relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
-
             let app = RelmApp::new("fr.dwightstudio.syncify");
             app.run_async::<App>(syncify)
         }
