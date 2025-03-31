@@ -25,8 +25,10 @@ use libsyncify::SharedDirectory;
 use relm4::adw::prelude::*;
 use relm4::prelude::*;
 use relm4::{adw, gtk};
+use relm4::factory::FactoryView;
 use tr::tr;
 use uuid::Uuid;
+use crate::app::AppMsg;
 
 pub struct Overview {
     dir: SharedDirectory
@@ -35,15 +37,12 @@ pub struct Overview {
 #[derive(Debug)]
 pub enum OverviewMsg {}
 
-#[derive(Debug)]
-pub enum OverviewOutput {}
-
 //noinspection RsSortImplTraitMembers
 #[relm4::factory(pub async)]
 impl AsyncFactoryComponent for Overview {
     type Init = SharedDirectory;
     type Input = OverviewMsg;
-    type Output = OverviewOutput;
+    type Output = AppMsg;
     type CommandOutput = ();
     type ParentWidget = gtk::Box;
 
@@ -57,11 +56,15 @@ impl AsyncFactoryComponent for Overview {
                 add_suffix = &gtk::Image {
                     set_icon_name: Some(icon_names::RIGHT_LARGE)
                 },
+                
+                connect_activated[sender] => move |_| {
+                    sender.output(AppMsg::Open(uuid)).expect("failed to send output");
+                }
             },
 
             adw::ActionRow {
                 set_title: &tr!("Up to date"),
-                set_subtitle: &tr!("Last update {} minutes ago"),
+                set_subtitle: &tr!("Last update 5 minutes ago"),
 
                 add_prefix = &gtk::Image {
                     set_icon_name: Some(icon_names::CHECK_ROUND_OUTLINE),
@@ -73,6 +76,13 @@ impl AsyncFactoryComponent for Overview {
 
     async fn init_model(init: Self::Init, index: &DynamicIndex, sender: AsyncFactorySender<Self>) -> Self {
         Self { dir: init }
+    }
+
+    fn init_widgets(&mut self, index: &DynamicIndex, root: Self::Root, returned_widget: &<Self::ParentWidget as FactoryView>::ReturnedWidget, sender: AsyncFactorySender<Self>) -> Self::Widgets {
+        let uuid = self.dir.uuid();
+        let widgets = view_output!();
+        
+        widgets
     }
 }
 

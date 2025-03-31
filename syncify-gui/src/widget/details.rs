@@ -20,11 +20,10 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use relm4::adw::prelude::NavigationPageExt;
-use relm4::prelude::*;
-use tr::tr;
-use uuid::Uuid;
+use crate::app::AppMsg;
 use libsyncify::SharedDirectory;
+use relm4::adw::prelude::*;
+use relm4::prelude::*;
 
 pub struct Details {
     dir: SharedDirectory
@@ -33,23 +32,22 @@ pub struct Details {
 #[derive(Debug)]
 pub enum DetailsMsg {}
 
-#[derive(Debug)]
-pub enum DetailsOutput {
-    Remove(Uuid),
-}
-
 //noinspection RsSortImplTraitMembers
 #[relm4::component(pub async)]
 impl AsyncComponent for Details {
     type Init = SharedDirectory;
     type Input = DetailsMsg;
-    type Output = DetailsOutput;
+    type Output = AppMsg;
     type CommandOutput = ();
 
     view! {
         #[name("page")]
         adw::NavigationPage {
-            set_title: &tr!("{} - Details", model.dir.path().file_name().unwrap().to_string_lossy()),
+            set_title: &model.dir.path().file_name().unwrap().to_string_lossy(),
+            
+            adw::ToolbarView {
+                add_top_bar = &adw::HeaderBar,
+            }, 
         }
     }
 

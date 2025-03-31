@@ -20,18 +20,18 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::collections::HashMap;
-use relm4::{adw, gtk, view, AsyncComponentSender};
+use crate::icon_names;
+use crate::widget::details::Details;
+use crate::widget::overview::Overview;
+use libsyncify::Syncify;
+use log::warn;
+use relm4::adw::glib;
 use relm4::adw::prelude::*;
 use relm4::loading_widgets::LoadingWidgets;
 use relm4::prelude::*;
-use libsyncify::Syncify;
+use relm4::{AsyncComponentSender, adw, gtk, view};
+use std::collections::HashMap;
 use uuid::Uuid;
-use log::warn;
-use relm4::adw::glib;
-use crate::icon_names;
-use crate::widget::overview::{Overview};
-use crate::widget::details::{Details, DetailsOutput};
 
 pub struct App {
     syncify: Syncify,
@@ -42,8 +42,9 @@ pub struct App {
 #[derive(Debug)]
 pub enum AppMsg {
     Create,
+    Open(Uuid),
     Add(Uuid),
-    Remove(Uuid)
+    Remove(Uuid),
 }
 
 //noinspection RsSortImplTraitMembers
@@ -105,12 +106,10 @@ impl AsyncComponent for App {
     }
 
     async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
-
         // Overview
-        let mut overview_dirs = AsyncFactoryVecDeque::builder().launch_default().forward(
-            sender.input_sender(),
-            |output| match output {}
-        );
+        let mut overview_dirs = AsyncFactoryVecDeque::builder()
+            .launch_default()
+            .forward(sender.input_sender(), std::convert::identity);
 
         // Details
         let mut details_dirs = HashMap::new();
@@ -124,11 +123,7 @@ impl AsyncComponent for App {
                     dir.uuid(),
                     Details::builder()
                         .launch(dir.clone())
-                        .forward(
-                            sender.input_sender(),
-                            |output| match output {
-                                DetailsOutput::Remove(uuid) => AppMsg::Remove(uuid),
-                        })
+                        .forward(sender.input_sender(), std::convert::identity),
                 );
             }
         }
@@ -136,7 +131,7 @@ impl AsyncComponent for App {
         let model = Self {
             syncify: init,
             overview_dirs,
-            details_dirs
+            details_dirs,
         };
 
         let dirs_box = model.overview_dirs.widget();
@@ -169,39 +164,40 @@ impl AsyncComponent for App {
         Some(LoadingWidgets::new(root, spinner))
     }
 
-    async fn update_with_view(&mut self, widgets: &mut Self::Widgets, message: Self::Input, sender: AsyncComponentSender<Self>, root: &Self::Root) {
+    async fn update_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        message: Self::Input,
+        sender: AsyncComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
         let mut od_guard = self.overview_dirs.guard();
         match message {
-            AppMsg::Create => {
+            AppMsg::Create => {}
 
+            AppMsg::Open(uuid) => {
+                if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
+                    let controller = Details::builder().launch(dir.clone()).forward(sender.input_sender(), std::convert::identity);
+                    widgets.nav_view.push(controller.widget())
+                }
             }
 
             AppMsg::Add(uuid) => {
                 if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
                     od_guard.push_back(dir);
-
                 } else {
                     warn!("Cannot add directory: Not found");
                 }
             }
-            
+
             AppMsg::Remove(uuid) => {
                 // Remove overview
                 for i in 0..od_guard.len() {
                     if let Some(dir) = od_guard.get(i) {
                         if dir.is(uuid) {
                             od_guard.remove(i);
-                            break
+                            break;
                         }
-                    }
-                }
-
-                // Remove page
-                for (dir_uuid, controller) in &self.details_dirs {
-                    if &uuid == dir_uuid {
-                        widgets.nav_view.remove(controller.widget());
-                        self.details_dirs.remove(&uuid);
-                        break
                     }
                 }
             }
