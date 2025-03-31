@@ -54,13 +54,17 @@ impl SimpleComponent for Error {
                 set_icon_name: Some(icon_names::SENTIMENT_DISSATISFIED),
 
                 gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
                     set_spacing: 20,
 
-                    adw::ActionRow {
-                        set_title: "Error",
-                        set_subtitle: &model.error.to_string(),
-                        set_subtitle_selectable: true,
-                        set_use_markup: false,
+                    adw::PreferencesGroup {
+                        adw::ActionRow {
+                            set_title: "Error",
+                            set_subtitle: &model.error.to_string(),
+                            set_subtitle_selectable: true,
+                            set_use_markup: false,
+                            add_css_class: "monospace"
+                        }
                     },
 
                     gtk::Button {
