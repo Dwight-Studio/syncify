@@ -27,12 +27,14 @@ fn main() {
         "icon_names.rs",
         // Optional app ID
         Some("fr.dwightstudio.syncify"),
+        // Optional unique identifier (to prevent theming)
+        Some("syncify-"),
         // Custom base resource path:
         // * defaults to `/com/example/myapp` in this case if not specified explicitly
         // * or `/org/relm4` if app ID was not specified either
         None::<&str>,
         // Directory with custom icons (if any)
-        None::<&str>,
+        Some("rsc/icons"),
         // List of icons to include
         [
             "plus-large",

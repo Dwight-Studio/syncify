@@ -425,7 +425,7 @@ impl Value for Delta {
     {
         rkyv::from_bytes::<Delta, Error>(data).unwrap_or_else(|e| {
             error!("Failed to deserialize download job: {e}");
-            return Delta {
+            Delta {
                 parent: None,
                 hash: Hash::from_bytes([0u8; 32]),
                 signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
@@ -434,7 +434,7 @@ impl Value for Delta {
                     timestamp: Default::default(),
                 },
                 hash_tree: Void,
-            };
+            }
         })
     }
 
@@ -806,8 +806,13 @@ impl HashTree {
         for item in content {
             match item {
                 Void => {}
-                File { name, hash, .. } | Directory { name, hash, .. } => {
+                Directory { name, hash, .. } => {
                     data.extend(name.as_bytes());
+                    data.extend(hash.as_bytes());
+                }
+                File { name, hash, size, .. } => {
+                    data.extend(name.as_bytes());
+                    data.extend(size.to_be_bytes());
                     data.extend(hash.as_bytes());
                 }
             }

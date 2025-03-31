@@ -15,11 +15,11 @@ publish = false
 libsyncify = { path= "../libsyncify" }
 tokio = "1.44.0"
 relm4 = { version = "0.9.1", features = ["libadwaita", "gnome_47"] }
-#relm4 = {git = "https://github.com/Dwight-Studio/Relm4.git", branch = "factory-navigation-view", features = ["libadwaita", "gnome_47"]}
 relm4-icons = { version = "0.10.0-beta.2"}
 uuid = { version = "1.15.1", features = ["v4"] }
 log = "0.4.26"
 tr = "0.1.10"
 
 [build-dependencies]
-relm4-icons-build = "0.10.0-beta.2"
+#relm4-icons-build = "0.10.0-beta.2"
+relm4-icons-build = { git = "https://github.com/Dwight-Studio/relm4-icons.git" }

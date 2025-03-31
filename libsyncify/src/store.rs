@@ -96,7 +96,7 @@ impl StoreManager {
         let secret_key = Self::load_secret_key(&keyring);
         let cache = Self::build_cache(&keyring, database_file.as_path())?;
         let (jobs, active_jobs) = Self::load_jobs(database_file.as_path(), Utc::now() - JOBS_EXPIRATION)?;
-
+        
         Ok(StoreManager {
             timestamp: Utc::now(),
             cache,
