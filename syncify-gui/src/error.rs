@@ -48,31 +48,36 @@ impl SimpleComponent for Error {
             set_title: Some("Syncify error"),
             set_resizable: false,
 
-            adw::StatusPage {
-                set_title: "Error",
-                set_description: Some("Syncify encountered an error during launch:"),
-                set_icon_name: Some(icon_names::SENTIMENT_DISSATISFIED),
+            adw::ToolbarView {
+                add_top_bar = &adw::HeaderBar {
+                    set_show_title: true,
+                },
+                adw::StatusPage {
+                    set_title: "Error",
+                    set_description: Some("Syncify encountered an error during launch:"),
+                    set_icon_name: Some(icon_names::SENTIMENT_DISSATISFIED),
 
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_spacing: 20,
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_spacing: 20,
 
-                    adw::PreferencesGroup {
-                        adw::ActionRow {
-                            set_use_markup: false,
-                            set_title: &model.error.to_string(),
-                            set_title_selectable: true,
-                            add_css_class: "monospace"
+                        adw::PreferencesGroup {
+                            adw::ActionRow {
+                                set_use_markup: false,
+                                set_title: &model.error.to_string(),
+                                set_title_selectable: true,
+                                add_css_class: "monospace"
+                            }
+                        },
+
+                        gtk::Button {
+                            set_label: "Close",
+                            add_css_class: "destructive-action",
+                            add_css_class: "pill",
+                            set_halign: Align::Center,
+
+                            connect_clicked => ErrorMsg::Close
                         }
-                    },
-
-                    gtk::Button {
-                        set_label: "Close",
-                        add_css_class: "destructive-action",
-                        add_css_class: "pill",
-                        set_halign: Align::Center,
-
-                        connect_clicked => ErrorMsg::Close
                     }
                 }
             }
