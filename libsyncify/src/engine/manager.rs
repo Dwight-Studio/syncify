@@ -25,7 +25,7 @@ use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
-use crate::engine::protocol::{SyncifyConnection, SyncifyProtocol};
+use crate::engine::protocol::SyncifyConnection;
 use crate::engine::state::{HashTree, Mutation};
 use blake3::Hash;
 use chrono::{DateTime, Utc};
@@ -36,6 +36,7 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use iroh::Endpoint;
 use sync::SyncManager;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -60,7 +61,7 @@ impl Manager {
     pub async fn new(
         dir: SharedDirectory,
         topic: GossipTopic,
-        protocol: SyncifyProtocol,
+        ep: Endpoint,
         downloader: DownloaderHandle,
     ) -> Self {
         info!("Initializing directory manager for {}", dir.uuid());
@@ -96,7 +97,7 @@ impl Manager {
             rx,
             dir.clone(),
             gossip_tx,
-            protocol,
+            ep,
             downloader,
             handle.clone(),
         )));
@@ -125,7 +126,7 @@ impl Manager {
         mut rx: mpsc::Receiver<ManagerEvent>,
         dir: SharedDirectory,
         topic: GossipSender,
-        protocol: SyncifyProtocol,
+        ep: Endpoint,
         downloader: DownloaderHandle,
         handle: ManagerHandle,
     ) {
@@ -141,8 +142,8 @@ impl Manager {
         };
 
         let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone()).await;
-        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), protocol.clone(), handle.clone()).await;
-        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), protocol.clone()).await;
+        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), ep.clone(), handle.clone()).await;
+        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), ep.clone()).await;
 
         // Process the event
         while let Some(event) = rx.recv().await {
@@ -255,6 +256,6 @@ pub enum ManagerEvent {
 }
 
 pub enum SyncEvent {
-    RequestSync(SyncifyConnection, blake3::Hash),
+    RequestSync(SyncifyConnection, Hash),
     TriggerSync(Option<OutgoingSync>),
 }

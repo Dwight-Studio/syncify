@@ -57,11 +57,13 @@ impl AsyncComponent for App {
 
     view! {
         #[name = "main_window"]
-        adw::ApplicationWindow {
-            set_title: Some("Syncify"),
-            set_default_width: 960,
-            set_default_height: 540,
+        adw::ApplicationWindow::builder()
+            .title("Syncify")
+            .default_width(960)
+            .default_height(540)
+            .build()
             //set_hide_on_close: true,
+        {
 
             adw::ToastOverlay {
                 #[name = "nav_view"]

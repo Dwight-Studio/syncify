@@ -24,7 +24,6 @@ use blake3::Hash;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::Signature;
 use rkyv::{Archive, Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use fern::colors::ColoredLevelConfig;
 

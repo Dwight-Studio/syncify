@@ -22,7 +22,6 @@
  */
 
 use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
-use crate::engine::job::Provision;
 use crate::engine::manager::ManagerHandle;
 use crate::engine::state::State;
 use crate::engine::{Engine, EngineError};

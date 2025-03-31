@@ -29,34 +29,47 @@ use rkyv::rancor::Error;
 use rkyv::util::AlignedVec;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::Ordering;
+use uuid::Uuid;
 
 /// A sync job.
 #[derive(Archive, Serialize, Deserialize, Clone, Debug)]
 pub struct DownloadJob {
+    uuid: Uuid,
     path: String,
     #[rkyv(with = crate::util::HashDef)]
     hash: Hash,
+    size: u64,
     #[rkyv(with = crate::util::DateTimeDef)]
     issued: DateTime<Utc>,
     state: JobState,
 }
 
 impl DownloadJob {
-    pub fn new(path: String, hash: Hash, issued: DateTime<Utc>, state: JobState) -> Self {
+    pub fn new(uuid: Uuid, path: String, hash: Hash, size: u64, issued: DateTime<Utc>, state: JobState) -> Self {
         Self {
+            uuid,
             path,
             hash,
+            size,
             issued,
             state,
         }
     }
 
+    pub fn uuid(&self) -> &Uuid {
+        &self.uuid
+    }
+    
     pub fn path(&self) -> &str {
         &self.path
     }
 
     pub fn hash(&self) -> &Hash {
         &self.hash
+    }
+    
+    pub fn size(&self) -> &u64 {
+        &self.size
     }
 
     pub fn issued(&self) -> &DateTime<Utc> {
@@ -65,6 +78,9 @@ impl DownloadJob {
 
     pub fn state(&self) -> &JobState {
         &self.state
+    }
+    pub fn set_state(&mut self, state: JobState) {
+        self.state = state;
     }
 }
 
@@ -83,12 +99,14 @@ impl Value for DownloadJob {
     {
         rkyv::from_bytes::<DownloadJob, Error>(data).unwrap_or_else(|e| {
             error!("Failed to deserialize Download Job: {e}");
-            return DownloadJob::new(
+            DownloadJob::new(
+                Uuid::default(),
                 "Error".to_string(),
                 Hash::from_bytes([0u8; 32]),
+                0,
                 Utc::now(),
                 JobState::Error("Serialization".to_string()),
-            );
+            )
         })
     }
 
@@ -110,10 +128,17 @@ impl Value for DownloadJob {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
+#[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OngoingStatus {
+    pub progress: f32,
+    pub(crate) curr_chunk_number: u64,
+    pub(crate) failed_chunks: Vec<u64>
+}
+
+#[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum JobState {
     Pending,
-    Ongoing(f32),
+    Ongoing(OngoingStatus),
     Done(#[rkyv(with = crate::util::DateTimeDef)] DateTime<Utc>),
     Error(String),
 }

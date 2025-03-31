@@ -52,7 +52,7 @@ pub struct Engine {
     store: Arc<RwLock<StoreManager>>,
     router: Router,
     gossip: Gossip,
-    protocol: SyncifyProtocol,
+    ep: Endpoint,
     downloader: Downloader,
     managers: HashMap<Uuid, Manager>,
 }
@@ -89,12 +89,13 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let downloader = Downloader::new(store.clone());
+        let downloader = Downloader::new(store.clone(), builder.endpoint().clone());
 
-        let protocol = SyncifyProtocol::new(store.clone(), builder.endpoint().clone(), downloader.clone());
+        let protocol = SyncifyProtocol::new(store.clone(), downloader.clone());
 
         let mut engine = Self {
             store: store.clone(),
+            ep: builder.endpoint().clone(),
             router: builder
                 .accept(SYNCIFY_ALPN, protocol.clone())
                 .accept(iroh_gossip::ALPN, gossip.clone())
@@ -102,7 +103,6 @@ impl Engine {
                 .await
                 .map_err(EngineError::Router)?,
             gossip,
-            protocol,
             downloader,
             managers: HashMap::new(),
         };
@@ -152,7 +152,7 @@ impl Engine {
                 .map_err(EngineError::Gossip)?;
 
             // Create manager
-            let manager = Manager::new(dir.clone(), topic, self.protocol.clone(), self.downloader.clone()).await;
+            let manager = Manager::new(dir.clone(), topic, self.ep.clone(), self.downloader.clone()).await;
 
             self.managers.insert(dir.uuid, manager);
             Ok(())

@@ -22,11 +22,10 @@
  */
 use crate::SharedDirectory;
 use crate::engine::manager::{ManagerEvent, SyncEvent};
-use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
-use iroh::NodeId;
+use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::GossipSender;
 use log::{info, warn};
 use std::time::Duration;
@@ -37,12 +36,12 @@ pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct SyncManager {
     topic: GossipSender,
     dir: SharedDirectory,
-    protocol: SyncifyProtocol,
+    ep: Endpoint,
 }
 
 impl SyncManager {
-    pub async fn new(topic: GossipSender, dir: SharedDirectory, protocol: SyncifyProtocol) -> Self {
-        Self { topic, dir, protocol }
+    pub async fn new(topic: GossipSender, dir: SharedDirectory, ep: Endpoint) -> Self {
+        Self { topic, dir, ep }
     }
 
     pub async fn handle_events(&mut self, sync_event: SyncEvent) {
@@ -70,9 +69,9 @@ impl SyncManager {
         for node in neighbors {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.protocol.clone());
+                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.ep.clone());
 
-                if self.protocol.endpoint().node_id() > node_id {
+                if self.ep.node_id() > node_id {
                     Self::start_sync(outgoing).await;
                 } else {
                     let dir = self.dir.clone();

@@ -25,7 +25,7 @@ pub mod incoming_sync;
 pub mod outgoing_sync;
 
 use crate::SharedDirectory;
-use crate::engine::downloader::{CHUNK_SIZE, DownloaderEvent, DownloaderHandle};
+use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::manager::ManagerEvent::Sync;
 use crate::engine::manager::SyncEvent;
 use crate::engine::state::State;
@@ -66,7 +66,7 @@ pub(crate) struct HeaderPacket {
 /// Enumeration representing the data that can be transferred using SyncifyConnection
 pub enum SyncifyPacket {
     Sync(SyncPacket),
-    Blobs(Box<BlobsPacket>),
+    Blobs(BlobsPacket),
 }
 
 #[repr(u8)]
@@ -80,38 +80,23 @@ pub enum SyncPacket {
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub enum BlobsPacket {
-    BlobRequest { file_hash: [u8; 32], from: u64, to: u64 } = 3,
-    Blob { chunk: Box<[u8; CHUNK_SIZE]> } = 4,
+    BlobRequest { file_hash: [u8; 32], chunk_index: u64 } = 3,
+    Blob { chunk: Vec<u8> } = 4,
 }
 
 #[derive(Clone)]
 /// The SyncifyProtocol struct, used to connect a node to this protocol
 pub struct SyncifyProtocol {
     store: Arc<RwLock<StoreManager>>,
-    endpoint: Endpoint,
     downloader: DownloaderHandle,
 }
 
 impl SyncifyProtocol {
-    pub fn new(store: Arc<RwLock<StoreManager>>, endpoint: Endpoint, downloader: DownloaderHandle) -> Self {
+    pub fn new(store: Arc<RwLock<StoreManager>>, downloader: DownloaderHandle) -> Self {
         Self {
             store,
-            endpoint,
             downloader,
         }
-    }
-
-    /// Connect to a node using `node_id`.
-    ///
-    /// # Return
-    ///
-    /// Returns a [`SyncifyConnection`] if successful.
-    pub async fn connect(&self, node_id: NodeId) -> Result<SyncifyConnection, anyhow::Error> {
-        SyncifyConnection::open_new(node_id, self.endpoint.clone()).await
-    }
-
-    pub fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
     }
 }
 
@@ -171,13 +156,13 @@ impl ProtocolHandler for SyncifyProtocol {
                     }
                 }
                 SyncifyPacket::Blobs(blobs_packet) => {
-                    if let BlobsPacket::BlobRequest { file_hash, from, to } = *blobs_packet {
+                    if let BlobsPacket::BlobRequest { file_hash, chunk_index } = blobs_packet {
                         downloader
                             .send(DownloaderEvent::Supply {
+                                conn: conn.clone(),
                                 uuid: dir.uuid,
                                 file_hash: Hash::from(file_hash),
-                                from,
-                                to,
+                                chunk_index
                             })
                             .await;
                     }
@@ -196,8 +181,7 @@ pub struct SyncifyConnection {
 }
 
 impl SyncifyConnection {
-    /// Use SyncifyProtocol.connect to get a SyncifyConnection
-    async fn open_new(node_id: NodeId, endpoint: Endpoint) -> Result<Self, anyhow::Error> {
+    pub async fn connect(node_id: NodeId, endpoint: Endpoint) -> Result<Self, anyhow::Error> {
         let connection = endpoint.connect(NodeAddr::new(node_id), SYNCIFY_ALPN).await?;
 
         Ok(Self { connection })

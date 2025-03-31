@@ -24,9 +24,9 @@ use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::state::{HashTree, Mutation};
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::Utc;
 use iroh_gossip::net::GossipSender;
-use log::{debug, error, info};
+use log::{debug, error};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
@@ -154,12 +154,14 @@ impl FileSystemManager {
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify {
-                    file_path, file_hash, ..
+                    file_path, file_hash, file_size, ..
                 } => {
                     // Creating DownloadJob
                     let job_ref = Arc::new(RwLock::new(DownloadJob::new(
+                        self.dir.uuid,
                         self.dir.path.join(file_path).to_string_lossy().to_string(),
                         *file_hash,
+                        *file_size,
                         Utc::now(),
                         JobState::Pending,
                     )));

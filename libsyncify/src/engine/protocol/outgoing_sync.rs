@@ -23,10 +23,10 @@
 use crate::SharedDirectory;
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
-use crate::engine::protocol::{SyncPacket, SyncifyConnection, SyncifyPacket, SyncifyProtocol};
+use crate::engine::protocol::{SyncPacket, SyncifyConnection, SyncifyPacket};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use blake3::Hash;
-use iroh::NodeId;
+use iroh::{Endpoint, NodeId};
 use log::{info, warn};
 
 // TODO: Add provision database sync
@@ -44,17 +44,17 @@ pub struct OutgoingSync {
     state: OutgoingState,
     dir: SharedDirectory,
     node_id: NodeId,
-    protocol: SyncifyProtocol,
+    ep: Endpoint,
     connection: Option<SyncifyConnection>,
 }
 
 impl OutgoingSync {
-    pub fn new(dir: SharedDirectory, node_id: NodeId, protocol: SyncifyProtocol) -> Self {
+    pub fn new(dir: SharedDirectory, node_id: NodeId, ep: Endpoint) -> Self {
         Self {
             state: OutgoingState::Connecting,
             dir,
             node_id,
-            protocol,
+            ep,
             connection: None,
         }
     }
@@ -67,7 +67,7 @@ impl FiniteStateMachine for OutgoingSync {
         match &self.state {
             OutgoingState::Connecting => {
                 info!("Outgoing: Requesting sync to {}", self.node_id);
-                if let Ok(conn) = self.protocol.connect(self.node_id).await {
+                if let Ok(conn) = SyncifyConnection::connect(self.node_id, self.ep.clone()).await {
                     self.connection = Some(conn);
                     Ok(OutgoingState::SendingRequest)
                 } else {

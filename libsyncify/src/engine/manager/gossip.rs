@@ -22,16 +22,14 @@
  */
 use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
-use crate::engine::job::Provision;
 use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
-use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::state::HashTree;
-use blake3::{Hash, hash};
+use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
-use iroh::NodeId;
+use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
@@ -69,7 +67,7 @@ pub struct Message {
 pub struct GossipManager {
     topic: GossipSender,
     dir: SharedDirectory,
-    protocol: SyncifyProtocol,
+    ep: Endpoint,
     handle: ManagerHandle,
 }
 
@@ -77,13 +75,13 @@ impl GossipManager {
     pub async fn new(
         topic: GossipSender,
         dir: SharedDirectory,
-        protocol: SyncifyProtocol,
+        ep: Endpoint,
         handle: ManagerHandle,
     ) -> Self {
         Self {
             topic,
             dir,
-            protocol,
+            ep: ep,
             handle,
         }
     }
@@ -144,14 +142,13 @@ impl GossipManager {
                                     Payload::Provision { hash, node_id, expire } => {
                                         if let Ok(node_id) = NodeId::from_bytes(&node_id) {
                                             let hash = Hash::from_bytes(hash);
-
-                                            self.dir
-                                                .write()
-                                                .await
-                                                .remote_provisions
-                                                .entry(hash)
-                                                .or_insert(HashMap::new())
-                                                .insert(node_id, expire);
+                                            
+                                            downloader.send(DownloaderEvent::RemoteProvisionUpdate(
+                                                self.dir.uuid,
+                                                node_id,
+                                                hash,
+                                                expire
+                                            )).await;
                                         } else {
                                             warn!("Invalid NodeID!");
                                         }
@@ -175,7 +172,7 @@ impl GossipManager {
     pub async fn confirm_local_provision(&self, hash: Hash, expiration: DateTime<Utc>) {
         if let Ok(resp_msg) = self.create_message(Payload::Provision {
             hash: *hash.as_bytes(),
-            node_id: *self.protocol.endpoint().node_id().as_bytes(),
+            node_id: *self.ep.node_id().as_bytes(),
             expire: expiration,
         }) {
             if self.topic.broadcast(resp_msg).await.is_err() {
