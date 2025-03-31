@@ -41,6 +41,7 @@ fn main() {
             "menu-large",
             "sentiment-dissatisfied",
             "right-large",
+            "folder-open",
             "folder-visiting",
             "history-undo",
             "package-x-generic",

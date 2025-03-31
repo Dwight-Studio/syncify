@@ -74,7 +74,11 @@ impl FromStr for Link {
 
     //noinspection RsTraitObligations
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let payload = s.split_at(LINK_PREFIX.len()).1;
+        let payload = if let Some(a) = s.split_at_checked(LINK_PREFIX.len()) {
+            a.1
+        } else {
+            return Err(SyncifyError::LinkParseError(String::from("Invalid Link")));
+        };
 
         if payload.is_empty() {
             return Err(SyncifyError::LinkParseError(String::from("Invalid Link")));

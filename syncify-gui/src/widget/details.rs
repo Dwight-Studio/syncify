@@ -48,6 +48,7 @@ impl AsyncComponent for Details {
             set_title: &model.dir.path().file_name().unwrap().to_string_lossy(),
             
             adw::ToolbarView {
+                
                 #[name="stack"]
                 adw::ViewStack {
 

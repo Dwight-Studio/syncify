@@ -90,4 +90,8 @@ impl Overview {
     pub fn is(&self, uuid: Uuid) -> bool {
         self.dir.uuid() == uuid
     }
+    
+    pub fn name(&self) -> String {
+        self.dir.name()
+    }
 }

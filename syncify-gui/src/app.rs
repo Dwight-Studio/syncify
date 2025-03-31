@@ -25,25 +25,28 @@ use crate::widget::details::Details;
 use crate::widget::overview::Overview;
 use libsyncify::Syncify;
 use log::warn;
-use relm4::adw::glib;
 use relm4::adw::prelude::*;
 use relm4::loading_widgets::LoadingWidgets;
 use relm4::prelude::*;
 use relm4::{AsyncComponentSender, adw, gtk, view};
 use std::collections::HashMap;
+use relm4::adw::Toast;
+use tr::tr;
 use uuid::Uuid;
+use crate::widget::create::CreateDialog;
 
 pub struct App {
     syncify: Syncify,
+    create_dialog: AsyncController<CreateDialog>,
     overview_dirs: AsyncFactoryVecDeque<Overview>,
     details_dirs: HashMap<Uuid, AsyncController<Details>>,
 }
 
 #[derive(Debug)]
 pub enum AppMsg {
-    Create,
-    Open(Uuid),
+    OpenCreateDialog,
     Add(Uuid),
+    Open(Uuid),
     Remove(Uuid),
 }
 
@@ -64,29 +67,32 @@ impl AsyncComponent for App {
             .build()
             //set_hide_on_close: true,
         {
+            
+            #[name = "nav_view"]
+            adw::NavigationView {
 
-            adw::ToastOverlay {
-                #[name = "nav_view"]
-                adw::NavigationView {
+                #[name = "main_page"]
+                adw::NavigationPage {
+                    set_title: "Main page",
+                    set_tag: Some("main"),
 
-                    #[name = "main_page"]
-                    adw::NavigationPage {
-                        set_title: "Main page",
-                        set_tag: Some("main"),
+                    adw::ToolbarView {
+                        add_top_bar = &adw::HeaderBar {
+                            set_show_title: true,
 
-                        adw::ToolbarView {
-                            add_top_bar = &adw::HeaderBar {
-                                set_show_title: true,
+                            pack_start = &gtk::Button {
+                                set_icon_name: icon_names::PLUS_LARGE,
 
-                                pack_start = &gtk::Button {
-                                    set_icon_name: icon_names::PLUS_LARGE,
-                                },
-
-                                pack_end = &gtk::Button {
-                                    set_icon_name: icon_names::MENU_LARGE,
-                                }
+                                connect_clicked => AppMsg::OpenCreateDialog,
                             },
 
+                            pack_end = &gtk::Button {
+                                set_icon_name: icon_names::MENU_LARGE,
+                            }
+                        },
+
+                        #[name = "toast"]
+                        adw::ToastOverlay {
                             adw::Clamp {
                                 set_maximum_size: 600,
                                 set_tightening_threshold: 400,
@@ -108,6 +114,9 @@ impl AsyncComponent for App {
     }
 
     async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
+        // Create dialog
+        let create_dialog = CreateDialog::builder().launch(init.clone()).forward(sender.input_sender(), std::convert::identity);
+
         // Overview
         let mut overview_dirs = AsyncFactoryVecDeque::builder()
             .launch_default()
@@ -132,6 +141,7 @@ impl AsyncComponent for App {
 
         let model = Self {
             syncify: init,
+            create_dialog,
             overview_dirs,
             details_dirs,
         };
@@ -143,7 +153,7 @@ impl AsyncComponent for App {
         widgets
             .main_window
             .bind_property("title", &widgets.main_page, "title")
-            .flags(glib::BindingFlags::SYNC_CREATE)
+            .flags(adw::glib::BindingFlags::SYNC_CREATE)
             .build();
 
         AsyncComponentParts { model, widgets }
@@ -175,7 +185,9 @@ impl AsyncComponent for App {
     ) {
         let mut od_guard = self.overview_dirs.guard();
         match message {
-            AppMsg::Create => {}
+            AppMsg::OpenCreateDialog => {
+                self.create_dialog.widget().present(Some(&widgets.main_window));
+            }
 
             AppMsg::Open(uuid) => {
                 if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
@@ -186,10 +198,18 @@ impl AsyncComponent for App {
 
             AppMsg::Add(uuid) => {
                 if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
+                    widgets.toast.add_toast(
+                        Toast::builder()
+                            .title(tr!("Directory '{}' has been added", dir.name()))
+                            .timeout(5)
+                            .build()
+                    );
                     od_guard.push_back(dir);
                 } else {
                     warn!("Cannot add directory: Not found");
                 }
+
+                self.create_dialog.widget().close();
             }
 
             AppMsg::Remove(uuid) => {
@@ -197,6 +217,12 @@ impl AsyncComponent for App {
                 for i in 0..od_guard.len() {
                     if let Some(dir) = od_guard.get(i) {
                         if dir.is(uuid) {
+                            widgets.toast.add_toast(
+                                Toast::builder()
+                                    .title(tr!("Directory '{}' has been removed", dir.name()))
+                                    .timeout(5)
+                                    .build()
+                                );
                             od_guard.remove(i);
                             break;
                         }

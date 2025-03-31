@@ -23,6 +23,7 @@
 use relm4::{adw, gtk, ComponentParts, ComponentSender, SimpleComponent};
 use relm4::adw::prelude::*;
 use relm4::gtk::Align;
+use tr::tr;
 use libsyncify::SyncifyError;
 use crate::icon_names;
 
@@ -45,7 +46,7 @@ impl SimpleComponent for Error {
     view! {
         #[name = "main_window"]
         adw::ApplicationWindow {
-            set_title: Some("Syncify error"),
+            set_title: Some(&tr!("Syncify error")),
             set_resizable: false,
 
             adw::ToolbarView {
@@ -53,8 +54,8 @@ impl SimpleComponent for Error {
                     set_show_title: true,
                 },
                 adw::StatusPage {
-                    set_title: "Error",
-                    set_description: Some("Syncify encountered an error during launch:"),
+                    set_title: &tr!("Error"),
+                    set_description: Some(&tr!("Syncify encountered an error during launch:")),
                     set_icon_name: Some(icon_names::SENTIMENT_DISSATISFIED),
 
                     gtk::Box {
@@ -71,7 +72,7 @@ impl SimpleComponent for Error {
                         },
 
                         gtk::Button {
-                            set_label: "Close",
+                            set_label: &tr!("Close"),
                             add_css_class: "destructive-action",
                             add_css_class: "pill",
                             set_halign: Align::Center,

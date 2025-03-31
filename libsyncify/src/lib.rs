@@ -75,10 +75,11 @@ pub enum SharedDirPermission {
 
 pub const APP_NAME: &str = "Syncify";
 
+#[derive(Clone)]
 /// Entry point of the library.
 pub struct Syncify {
     store: Arc<RwLock<StoreManager>>,
-    engine: Option<Engine>,
+    engine: Option<Arc<RwLock<Engine>>>,
 }
 
 impl Syncify {
@@ -94,7 +95,8 @@ impl Syncify {
 
     /// Initialize new engine and start syncing.
     pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
-        self.engine = Some(Engine::new(self.store.clone()).await.map_err(SyncifyError::Engine)?);
+        let engine = Engine::new(self.store.clone()).await.map_err(SyncifyError::Engine)?;
+        self.engine = Some(Arc::new(RwLock::new(engine)));
         Ok(())
     }
 
@@ -103,7 +105,7 @@ impl Syncify {
         let old_engine = self.engine.take();
 
         if let Some(engine) = old_engine {
-            engine.shutdown().await;
+            engine.write().await.shutdown().await;
         }
 
         // Flushing store
@@ -180,6 +182,8 @@ impl Syncify {
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
             engine
+                .write()
+                .await
                 .add_watched_directory(self.store.clone(), &dir)
                 .await
                 .map_err(SyncifyError::Watcher)?;
@@ -203,6 +207,8 @@ impl Syncify {
             // If the engine is available, add the directory to watched directory
             if let Some(engine) = &mut self.engine {
                 engine
+                    .write()
+                    .await
                     .remove_watched_directory(&dir)
                     .await
                     .map_err(SyncifyError::Watcher)?;
@@ -293,6 +299,8 @@ impl Syncify {
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
             engine
+                .write()
+                .await
                 .add_watched_directory(self.store.clone(), &dir)
                 .await
                 .map_err(SyncifyError::Watcher)?;
@@ -318,6 +326,10 @@ impl SharedDirectory {
 
     pub fn path(&self) -> PathBuf {
         self.path.clone()
+    }
+
+    pub fn name(&self) -> String {
+        self.path.file_name().unwrap().to_string_lossy().into_owned()
     }
 
     pub fn is_read_only(&self) -> bool {

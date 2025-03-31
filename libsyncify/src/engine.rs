@@ -123,10 +123,10 @@ impl Engine {
     }
 
     /// Gracefully shutdown.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&mut self) {
         info!("Shutting down engine");
         self.router.shutdown().await.unwrap();
-        for ref mut entries in self.managers {
+        for ref mut entries in &mut self.managers {
             let (_, manager) = entries;
             manager.shutdown().await;
         }

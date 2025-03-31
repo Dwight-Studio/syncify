@@ -20,7 +20,8 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use libsyncify::Syncify;
+use log::error;
+use libsyncify::{Syncify, SyncifyError};
 use libsyncify::util::setup_logger;
 use relm4::{RelmApp};
 use tr::tr_init;
@@ -47,14 +48,27 @@ fn main() {
     tr_init!("/usr/share/locale");
 
     match result {
-        Ok(syncify) => {
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run_async::<App>(syncify)
+        Ok(mut syncify) => {
+            match tokio::runtime::Runtime::new().unwrap().block_on(syncify.start_sync()) {
+                Ok(()) => {
+                    let app = RelmApp::new("fr.dwightstudio.syncify");
+                    app.run_async::<App>(syncify)
+                }
+                
+                Err(e) => {
+                    error(e);
+                }
+            }
+            
         }
         
         Err(e) => {
-            let app = RelmApp::new("fr.dwightstudio.syncify");
-            app.run::<Error>(e)
+            error(e);
         }
     }
+}
+
+fn error(e: SyncifyError) {
+    let app = RelmApp::new("fr.dwightstudio.syncify");
+    app.run::<Error>(e)
 }
