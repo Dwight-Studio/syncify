@@ -35,8 +35,10 @@ use log::{info, warn};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 pub mod downloader;
@@ -47,9 +49,12 @@ pub mod state;
 
 /// Download cache directory name.
 pub const DOWNLOAD_DIRNAME: &str = "download";
+/// Auto flush period.
+pub const AUTO_FLUSH_PERIOD: Duration = Duration::from_secs(30 * 60);
 
 pub struct Engine {
     store: Arc<RwLock<StoreManager>>,
+    store_flush_handle: JoinHandle<()>,
     router: Router,
     gossip: Gossip,
     protocol: SyncifyProtocol,
@@ -93,8 +98,11 @@ impl Engine {
 
         let protocol = SyncifyProtocol::new(store.clone(), builder.endpoint().clone(), downloader.clone());
 
+        let store_flush_handle = tokio::task::spawn(Self::auto_flush(store.clone()));
+        
         let mut engine = Self {
             store: store.clone(),
+            store_flush_handle,
             router: builder
                 .accept(SYNCIFY_ALPN, protocol.clone())
                 .accept(iroh_gossip::ALPN, gossip.clone())
@@ -122,6 +130,7 @@ impl Engine {
             let (_, manager) = entries;
             manager.shutdown().await;
         }
+        self.store_flush_handle.abort();
     }
 
     /// Create [`Manager`] manager for a [`SharedDirectory`].
@@ -168,6 +177,16 @@ impl Engine {
             Ok(())
         } else {
             Err(AlreadyWatched(dir.uuid()))
+        }
+    }
+    
+    async fn auto_flush(store: Arc<RwLock<StoreManager>>) {
+        loop {
+            tokio::time::sleep(AUTO_FLUSH_PERIOD).await;
+            info!("Auto-flushing store...");
+            if let Err(e) = store.write().await.flush().await {
+                warn!("Failed to flush store: {}", e);
+            }
         }
     }
 }

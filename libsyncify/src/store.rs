@@ -23,14 +23,13 @@
 use crate::engine::job::{DownloadJob, JobState, Provision};
 use crate::engine::state::{Delta, State};
 use crate::store::keyring::{Keyring, Keys};
-use crate::{InnerSharedDirectory, SharedDirectory, get_app_cache_dir, get_app_config_dir};
+use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
 use chrono::{DateTime, TimeDelta, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use iroh::RelayMode::Default;
 use iroh::SecretKey;
 use iroh_base::{NodeId, PublicKey};
 use log::{error, info, warn};
@@ -97,7 +96,7 @@ impl StoreManager {
         let secret_key = Self::load_secret_key(&keyring);
         let cache = Self::build_cache(&keyring, database_file.as_path())?;
         let (jobs, active_jobs) = Self::load_jobs(database_file.as_path(), Utc::now() - JOBS_EXPIRATION)?;
-
+        
         Ok(StoreManager {
             timestamp: Utc::now(),
             cache,
