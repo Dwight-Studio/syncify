@@ -39,12 +39,14 @@ fn main() {
             "menu-large",
             "sentiment-dissatisfied",
             "right-large",
-            "folder-remote",
+            "folder-visiting",
+            "history-undo",
+            "package-x-generic",
+            "people",
             "settings",
             "update",
             "check-round-outline",
             "cross-large-circle-outline",
-
         ],
     );
 }

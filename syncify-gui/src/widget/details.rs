@@ -24,6 +24,8 @@ use crate::app::AppMsg;
 use libsyncify::SharedDirectory;
 use relm4::adw::prelude::*;
 use relm4::prelude::*;
+use tr::tr;
+use crate::icon_names;
 
 pub struct Details {
     dir: SharedDirectory
@@ -46,7 +48,49 @@ impl AsyncComponent for Details {
             set_title: &model.dir.path().file_name().unwrap().to_string_lossy(),
             
             adw::ToolbarView {
-                add_top_bar = &adw::HeaderBar,
+                #[name="stack"]
+                adw::ViewStack {
+
+                    #[name="overview"]
+                    add = &adw::Clamp {
+                        // Nothing
+                    } -> {
+                        set_title: Some(&tr!("Overview")),
+                        set_icon_name: Some(icon_names::FOLDER_VISITING),
+                    },
+                    
+                    #[name="history"]
+                    add = &adw::Clamp {
+                        // Nothing
+                    } -> {
+                        set_title: Some(&tr!("History")),
+                        set_icon_name: Some(icon_names::HISTORY_UNDO),
+                    },
+                    
+                    #[name="provision"]
+                    add = &adw::Clamp {
+                        // Nothing
+                    } -> {
+                        set_title: Some(&tr!("Provision")),
+                        set_icon_name: Some(icon_names::PACKAGE_X_GENERIC),
+                    },
+                    
+                    #[name="peers"]
+                    add = &adw::Clamp {
+                        // Nothing
+                    } -> {
+                        set_title: Some(&tr!("Peers")),
+                        set_icon_name: Some(icon_names::PEOPLE),
+                    },
+                },
+
+                add_top_bar = &adw::HeaderBar {
+                    #[wrap(Some)]
+                    set_title_widget = &adw::ViewSwitcher {
+                        set_policy: adw::ViewSwitcherPolicy::Wide,
+                        set_stack: Some(&stack)
+                    }
+                }
             }, 
         }
     }
