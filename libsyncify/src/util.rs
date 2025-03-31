@@ -108,6 +108,7 @@ pub fn setup_logger() -> Result<(), fern::InitError> {
         .level_for("reqwest", log::LevelFilter::Off)
         .level_for("hickory_resolver", log::LevelFilter::Off)
         .level_for("igd_next", log::LevelFilter::Off)
+        .level_for("relm4", log::LevelFilter::Off)
         .chain(std::io::stdout())
         .apply()?;
     Ok(())

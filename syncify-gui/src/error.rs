@@ -50,17 +50,27 @@ impl SimpleComponent for Error {
 
             adw::StatusPage {
                 set_title: "Error",
-                set_description: Some(&*("Syncify encountered an error during launch:\n".to_string() + &model.error.to_string())),
+                set_description: Some("Syncify encountered an error during launch:"),
                 set_icon_name: Some(icon_names::SENTIMENT_DISSATISFIED),
 
+                gtk::Box {
+                    set_spacing: 20,
 
-                gtk::Button {
-                    set_label: "Close",
-                    add_css_class: "destructive-action",
-                    add_css_class: "pill",
-                    set_halign: Align::Center,
+                    adw::ActionRow {
+                        set_title: "Error",
+                        set_subtitle: &model.error.to_string(),
+                        set_subtitle_selectable: true,
+                        set_use_markup: false,
+                    },
 
-                    connect_clicked => ErrorMsg::Close
+                    gtk::Button {
+                        set_label: "Close",
+                        add_css_class: "destructive-action",
+                        add_css_class: "pill",
+                        set_halign: Align::Center,
+
+                        connect_clicked => ErrorMsg::Close
+                    }
                 }
             }
         }
