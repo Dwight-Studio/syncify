@@ -37,7 +37,7 @@ use futures_lite::future::Boxed;
 use iroh::endpoint::{ClosedStream, Connection, ReadError, RecvStream, VarInt, WriteError};
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeAddr, NodeId};
-use log::info;
+use log::{debug, info};
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
@@ -273,7 +273,7 @@ impl SyncifyConnection {
 
     /// Close the connection
     pub fn close(&self, err_code: u32, err: SyncifyProtocolError) {
-        info!("CLOSED: {}", err);
+        debug!("CLOSED: {}", err);
         self.connection
             .close(VarInt::from_u32(err_code), err.to_string().as_bytes());
     }

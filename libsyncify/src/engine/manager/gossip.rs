@@ -31,7 +31,7 @@ use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
-use log::{info, warn};
+use log::{debug, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -93,7 +93,7 @@ impl GossipManager {
         local_tree: &mut HashTree,
         downloader: DownloaderHandle,
     ) {
-        info!("Dir {}: {:?}", self.dir.uuid(), gossip_event);
+        debug!("Dir {}: {:?}", self.dir.uuid(), gossip_event);
         match gossip_event {
             iroh_gossip::net::Event::Gossip(event) => match event {
                 GossipEvent::Joined(node_id_vec) => {
@@ -167,6 +167,10 @@ impl GossipManager {
             },
             iroh_gossip::net::Event::Lagged => {}
         }
+    }
+    
+    pub async fn request_provision(&self, hash: Hash) {
+        // TODO: Broadcast
     }
 
     pub async fn confirm_local_provision(&self, hash: Hash, expiration: DateTime<Utc>) {

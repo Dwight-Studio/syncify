@@ -32,7 +32,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use iroh_base::{NodeId, PublicKey};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use redb::{
     CommitError, Database, DatabaseError, MultimapTable, MultimapTableDefinition, MultimapValue, ReadableMultimapTable,
     ReadableTable, StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError,
@@ -479,7 +479,7 @@ impl StoreManager {
 
             // Save each SharedDirectory
             for (uuid, dir) in &self.cache {
-                info!("Saving state for {}", uuid);
+                debug!("Saving state for {}", uuid);
                 let mut inner = dir.write().await;
 
                 // Update index tables
@@ -506,7 +506,7 @@ impl StoreManager {
                 Self::flush_provisions(dir, &inner, &mut local_provision_table, &mut remote_provisions_table)?;
 
                 if inner.state.trim() {
-                    info!("Pruned state {}", uuid_string);
+                    debug!("Pruned state {}", uuid_string);
                 }
             }
         }

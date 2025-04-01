@@ -113,9 +113,7 @@ impl Manager {
     pub async fn shutdown(&mut self) {
         if let Some(join_handle) = self.watcher_join_handle.take() {
             join_handle.abort();
-            if let Err(e) = join_handle.await {
-                warn!("Cannot join watcher thread: {e}");
-            }
+            let _ = join_handle.await;
         }
         self.tx.send(ManagerEvent::Shutdown).await.unwrap();
         self.join_handle.take().unwrap().await.unwrap();
@@ -162,6 +160,9 @@ impl Manager {
                     gossip_manager
                         .handle_events(gossip_event, &mut local_tree, downloader.clone())
                         .await
+                }
+                ManagerEvent::RequestProvision(hash) => {
+                    gossip_manager.request_provision(hash).await
                 }
                 ManagerEvent::ConfirmLocalProvision(hash, expiration) => {
                     gossip_manager.confirm_local_provision(hash, expiration).await
@@ -246,6 +247,7 @@ pub enum ManagerEvent {
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
+    RequestProvision(Hash),
     ConfirmLocalProvision(Hash, DateTime<Utc>),
 
     // Protocol

@@ -25,7 +25,7 @@ use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::protocol::{SyncPacket, SyncifyConnection, SyncifyPacket};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
-use log::{info, warn};
+use log::{debug, info, warn};
 
 #[derive(Eq, PartialEq)]
 pub enum IncomingState {
@@ -75,7 +75,7 @@ impl FiniteStateMachine for IncomingSync {
             }
 
             IncomingState::SendingRequest => {
-                info!("Incoming: SendingRequest");
+                debug!("Incoming: SendingRequest");
                 let packet = SyncPacket::Request {
                     head: *self.dir.read().await.state.hash().as_bytes(),
                 };
@@ -124,7 +124,7 @@ impl FiniteStateMachine for IncomingSync {
             }
 
             IncomingState::Finish => {
-                info!("Incoming: Finished");
+                debug!("Incoming: Finished");
                 Ok(IncomingState::Finish)
             }
 

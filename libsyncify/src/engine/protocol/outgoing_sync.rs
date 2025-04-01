@@ -27,7 +27,7 @@ use crate::engine::protocol::{SyncPacket, SyncifyConnection, SyncifyPacket};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use blake3::Hash;
 use iroh::{Endpoint, NodeId};
-use log::{info, warn};
+use log::{debug, info, warn};
 
 // TODO: Add provision database sync
 
@@ -76,7 +76,7 @@ impl FiniteStateMachine for OutgoingSync {
             }
 
             OutgoingState::SendingRequest => {
-                info!("Outgoing: SendingRequest");
+                debug!("Outgoing: SendingRequest");
                 let packet = SyncPacket::Request {
                     head: *self.dir.read().await.state.hash().as_bytes(),
                 };
@@ -123,7 +123,7 @@ impl FiniteStateMachine for OutgoingSync {
             }
 
             OutgoingState::ReceivingRequest => {
-                info!("Outgoing: ReceivingRequest");
+                debug!("Outgoing: ReceivingRequest");
                 let mut conn = self.connection.clone().unwrap();
 
                 let hash = if let Ok(request) = conn.receive_packet(self.dir.clone()).await {
@@ -154,7 +154,7 @@ impl FiniteStateMachine for OutgoingSync {
             }
 
             OutgoingState::Finish => {
-                info!("Outgoing: Finished");
+                debug!("Outgoing: Finished");
                 Ok(OutgoingState::Finish)
             }
 
