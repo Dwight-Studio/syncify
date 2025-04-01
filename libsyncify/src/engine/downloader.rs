@@ -175,7 +175,7 @@ impl Downloader {
                                         if len == 0 {
                                             break;
                                         }
-                                        if let Err(err) = encoder.write(&buf[0..len]) {
+                                        if let Err(err) = encoder.write_all(&buf[0..len]) {
                                             error!("Cannot write to cache file: {err}");
                                         }
                                     }
