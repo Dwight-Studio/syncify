@@ -48,9 +48,9 @@ impl FileSystemManager {
     }
 
     /// Poll the file for changes.
-    pub async fn poll(&mut self, local_tree: &mut HashTree) {
+    pub async fn poll(&mut self) {
         // Detect changes
-        let mut mutations = local_tree.mutations_from_disk(&self.dir);
+        let mut mutations = self.dir.read().await.local_tree.mutations_from_disk(&self.dir);
 
         // Return if empty
         if mutations.is_empty() {
@@ -58,14 +58,15 @@ impl FileSystemManager {
         }
 
         // Fuse
-        Self::fuse_move(&mut mutations, local_tree);
+        self.fuse_move(&mut mutations).await;
 
         // Apply
-        Self::apply_local_mutations(&self.dir, mutations, local_tree).await;
+        self.apply_local_mutations(mutations).await;
     }
 
     /// Fuse [`Mutation`] that correspond to a [`Mutation::Move`].
-    pub fn fuse_move(mutations: &mut Vec<Mutation>, local_tree: &HashTree) {
+    pub async fn fuse_move(&self, mutations: &mut Vec<Mutation>) {
+        let local_tree = &self.dir.read().await.local_tree;
         let mut working_buffer = Vec::new();
 
         for n_mut in &*mutations {
@@ -118,30 +119,30 @@ impl FileSystemManager {
     }
 
     /// Apply [`Mutation`] to a [`SharedDirectory`].
-    pub async fn apply_local_mutations(dir: &SharedDirectory, mutations: Vec<Mutation>, local_tree: &mut HashTree) {
-        let write_key = match &dir.write_key {
+    pub async fn apply_local_mutations(&self, mutations: Vec<Mutation>) {
+        let write_key = match &self.dir.write_key {
             Some(key) => key,
             None => return,
         };
 
-        let mut inner = dir.write().await;
+        let mut inner = self.dir.write().await;
 
         for mutation in &mutations {
             match inner.state.mutate(mutation.clone(), write_key) {
-                Ok(_) => match local_tree.apply(mutation) {
+                Ok(_) => match inner.local_tree.apply(mutation) {
                     Ok(tree) => {
-                        debug!("Applied in {}: {mutation}", dir.uuid());
-                        *local_tree = tree;
+                        debug!("Applied in {}: {mutation}", self.dir.uuid());
+                        inner.local_tree = tree;
                     }
                     Err(e) => {
                         error!(
                             "Cannot apply mutation to current tree in {}: {mutation} ({e})",
-                            dir.uuid()
+                            self.dir.uuid()
                         );
                     }
                 },
                 Err(e) => {
-                    error!("Cannot apply mutation in {}: {mutation} ({e})", dir.uuid());
+                    error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
                 }
             }
         }
@@ -150,7 +151,7 @@ impl FileSystemManager {
         //debug!("New file tree: \n{}", local_tree);
     }
 
-    pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>, local_tree: &mut HashTree) {
+    pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify {
@@ -176,7 +177,7 @@ impl FileSystemManager {
                     let to = self.dir.path.join(to);
 
                     match fs::rename(&from, &to).await {
-                        Ok(_) => self.update_local_tree(mutation, local_tree).await,
+                        Ok(_) => self.update_local_tree(mutation).await,
                         Err(e) => {
                             error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
                         }
@@ -186,7 +187,7 @@ impl FileSystemManager {
                     let path = self.dir.path.join(PathBuf::from(file_path));
 
                     match fs::remove_file(&path).await {
-                        Ok(_) => self.update_local_tree(mutation, local_tree).await,
+                        Ok(_) => self.update_local_tree(mutation).await,
                         Err(e) => {
                             error!("Cannot remove file: '{}' ({e})", path.display());
                         }
@@ -211,11 +212,12 @@ impl FileSystemManager {
         }
     }
 
-    pub(crate) async fn update_local_tree(&self, mutation: Mutation, local_tree: &mut HashTree) {
-        match local_tree.apply(&mutation) {
+    pub(crate) async fn update_local_tree(&self, mutation: Mutation) {
+        let mut inner = self.dir.write().await;
+        match inner.local_tree.apply(&mutation) {
             Ok(tree) => {
                 debug!("Applied in {}: {mutation}", self.dir.uuid());
-                *local_tree = tree;
+                inner.local_tree = tree;
             }
             Err(e) => {
                 error!(

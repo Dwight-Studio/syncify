@@ -474,6 +474,7 @@ impl StoreManager {
         {
             let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+            let mut local_tree_table = transaction.open_table(LOCAL_TREE_TABLE).map_err(StoreError::Table)?;
             let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
             let mut local_provision_table = transaction
                 .open_multimap_table(LOCAL_PROVISIONS_TABLE)
@@ -496,6 +497,9 @@ impl StoreManager {
                     .map_err(StoreError::Storage)?;
                 head_table
                     .insert(uuid.as_bytes(), inner.state.hash().as_bytes())
+                    .map_err(StoreError::Storage)?;
+                local_tree_table
+                    .insert(uuid.as_bytes(), inner.local_tree.clone())
                     .map_err(StoreError::Storage)?;
                 neighbor_table
                     .insert(

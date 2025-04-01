@@ -123,17 +123,6 @@ impl Manager {
         downloader: DownloaderHandle,
         handle: ManagerHandle,
     ) {
-        // Shared variables
-        let mut local_tree = {
-            match HashTree::from_disk(&dir) {
-                Ok(tree) => tree,
-                Err(e) => {
-                    error!("Cannot get file tree from disk for {}: {e}", dir.uuid());
-                    return;
-                }
-            }
-        };
-
         let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone()).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), ep.clone(), handle.clone()).await;
         let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), ep.clone()).await;
@@ -142,19 +131,13 @@ impl Manager {
         while let Some(event) = rx.recv().await {
             match event {
                 // FileSystem
-                ManagerEvent::PollFiles => fs_manager.poll(&mut local_tree).await,
-                ManagerEvent::ApplyRemoteMutations(mutations) => {
-                    fs_manager.apply_remote_mutations(mutations, &mut local_tree).await
-                }
-                ManagerEvent::UpdateLocalTree(mutation) => {
-                    fs_manager.update_local_tree(mutation, &mut local_tree).await
-                }
+                ManagerEvent::PollFiles => fs_manager.poll().await,
+                ManagerEvent::ApplyRemoteMutations(mutations) => fs_manager.apply_remote_mutations(mutations).await,
+                ManagerEvent::UpdateLocalTree(mutation) => fs_manager.update_local_tree(mutation).await,
 
                 // Gossip
                 ManagerEvent::Gossip(gossip_event) => {
-                    gossip_manager
-                        .handle_events(gossip_event, &mut local_tree, downloader.clone())
-                        .await
+                    gossip_manager.handle_events(gossip_event, downloader.clone()).await
                 }
                 ManagerEvent::RequestProvision(hash) => gossip_manager.request_provision(hash).await,
                 ManagerEvent::ConfirmLocalProvision(hash, expiration) => {

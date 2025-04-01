@@ -175,26 +175,8 @@ impl Downloader {
                             let mut reader = BufReader::new(file);
                             if let Err(e) = std::io::copy(&mut reader, &mut encoder) {
                                 error!("Cannot write cache file: {e}");
-                                return
+                                return;
                             }
-                            /*
-                            let mut buf = [0u8; CHUNK_SIZE];
-                            loop {
-                                match reader.read(&mut buf) {
-                                    Ok(len) => {
-                                        if len == 0 {
-                                            break;
-                                        }
-                                        if let Err(err) = encoder.write_all(&buf[0..len]) {
-                                            error!("Cannot write to cache file: {err}");
-                                        }
-                                    }
-                                    Err(err) => {
-                                        error!("Error while reading file {file_hash}: {err}");
-                                    }
-                                }
-                            }
-                             */
 
                             match encoder.finalize() {
                                 Ok(hash) => {

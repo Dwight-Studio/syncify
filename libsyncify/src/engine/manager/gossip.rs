@@ -85,7 +85,6 @@ impl GossipManager {
     pub async fn handle_events(
         &mut self,
         gossip_event: iroh_gossip::net::Event,
-        local_tree: &mut HashTree,
         downloader: DownloaderHandle,
     ) {
         match gossip_event {
@@ -125,7 +124,7 @@ impl GossipManager {
                             {
                                 match payload {
                                     Payload::ProvisionRequest { hash } => {
-                                        let local_tree = local_tree.map();
+                                        let local_tree = self.dir.read().await.local_tree.map();
                                         let file_hash = Hash::from_bytes(hash);
                                         info!(
                                             "Received provision request for file '{file_hash}' for {}",
@@ -141,7 +140,10 @@ impl GossipManager {
                                                 ))
                                                 .await;
                                         } else {
-                                            warn!("File '{}' not found in the local tree of {}", file_hash, self.dir.uuid)
+                                            warn!(
+                                                "File '{}' not found in the local tree of {}",
+                                                file_hash, self.dir.uuid
+                                            )
                                         }
                                     }
                                     Payload::Provision { hash, node_id, expire } => {
