@@ -41,7 +41,10 @@ pub struct DownloadJob {
     size: u64,
     #[rkyv(with = crate::util::DateTimeDef)]
     issued: DateTime<Utc>,
-    state: JobState,
+    pub(crate) state: JobState,
+    pub progress: f32,
+    pub(crate) chunk_done: u64,
+    pub(crate) failed_chunks: Vec<u64>
 }
 
 impl DownloadJob {
@@ -53,6 +56,9 @@ impl DownloadJob {
             size,
             issued,
             state,
+            progress: 0f32,
+            chunk_done: 0,
+            failed_chunks: Vec::new()
         }
     }
 
@@ -129,16 +135,9 @@ impl Value for DownloadJob {
 }
 
 #[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct OngoingStatus {
-    pub progress: f32,
-    pub(crate) curr_chunk_number: u64,
-    pub(crate) failed_chunks: Vec<u64>
-}
-
-#[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum JobState {
     Pending,
-    Ongoing(OngoingStatus),
+    Ongoing,
     Done(#[rkyv(with = crate::util::DateTimeDef)] DateTime<Utc>),
     Error(String),
 }

@@ -34,7 +34,8 @@ fn main() {
         // * or `/org/relm4` if app ID was not specified either
         None::<&str>,
         // Directory with custom icons (if any)
-        Some("rsc/icons"),
+        // Some("rsc/icons"),
+        None::<&str>,
         // List of icons to include
         [
             "plus-large",

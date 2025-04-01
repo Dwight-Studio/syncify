@@ -293,7 +293,7 @@ impl StoreManager {
                 let job = job_access.value();
 
                 // If it is still active, add in the active vec
-                if matches!(job.state(), JobState::Pending | JobState::Ongoing(_)) {
+                if matches!(job.state(), JobState::Pending | JobState::Ongoing) {
                     let job_ref = Arc::new(RwLock::new(job));
                     active_jobs.push(job_ref.clone());
                     jobs.insert(hash, job_ref);
@@ -335,6 +335,10 @@ impl StoreManager {
     pub async fn add_download_job(&mut self, download_job: Arc<RwLock<DownloadJob>>) {
         self.jobs.insert(*download_job.read().await.hash(), download_job.clone());
         self.active_jobs.push(download_job);
+    }
+    
+    pub fn get_active_download_jobs(&self) -> Vec<Arc<RwLock<DownloadJob>>> {
+        self.active_jobs.clone()
     }
 
     /// Load the local and remote [`Provision`]s of a [`SharedDirectory`] (for initialization).
