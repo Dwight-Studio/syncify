@@ -102,8 +102,10 @@ impl Downloader {
                     // Event sent when a new download job is requested from the filesystem watcher
                     // If download tasks are available it will start downloading chunks.
 
+                    info!("Download requested");
                     store.write().await.add_download_job(download_job.clone()).await;
 
+                    info!("9");
                     Self::spawn_download_tasks(
                         store.clone(),
                         ep.clone(),
@@ -127,6 +129,10 @@ impl Downloader {
                             .insert(node_id, expiration);
                     } else {
                         warn!("Received remote provision update for unknown UUID: {}", dir_uuid);
+                    }
+                    
+                    if let Some(job) = store.read().await.get_next_download_job() {
+                        Self::spawn_download_tasks(store.clone(), ep.clone(), job, downloader.clone(), &mut download_tasks).await;
                     }
                 }
 
@@ -294,9 +300,13 @@ impl Downloader {
         download_handle: DownloaderHandle,
         download_tasks: &mut [DownloadTask],
     ) -> bool {
+        info!("11");
+
         let mut ret = false;
         let mut chunk_index = 0;
         let mut job = download_job.write().await;
+
+        info!("10");
 
         if *job.state() == JobState::Pending {
             job.set_state(JobState::Ongoing);
@@ -304,13 +314,18 @@ impl Downloader {
             chunk_index = job.chunk_done;
         }
 
-        if chunk_index < *download_job.read().await.size() {
+        if chunk_index < *job.size() {
+            info!("1");
             if let Some(dir) = store.read().await.get_shared_dir(job.uuid()) {
+                info!("2");
                 if let Some(node_list) = dir.read().await.remote_provisions.get(job.hash()) {
+                    info!("3");
                     for node in node_list {
                         if Utc::now() < *node.1 {
+                            info!("4");
                             for task in download_tasks.iter_mut() {
                                 if task.handle.is_finished() {
+                                    info!("5");
                                     task.handle = Self::spawn_download_task(
                                         *node.0,
                                         endpoint.clone(),
@@ -325,9 +340,13 @@ impl Downloader {
                             }
                         }
                     }
+                } else {
+                    dir.handle().await.send(ManagerEvent::RequestProvision(*job.hash())).await;
                 }
             }
         }
+
+        info!("6");
 
         job.chunk_done = chunk_index;
 
@@ -343,22 +362,27 @@ impl Downloader {
         download_handle: DownloaderHandle,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
+            info!("8");
             let file_hash = *download_job.read().await.hash();
             if let Ok(mut connection) = SyncifyConnection::connect(node_id, endpoint).await {
+                info!("7");
                 let packet = SyncifyPacket::Blobs(BlobsPacket::BlobRequest {
                     file_hash: *file_hash.as_bytes(),
                     chunk_index,
                 });
+                info!("Sending blob request");
                 if (connection.send_packet(dir.clone(), packet).await).is_err() {
                     download_handle
                         .send(DownloaderEvent::TaskFailed(download_job, chunk_index))
                         .await;
                     return;
                 }
+                info!("Wait for Blob");
                 match connection.receive_packet(dir).await {
                     Ok(packet) => {
                         match packet {
                             SyncifyPacket::Blobs(BlobsPacket::Blob { chunk }) => {
+                                info!("Blob received");
                                 let mut decoded = Vec::new();
                                 let mut decoder = bao::decode::SliceDecoder::new(
                                     &*chunk,

@@ -338,8 +338,12 @@ impl StoreManager {
         self.active_jobs.push(download_job);
     }
     
-    pub fn get_active_download_jobs(&self) -> Vec<Arc<RwLock<DownloadJob>>> {
-        self.active_jobs.clone()
+    pub fn get_next_download_job(&self) -> Option<Arc<RwLock<DownloadJob>>> {
+        if !self.active_jobs.is_empty() {
+            Some(self.active_jobs[0].clone())
+        } else {
+            None
+        }
     }
 
     /// Load the local and remote [`Provision`]s of a [`SharedDirectory`] (for initialization).

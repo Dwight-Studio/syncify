@@ -170,7 +170,13 @@ impl GossipManager {
     }
     
     pub async fn request_provision(&self, hash: Hash) {
-        // TODO: Broadcast
+        if let Ok(msg) = self.create_message(Payload::ProvisionRequest {hash: *hash.as_bytes()}) {
+            if self.topic.broadcast(msg).await.is_err() {
+                warn!("Cannot broadcast ProvisionRequest message!");
+            }
+        } else {
+            warn!("Cannot create ProvisionRequest message!");
+        }
     }
 
     pub async fn confirm_local_provision(&self, hash: Hash, expiration: DateTime<Utc>) {
