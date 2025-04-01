@@ -179,6 +179,8 @@ impl Downloader {
                                 } else {
                                     error!("Error while encoding file: {}", file_path.display());
                                 }
+                            } else {
+                                error!("Error while finalizing the encoded file!");
                             }
                         }
                     } else {
