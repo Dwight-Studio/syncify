@@ -164,20 +164,23 @@ impl Downloader {
                                 return;
                             }
 
-                            if let Ok(hash) = encoder.finalize() {
-                                if hash == file_hash {
-                                    let expiration = Utc::now().add(PROVISION_EXPIRATION);
-                                    dir.write().await.local_provisions.insert(hash, expiration);
-                                    dir.handle()
-                                        .await
-                                        .send(ManagerEvent::ConfirmLocalProvision(hash, expiration))
-                                        .await;
-                                } else {
-                                    error!("Error while encoding file: {}", file_path.display());
+                            match encoder.finalize() {
+                                Ok(hash) => {
+                                    if hash == file_hash {
+                                        let expiration = Utc::now().add(PROVISION_EXPIRATION);
+                                        dir.write().await.local_provisions.insert(hash, expiration);
+                                        dir.handle()
+                                            .await
+                                            .send(ManagerEvent::ConfirmLocalProvision(hash, expiration))
+                                            .await;
+                                    } else {
+                                        error!("Error while encoding file: {}", file_path.display());
+                                    }
                                 }
-                            } else {
-                                error!("Error while finalizing the encoded file!");
-                            }
+                                Err(err) => {
+                                    error!("Error while finalizing file: {err}");
+                                }
+                            } 
                         }
                     } else {
                         warn!("Received local provision update for unknown UUID: {}", dir_uuid);
