@@ -102,10 +102,8 @@ impl Downloader {
                     // Event sent when a new download job is requested from the filesystem watcher
                     // If download tasks are available it will start downloading chunks.
 
-                    info!("Download requested");
                     store.write().await.add_download_job(download_job.clone()).await;
 
-                    info!("9");
                     Self::spawn_download_tasks(
                         store.clone(),
                         ep.clone(),
@@ -146,6 +144,7 @@ impl Downloader {
                         if !provision_dir.exists() {
                             if let Err(err) = tokio::fs::create_dir_all(&provision_dir).await {
                                 error!("Cannot create cache directory: {err}");
+                                return;
                             }
                         }
 
@@ -159,13 +158,10 @@ impl Downloader {
                             }
                         };
 
-                        if let Ok(file) = File::open(file_path.clone()) {
-                            let mut reader = BufReader::new(file);
-                            let mut buf = [0u8; CHUNK_SIZE];
-                            while let Ok(len) = reader.read(&mut buf) {
-                                if let Err(err) = encoder.write(&buf[0..len]) {
-                                    error!("Cannot write to cache file: {err}");
-                                }
+                        if let Ok(mut file) = File::open(file_path.clone()) {
+                            if let Err(err) = std::io::copy(&mut file, &mut encoder) {
+                                error!("Cannot encode: {err}");
+                                return;
                             }
 
                             if let Ok(hash) = encoder.finalize() {
@@ -317,7 +313,6 @@ impl Downloader {
         }
 
         if chunk_index < *job.size() {
-            info!("1");
             if let Some(dir) = store.read().await.get_shared_dir(job.uuid()) {
                 info!("2");
                 if let Some(node_list) = dir.read().await.remote_provisions.get(job.hash()) {

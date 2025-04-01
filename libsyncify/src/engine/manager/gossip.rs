@@ -177,6 +177,7 @@ impl GossipManager {
     }
     
     pub async fn request_provision(&self, hash: Hash) {
+        debug!("Asking if someone have {hash}");
         if let Ok(msg) = self.create_message(Payload::ProvisionRequest {hash: *hash.as_bytes()}) {
             if self.topic.broadcast(msg).await.is_err() {
                 warn!("Cannot broadcast ProvisionRequest message!");
