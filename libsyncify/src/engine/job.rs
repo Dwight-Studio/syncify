@@ -95,7 +95,7 @@ impl Value for DownloadJob {
     type AsBytes<'a> = &'a [u8];
 
     fn fixed_width() -> Option<usize> {
-        Option::from(size_of::<DownloadJob>())
+        None
     }
 
     //noinspection RsTraitObligations
@@ -156,7 +156,7 @@ impl Value for Provision {
     type AsBytes<'a> = &'a [u8];
 
     fn fixed_width() -> Option<usize> {
-        Option::from(size_of::<Provision>())
+        None
     }
 
     //noinspection RsTraitObligations
