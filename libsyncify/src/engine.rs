@@ -26,7 +26,6 @@ use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol};
 use crate::store::StoreManager;
-use crate::store::lock::{Store, StoreLock};
 use crate::{SharedDirectory, get_app_config_dir};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId};
@@ -128,13 +127,6 @@ impl Engine {
             manager.shutdown().await;
         }
         self.downloader.shutdown().await;
-    }
-
-    pub fn new_lock<T, G>(&self, inner: T)
-    where
-        T: Store<G>,
-    {
-        StoreLock::new(self.store.clone(), inner);
     }
 
     /// Create [`Manager`] manager for a [`SharedDirectory`].
