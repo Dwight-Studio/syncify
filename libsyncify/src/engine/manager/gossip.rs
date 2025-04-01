@@ -72,12 +72,7 @@ pub struct GossipManager {
 }
 
 impl GossipManager {
-    pub async fn new(
-        topic: GossipSender,
-        dir: SharedDirectory,
-        ep: Endpoint,
-        handle: ManagerHandle,
-    ) -> Self {
+    pub async fn new(topic: GossipSender, dir: SharedDirectory, ep: Endpoint, handle: ManagerHandle) -> Self {
         Self {
             topic,
             dir,
@@ -132,7 +127,10 @@ impl GossipManager {
                                     Payload::ProvisionRequest { hash } => {
                                         let local_tree = local_tree.map();
                                         let file_hash = Hash::from_bytes(hash);
-                                        info!("Received provision request for file '{file_hash}' for {}", self.dir.uuid);
+                                        info!(
+                                            "Received provision request for file '{file_hash}' for {}",
+                                            self.dir.uuid
+                                        );
 
                                         if let Some(file_path) = local_tree.get(&file_hash) {
                                             downloader
@@ -150,12 +148,14 @@ impl GossipManager {
 
                                             info!("Received provision update for file '{hash}' for {}", self.dir.uuid);
 
-                                            downloader.send(DownloaderEvent::RemoteProvisionUpdate(
-                                                self.dir.uuid,
-                                                node_id,
-                                                hash,
-                                                expire
-                                            )).await;
+                                            downloader
+                                                .send(DownloaderEvent::RemoteProvisionUpdate(
+                                                    self.dir.uuid,
+                                                    node_id,
+                                                    hash,
+                                                    expire,
+                                                ))
+                                                .await;
                                         } else {
                                             warn!("Invalid NodeID!");
                                         }
@@ -175,10 +175,10 @@ impl GossipManager {
             iroh_gossip::net::Event::Lagged => {}
         }
     }
-    
+
     pub async fn request_provision(&self, hash: Hash) {
         debug!("Asking if someone have {hash}");
-        if let Ok(msg) = self.create_message(Payload::ProvisionRequest {hash: *hash.as_bytes()}) {
+        if let Ok(msg) = self.create_message(Payload::ProvisionRequest { hash: *hash.as_bytes() }) {
             if self.topic.broadcast(msg).await.is_err() {
                 warn!("Cannot broadcast ProvisionRequest message!");
             }

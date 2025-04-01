@@ -146,15 +146,18 @@ impl FileSystemManager {
             }
         }
 
-        debug!("New state: \n{}", inner.state);
-        debug!("New file tree: \n{}", local_tree);
+        //debug!("New state: \n{}", inner.state);
+        //debug!("New file tree: \n{}", local_tree);
     }
 
     pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>, local_tree: &mut HashTree) {
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify {
-                    file_path, file_hash, file_size, ..
+                    file_path,
+                    file_hash,
+                    file_size,
+                    ..
                 } => {
                     // Creating DownloadJob
                     let job_ref = Arc::new(RwLock::new(DownloadJob::new(

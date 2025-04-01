@@ -93,10 +93,7 @@ pub struct SyncifyProtocol {
 
 impl SyncifyProtocol {
     pub fn new(store: Arc<RwLock<StoreManager>>, downloader: DownloaderHandle) -> Self {
-        Self {
-            store,
-            downloader,
-        }
+        Self { store, downloader }
     }
 }
 
@@ -162,7 +159,7 @@ impl ProtocolHandler for SyncifyProtocol {
                                 conn: conn.clone(),
                                 uuid: dir.uuid,
                                 file_hash: Hash::from(file_hash),
-                                chunk_index
+                                chunk_index,
                             })
                             .await;
                     }

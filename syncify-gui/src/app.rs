@@ -21,19 +21,19 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::icon_names;
+use crate::widget::create::CreateDialog;
 use crate::widget::details::Details;
 use crate::widget::overview::Overview;
 use libsyncify::Syncify;
 use log::warn;
+use relm4::adw::Toast;
 use relm4::adw::prelude::*;
 use relm4::loading_widgets::LoadingWidgets;
 use relm4::prelude::*;
 use relm4::{AsyncComponentSender, adw, gtk, view};
 use std::collections::HashMap;
-use relm4::adw::Toast;
 use tr::tr;
 use uuid::Uuid;
-use crate::widget::create::CreateDialog;
 
 pub struct App {
     syncify: Syncify,
@@ -67,7 +67,7 @@ impl AsyncComponent for App {
             .build()
             //set_hide_on_close: true,
         {
-            
+
             #[name = "nav_view"]
             adw::NavigationView {
 
@@ -115,7 +115,9 @@ impl AsyncComponent for App {
 
     async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
         // Create dialog
-        let create_dialog = CreateDialog::builder().launch(init.clone()).forward(sender.input_sender(), std::convert::identity);
+        let create_dialog = CreateDialog::builder()
+            .launch(init.clone())
+            .forward(sender.input_sender(), std::convert::identity);
 
         // Overview
         let mut overview_dirs = AsyncFactoryVecDeque::builder()
@@ -191,7 +193,9 @@ impl AsyncComponent for App {
 
             AppMsg::Open(uuid) => {
                 if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
-                    let controller = Details::builder().launch(dir.clone()).forward(sender.input_sender(), std::convert::identity);
+                    let controller = Details::builder()
+                        .launch(dir.clone())
+                        .forward(sender.input_sender(), std::convert::identity);
                     widgets.nav_view.push(controller.widget())
                 }
             }
@@ -202,7 +206,7 @@ impl AsyncComponent for App {
                         Toast::builder()
                             .title(tr!("Directory '{}' has been added", dir.name()))
                             .timeout(5)
-                            .build()
+                            .build(),
                     );
                     od_guard.push_back(dir);
                 } else {
@@ -221,8 +225,8 @@ impl AsyncComponent for App {
                                 Toast::builder()
                                     .title(tr!("Directory '{}' has been removed", dir.name()))
                                     .timeout(5)
-                                    .build()
-                                );
+                                    .build(),
+                            );
                             od_guard.remove(i);
                             break;
                         }

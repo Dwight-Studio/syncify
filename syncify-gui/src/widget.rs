@@ -20,6 +20,6 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-pub mod overview;
-pub mod details;
 pub mod create;
+pub mod details;
+pub mod overview;

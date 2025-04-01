@@ -24,13 +24,13 @@ use crate::parser::utils::read_input;
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use libsyncify::store::link::Link;
+use libsyncify::util::setup_logger;
 use libsyncify::{SharedDirPermission, Syncify};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
 use uuid::Uuid;
-use libsyncify::util::setup_logger;
 
 mod utils;
 

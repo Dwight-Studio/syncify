@@ -49,7 +49,7 @@ pub struct Link {
 impl Link {
     /// Get a builder to generate the invitation link.
     ///
-    /// The default values are :
+    /// The default values are:
     ///  - permission = SharedDirPermission::Write
     ///  - uuid = Default of Uuid struct
     pub fn builder(syncify: Syncify) -> LinkBuilder {
