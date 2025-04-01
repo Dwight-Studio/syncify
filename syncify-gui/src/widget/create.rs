@@ -20,16 +20,16 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::path::PathBuf;
-use std::str::FromStr;
+use crate::app::AppMsg;
+use crate::icon_names;
+use libsyncify::store::link::Link;
+use libsyncify::{SharedDirectory, Syncify, SyncifyError};
 use relm4::adw::prelude::*;
 use relm4::gtk::Align;
 use relm4::prelude::*;
+use std::path::PathBuf;
+use std::str::FromStr;
 use tr::tr;
-use libsyncify::{SharedDirectory, Syncify, SyncifyError};
-use libsyncify::store::link::Link;
-use crate::app::AppMsg;
-use crate::icon_names;
 
 pub struct CreateDialog {
     syncify: Syncify,
@@ -153,13 +153,22 @@ impl AsyncComponent for CreateDialog {
     }
 
     async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
-        let model = CreateDialog { syncify: init, path: None };
+        let model = CreateDialog {
+            syncify: init,
+            path: None,
+        };
         let widgets = view_output!();
 
         AsyncComponentParts { model, widgets }
     }
 
-    async fn update_with_view(&mut self, widgets: &mut Self::Widgets, message: Self::Input, sender: AsyncComponentSender<Self>, root: &Self::Root) {
+    async fn update_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        message: Self::Input,
+        sender: AsyncComponentSender<Self>,
+        root: &Self::Root,
+    ) {
         match message {
             CreateDialogMsg::OpenFileDialog => {
                 let file_dialog = gtk::FileDialog::builder()
@@ -174,7 +183,9 @@ impl AsyncComponent for CreateDialog {
                 }
 
                 if let Some(path) = &self.path {
-                    widgets.open_label.set_text(&path.file_name().unwrap().to_string_lossy())
+                    widgets
+                        .open_label
+                        .set_text(&path.file_name().unwrap().to_string_lossy())
                 }
             }
 
@@ -184,10 +195,7 @@ impl AsyncComponent for CreateDialog {
                 }
             }
 
-
-            CreateDialogMsg::SelectJoin => {
-                widgets.radio_2.set_active(true)
-            }
+            CreateDialogMsg::SelectJoin => widgets.radio_2.set_active(true),
 
             CreateDialogMsg::Create => {
                 if let Some(path) = &self.path {
@@ -225,7 +233,12 @@ impl AsyncComponent for CreateDialog {
 }
 
 impl CreateDialog {
-    fn close(&mut self, dir: SharedDirectory, widgets: &mut <CreateDialog as AsyncComponent>::Widgets, sender: AsyncComponentSender<Self>) {
+    fn close(
+        &mut self,
+        dir: SharedDirectory,
+        widgets: &mut <CreateDialog as AsyncComponent>::Widgets,
+        sender: AsyncComponentSender<Self>,
+    ) {
         sender.output(AppMsg::Add(dir.uuid())).expect("failed to send output");
         widgets.btn.set_sensitive(false);
         widgets.open_label.set_text(&tr!("Open"));
@@ -233,7 +246,7 @@ impl CreateDialog {
         widgets.expander.remove_css_class("error");
         self.path = None;
     }
-    
+
     fn error(&self, e: SyncifyError, root: &gtk::Widget) {
         let dialog = adw::AlertDialog::builder()
             .heading(tr!("Error"))

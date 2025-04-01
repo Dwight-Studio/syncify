@@ -20,20 +20,20 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use relm4::{adw, gtk, ComponentParts, ComponentSender, SimpleComponent};
+use crate::icon_names;
+use libsyncify::SyncifyError;
 use relm4::adw::prelude::*;
 use relm4::gtk::Align;
+use relm4::{ComponentParts, ComponentSender, SimpleComponent, adw, gtk};
 use tr::tr;
-use libsyncify::SyncifyError;
-use crate::icon_names;
 
 pub struct Error {
-    error: SyncifyError
+    error: SyncifyError,
 }
 
 #[derive(Debug)]
 pub enum ErrorMsg {
-    Close
+    Close,
 }
 
 //noinspection RsSortImplTraitMembers

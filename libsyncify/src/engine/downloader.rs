@@ -110,14 +110,15 @@ impl Downloader {
                         download_job.clone(),
                         downloader.clone(),
                         &mut download_tasks,
-                    ).await;
+                    )
+                    .await;
                 }
 
                 // Provision
                 DownloaderEvent::RemoteProvisionUpdate(dir_uuid, node_id, file_hash, expiration) => {
                     // Event sent when a remote provision was updated for a file.
                     // (Received a message from the swarm of the availability of a file)
-                    
+
                     if let Some(dir) = store.read().await.get_shared_dir(&dir_uuid) {
                         dir.write()
                             .await
@@ -128,9 +129,16 @@ impl Downloader {
                     } else {
                         warn!("Received remote provision update for unknown UUID: {}", dir_uuid);
                     }
-                    
+
                     if let Some(job) = store.read().await.get_next_download_job() {
-                        Self::spawn_download_tasks(store.clone(), ep.clone(), job, downloader.clone(), &mut download_tasks).await;
+                        Self::spawn_download_tasks(
+                            store.clone(),
+                            ep.clone(),
+                            job,
+                            downloader.clone(),
+                            &mut download_tasks,
+                        )
+                        .await;
                     }
                 }
 
@@ -236,7 +244,14 @@ impl Downloader {
                     job.failed_chunks.push(chunk_index);
 
                     if job.chunk_done < *job.size() {
-                        Self::spawn_download_tasks(store.clone(), ep.clone(), download_job.clone(), downloader.clone(), &mut download_tasks).await;
+                        Self::spawn_download_tasks(
+                            store.clone(),
+                            ep.clone(),
+                            download_job.clone(),
+                            downloader.clone(),
+                            &mut download_tasks,
+                        )
+                        .await;
                     } else if !job.failed_chunks.is_empty() {
                         error!("Not implemented!");
                         // TODO: Handle failed chunks
@@ -262,7 +277,7 @@ impl Downloader {
                                 return;
                             }
                         } else if let Ok(file) = File::create(cache_file.clone()) {
-                                file
+                            file
                         } else {
                             error!("Cannot create cache file: {}", cache_file.display().to_string());
                             return;
@@ -283,7 +298,14 @@ impl Downloader {
 
                     // Launch new download tasks
                     if job.chunk_done < *job.size() {
-                        Self::spawn_download_tasks(store.clone(), ep.clone(), download_job.clone(), downloader.clone(), &mut download_tasks).await;
+                        Self::spawn_download_tasks(
+                            store.clone(),
+                            ep.clone(),
+                            download_job.clone(),
+                            downloader.clone(),
+                            &mut download_tasks,
+                        )
+                        .await;
                     } else if !job.failed_chunks.is_empty() {
                         error!("Not implemented!");
                         // TODO: Handle failed chunks
@@ -354,7 +376,10 @@ impl Downloader {
                         }
                     }
                 } else {
-                    dir.handle().await.send(ManagerEvent::RequestProvision(*job.hash())).await;
+                    dir.handle()
+                        .await
+                        .send(ManagerEvent::RequestProvision(*job.hash()))
+                        .await;
                 }
             }
         }

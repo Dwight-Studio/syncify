@@ -23,9 +23,9 @@
 use blake3::Hash;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::Signature;
+use fern::colors::ColoredLevelConfig;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::time::SystemTime;
-use fern::colors::ColoredLevelConfig;
 
 #[derive(Archive, Serialize, Deserialize)]
 #[rkyv(remote = blake3::Hash)]

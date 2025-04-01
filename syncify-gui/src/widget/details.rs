@@ -21,14 +21,14 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::app::AppMsg;
+use crate::icon_names;
 use libsyncify::SharedDirectory;
 use relm4::adw::prelude::*;
 use relm4::prelude::*;
 use tr::tr;
-use crate::icon_names;
 
 pub struct Details {
-    dir: SharedDirectory
+    dir: SharedDirectory,
 }
 
 #[derive(Debug)]
@@ -46,9 +46,9 @@ impl AsyncComponent for Details {
         #[name("page")]
         adw::NavigationPage {
             set_title: &model.dir.path().file_name().unwrap().to_string_lossy(),
-            
+
             adw::ToolbarView {
-                
+
                 #[name="stack"]
                 adw::ViewStack {
 
@@ -92,14 +92,12 @@ impl AsyncComponent for Details {
                         set_stack: Some(&stack)
                     }
                 }
-            }, 
+            },
         }
     }
 
     async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
-        let model = Self {
-            dir: init
-        };
+        let model = Self { dir: init };
 
         let widgets = view_output!();
 

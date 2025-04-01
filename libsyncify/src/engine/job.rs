@@ -44,7 +44,7 @@ pub struct DownloadJob {
     pub(crate) state: JobState,
     pub progress: f32,
     pub(crate) chunk_done: u64,
-    pub(crate) failed_chunks: Vec<u64>
+    pub(crate) failed_chunks: Vec<u64>,
 }
 
 impl DownloadJob {
@@ -58,14 +58,14 @@ impl DownloadJob {
             state,
             progress: 0f32,
             chunk_done: 0,
-            failed_chunks: Vec::new()
+            failed_chunks: Vec::new(),
         }
     }
 
     pub fn uuid(&self) -> &Uuid {
         &self.uuid
     }
-    
+
     pub fn path(&self) -> &str {
         &self.path
     }
@@ -73,7 +73,7 @@ impl DownloadJob {
     pub fn hash(&self) -> &Hash {
         &self.hash
     }
-    
+
     pub fn size(&self) -> &u64 {
         &self.size
     }

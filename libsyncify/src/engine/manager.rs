@@ -24,19 +24,19 @@ use crate::SharedDirectory;
 use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
-use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::SyncifyConnection;
+use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::state::{HashTree, Mutation};
 use blake3::Hash;
 use chrono::{DateTime, Utc};
 use futures::{Sink, StreamExt};
+use iroh::Endpoint;
 use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info, warn};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use iroh::Endpoint;
 use sync::SyncManager;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -58,12 +58,7 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub async fn new(
-        dir: SharedDirectory,
-        topic: GossipTopic,
-        ep: Endpoint,
-        downloader: DownloaderHandle,
-    ) -> Self {
+    pub async fn new(dir: SharedDirectory, topic: GossipTopic, ep: Endpoint, downloader: DownloaderHandle) -> Self {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
@@ -161,9 +156,7 @@ impl Manager {
                         .handle_events(gossip_event, &mut local_tree, downloader.clone())
                         .await
                 }
-                ManagerEvent::RequestProvision(hash) => {
-                    gossip_manager.request_provision(hash).await
-                }
+                ManagerEvent::RequestProvision(hash) => gossip_manager.request_provision(hash).await,
                 ManagerEvent::ConfirmLocalProvision(hash, expiration) => {
                     gossip_manager.confirm_local_provision(hash, expiration).await
                 }

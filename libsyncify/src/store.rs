@@ -86,8 +86,7 @@ impl StoreManager {
     pub fn new() -> Result<Self, StoreError> {
         // Create app dir (and parents)
         if !get_app_config_dir().exists() {
-            std::fs::create_dir_all(&get_app_config_dir())
-                .map_err(StoreError::IO)?;
+            std::fs::create_dir_all(&get_app_config_dir()).map_err(StoreError::IO)?;
         }
 
         // Initialize everything
@@ -96,7 +95,7 @@ impl StoreManager {
         let secret_key = Self::load_secret_key(&keyring);
         let cache = Self::build_cache(&keyring, database_file.as_path())?;
         let (jobs, active_jobs) = Self::load_jobs(database_file.as_path(), Utc::now() - JOBS_EXPIRATION)?;
-        
+
         Ok(StoreManager {
             timestamp: Utc::now(),
             cache,
@@ -331,12 +330,13 @@ impl StoreManager {
             }
         })
     }
-    
+
     pub async fn add_download_job(&mut self, download_job: Arc<RwLock<DownloadJob>>) {
-        self.jobs.insert(*download_job.read().await.hash(), download_job.clone());
+        self.jobs
+            .insert(*download_job.read().await.hash(), download_job.clone());
         self.active_jobs.push(download_job);
     }
-    
+
     pub fn get_next_download_job(&self) -> Option<Arc<RwLock<DownloadJob>>> {
         if !self.active_jobs.is_empty() {
             Some(self.active_jobs[0].clone())
@@ -505,7 +505,7 @@ impl StoreManager {
                 let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
 
                 inner.state.flush_in_table(&mut state_table)?;
-                
+
                 Self::flush_provisions(dir, &inner, &mut local_provision_table, &mut remote_provisions_table)?;
 
                 if inner.state.trim() {
@@ -517,7 +517,7 @@ impl StoreManager {
         transaction.commit().map_err(StoreError::Commit)?;
 
         self.timestamp = Utc::now();
-        
+
         info!("Save complete");
 
         Ok(())

@@ -22,6 +22,7 @@
  */
 
 use crate::SharedDirectory;
+use crate::engine::downloader::CHUNK_SIZE;
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::{InvalidSignature, NotADirectory, UnexpectedHash};
@@ -43,7 +44,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
-use crate::engine::downloader::CHUNK_SIZE;
 
 pub const MAX_LOADED_DELTAS: u32 = 2048;
 pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
@@ -643,7 +643,10 @@ impl HashTree {
             Mutation::Init { .. } => Ok(self.clone()),
             Mutation::Merge { .. } => Ok(self.clone()),
             Mutation::Modify {
-                file_path, file_hash, file_size, ..
+                file_path,
+                file_hash,
+                file_size,
+                ..
             } => Self::apply_and_update_parents(
                 self.clone(),
                 &mut |_: HashTree| -> HashTree {

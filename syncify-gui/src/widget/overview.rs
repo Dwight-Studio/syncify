@@ -20,18 +20,18 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use crate::app::AppMsg;
 use crate::icon_names;
 use libsyncify::SharedDirectory;
 use relm4::adw::prelude::*;
+use relm4::factory::FactoryView;
 use relm4::prelude::*;
 use relm4::{adw, gtk};
-use relm4::factory::FactoryView;
 use tr::tr;
 use uuid::Uuid;
-use crate::app::AppMsg;
 
 pub struct Overview {
-    dir: SharedDirectory
+    dir: SharedDirectory,
 }
 
 #[derive(Debug)]
@@ -56,7 +56,7 @@ impl AsyncFactoryComponent for Overview {
                 add_suffix = &gtk::Image {
                     set_icon_name: Some(icon_names::RIGHT_LARGE)
                 },
-                
+
                 connect_activated[sender] => move |_| {
                     sender.output(AppMsg::Open(uuid)).expect("failed to send output");
                 }
@@ -78,10 +78,16 @@ impl AsyncFactoryComponent for Overview {
         Self { dir: init }
     }
 
-    fn init_widgets(&mut self, index: &DynamicIndex, root: Self::Root, returned_widget: &<Self::ParentWidget as FactoryView>::ReturnedWidget, sender: AsyncFactorySender<Self>) -> Self::Widgets {
+    fn init_widgets(
+        &mut self,
+        index: &DynamicIndex,
+        root: Self::Root,
+        returned_widget: &<Self::ParentWidget as FactoryView>::ReturnedWidget,
+        sender: AsyncFactorySender<Self>,
+    ) -> Self::Widgets {
         let uuid = self.dir.uuid();
         let widgets = view_output!();
-        
+
         widgets
     }
 }
@@ -90,7 +96,7 @@ impl Overview {
     pub fn is(&self, uuid: Uuid) -> bool {
         self.dir.uuid() == uuid
     }
-    
+
     pub fn name(&self) -> String {
         self.dir.name()
     }
