@@ -34,7 +34,7 @@ use blake3::Hash;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
-use iroh::endpoint::{ClosedStream, Connection, ReadError, RecvStream, VarInt, WriteError};
+use iroh::endpoint::{ClosedStream, Connection, ReadError, ReadToEndError, RecvStream, VarInt, WriteError};
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeAddr, NodeId};
 use log::{debug, info};
@@ -52,7 +52,7 @@ pub const HEADER_SIZE: usize = 48;
 /// The ALPN that is used to open and accept connection on the SyncifyProtocol
 pub const SYNCIFY_ALPN: &[u8] = b"/syncify/1";
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug)]
 /// This structure can be Serialized and Deserialized with rkyv and contains necessary elements
 /// to deserialize the next SyncifyPacket from
 pub(crate) struct HeaderPacket {
@@ -209,7 +209,7 @@ impl SyncifyConnection {
         let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
 
         tx.write(header_bytes.as_slice()).await.unwrap();
-        tx.write(crypted_bytes.as_slice()).await.unwrap();
+        tx.write_all(crypted_bytes.as_slice()).await.unwrap();
 
         tx.finish().map_err(SyncifyProtocolError::ClosedStream)?;
         tx.stopped().await.unwrap();
@@ -241,10 +241,11 @@ impl SyncifyConnection {
         dir: SharedDirectory,
         rx: &mut RecvStream,
     ) -> Result<SyncifyPacket, SyncifyProtocolError> {
-        let mut packet_buffer = vec![0u8; header_packet.packet_size as usize];
-        rx.read(&mut packet_buffer)
-            .await
-            .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
+        let packet_buffer;
+        match rx.read_to_end(header_packet.packet_size as usize).await {
+            Ok(vec) => {packet_buffer = vec}
+            Err(err) => {return Err(SyncifyProtocolError::ReadToEndError(err, String::from("syncify-packet")))}
+        }
 
         let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
         let decrypted_bytes = cipher
@@ -284,6 +285,9 @@ impl SyncifyConnection {
 pub enum SyncifyProtocolError {
     #[error("Read error: {0}, {1}")]
     ReadError(ReadError, String),
+
+    #[error("Read error: {0}, {1}")]
+    ReadToEndError(ReadToEndError, String),
 
     #[error("Write error: {0}")]
     WriteError(WriteError),

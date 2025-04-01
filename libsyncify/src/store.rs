@@ -88,7 +88,7 @@ impl StoreManager {
     pub fn new() -> Result<Self, StoreError> {
         // Create app dir (and parents)
         if !get_app_config_dir().exists() {
-            std::fs::create_dir_all(&get_app_config_dir()).map_err(StoreError::IO)?;
+            std::fs::create_dir_all(get_app_config_dir()).map_err(StoreError::IO)?;
         }
 
         // Initialize everything
@@ -341,13 +341,15 @@ impl StoreManager {
             .insert(*download_job.read().await.hash(), download_job.clone());
         self.active_jobs.push(download_job);
     }
-
-    pub fn get_next_download_job(&self) -> Option<Arc<RwLock<DownloadJob>>> {
-        if !self.active_jobs.is_empty() {
-            Some(self.active_jobs[0].clone())
-        } else {
-            None
+    
+    pub async fn get_download_job_for_file(&self, file_hash: Hash) -> Option<Arc<RwLock<DownloadJob>>> {
+        for job in self.active_jobs.clone() {
+            if *job.read().await.hash() == file_hash {
+                return Some(job);
+            }
         }
+        
+        None
     }
 
     /// Load the local and remote [`Provision`]s of a [`SharedDirectory`] (for initialization).

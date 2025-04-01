@@ -49,7 +49,7 @@ pub const CHUNK_SIZE: usize = 16 * 1024;
 pub const MAX_DOWNLOAD_TASKS: usize = 10;
 
 pub struct DownloadTask {
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
 }
 
 pub struct Downloader {
@@ -66,7 +66,10 @@ impl Downloader {
         let handle = DownloaderHandle { tx };
 
         // Initiate download tasks list
-        let download_tasks: Vec<DownloadTask> = Vec::with_capacity(MAX_DOWNLOAD_TASKS);
+        let mut download_tasks: Vec<DownloadTask> = Vec::with_capacity(MAX_DOWNLOAD_TASKS);
+        for _ in 0..MAX_DOWNLOAD_TASKS {
+            download_tasks.push(DownloadTask{handle: None});
+        }
 
         // Spawn new thread
         let join_handle = Some(tokio::spawn(Self::handle_event(
@@ -130,7 +133,7 @@ impl Downloader {
                         warn!("Received remote provision update for unknown UUID: {}", dir_uuid);
                     }
 
-                    if let Some(job) = store.read().await.get_next_download_job() {
+                    if let Some(job) = store.read().await.get_download_job_for_file(file_hash).await {
                         Self::spawn_download_tasks(
                             store.clone(),
                             ep.clone(),
@@ -232,11 +235,13 @@ impl Downloader {
                 }
 
                 DownloaderEvent::TaskFailed(download_job, chunk_index) => {
+                    Self::flush_download_tasks(&mut download_tasks);
                     let mut job = download_job.write().await;
 
                     job.failed_chunks.push(chunk_index);
 
                     if job.chunk_done < *job.size() {
+                        drop(job);
                         Self::spawn_download_tasks(
                             store.clone(),
                             ep.clone(),
@@ -255,12 +260,20 @@ impl Downloader {
                 }
 
                 DownloaderEvent::TaskSuccess(download_job, chunk_index, decoded_data) => {
-                    // TODO: What should we do when the cache file cannot be opened, seeked, written to ? Because it shouldn't happen...
-
+                    // TODO: What should we do when the cache file cannot be opened, seeked, written to ? It shouldn't happen...
+                    Self::flush_download_tasks(&mut download_tasks);
                     let mut job = download_job.write().await;
 
                     // Handling the decoded data & cache file
-                    let cache_file = get_app_cache_dir().join("downloads").join(job.hash().to_string());
+                    let mut cache_file = get_app_cache_dir().join("downloads");
+                    if !cache_file.exists() {
+                        if let Err(err) = std::fs::create_dir_all(cache_file.clone()) {
+                            error!("Cannot create download cache directory: {err}");
+                            return;
+                        }
+                    }
+                    cache_file = cache_file.join(job.hash().to_string());
+
                     let mut file = {
                         if cache_file.exists() {
                             if let Ok(file) = File::options().append(true).open(cache_file.clone()) {
@@ -291,6 +304,7 @@ impl Downloader {
 
                     // Launch new download tasks
                     if job.chunk_done < *job.size() {
+                        drop(job);
                         Self::spawn_download_tasks(
                             store.clone(),
                             ep.clone(),
@@ -304,6 +318,7 @@ impl Downloader {
                         // TODO: Handle failed chunks
                     } else {
                         job.set_state(JobState::Done(Utc::now()));
+                        info!("Received file {}", job.hash());
                         // TODO: Goto next download job
                     }
                 }
@@ -328,14 +343,9 @@ impl Downloader {
         download_job: Arc<RwLock<DownloadJob>>,
         download_handle: DownloaderHandle,
         download_tasks: &mut [DownloadTask],
-    ) -> bool {
-        info!("11");
-
-        let mut ret = false;
+    ) {
         let mut chunk_index = 0;
         let mut job = download_job.write().await;
-
-        info!("10");
 
         if *job.state() == JobState::Pending {
             job.set_state(JobState::Ongoing);
@@ -345,25 +355,21 @@ impl Downloader {
 
         if chunk_index < *job.size() {
             if let Some(dir) = store.read().await.get_shared_dir(job.uuid()) {
-                info!("2");
                 if let Some(node_list) = dir.read().await.remote_provisions.get(job.hash()) {
-                    info!("3");
                     for node in node_list {
                         if Utc::now() < *node.1 {
-                            info!("4");
                             for task in download_tasks.iter_mut() {
-                                if task.handle.is_finished() {
-                                    info!("5");
-                                    task.handle = Self::spawn_download_task(
+                                if task.handle.is_none() {
+                                    task.handle = Some(Self::spawn_download_task(
                                         *node.0,
                                         endpoint.clone(),
                                         download_job.clone(),
                                         chunk_index,
                                         dir.clone(),
                                         download_handle.clone(),
-                                    );
+                                    ));
                                     chunk_index += 1;
-                                    ret = true;
+                                    break;
                                 }
                             }
                         }
@@ -377,11 +383,7 @@ impl Downloader {
             }
         }
 
-        info!("6");
-
         job.chunk_done = chunk_index;
-
-        ret
     }
 
     fn spawn_download_task(
@@ -393,27 +395,22 @@ impl Downloader {
         download_handle: DownloaderHandle,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            info!("8");
             let file_hash = *download_job.read().await.hash();
             if let Ok(mut connection) = SyncifyConnection::connect(node_id, endpoint).await {
-                info!("7");
                 let packet = SyncifyPacket::Blobs(BlobsPacket::BlobRequest {
                     file_hash: *file_hash.as_bytes(),
                     chunk_index,
                 });
-                info!("Sending blob request");
                 if (connection.send_packet(dir.clone(), packet).await).is_err() {
                     download_handle
                         .send(DownloaderEvent::TaskFailed(download_job, chunk_index))
                         .await;
                     return;
                 }
-                info!("Wait for Blob");
                 match connection.receive_packet(dir).await {
                     Ok(packet) => {
                         match packet {
                             SyncifyPacket::Blobs(BlobsPacket::Blob { chunk }) => {
-                                info!("Blob received");
                                 let mut decoded = Vec::new();
                                 let mut decoder = bao::decode::SliceDecoder::new(
                                     &*chunk,
@@ -435,7 +432,8 @@ impl Downloader {
                             _ => {} // Will never happen
                         }
                     }
-                    Err(_) => {
+                    Err(err) => {
+                        debug!("{err}");
                         download_handle
                             .send(DownloaderEvent::TaskFailed(download_job, chunk_index))
                             .await;
@@ -443,6 +441,16 @@ impl Downloader {
                 }
             }
         })
+    }
+
+    fn flush_download_tasks(download_tasks: &mut Vec<DownloadTask>) {
+        for task in download_tasks {
+            if let Some(t) = &task.handle {
+                if t.is_finished() {
+                    task.handle = None;
+                }
+            }
+        }
     }
 
     fn garbage_collect() {}
