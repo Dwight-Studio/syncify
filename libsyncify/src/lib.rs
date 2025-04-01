@@ -23,7 +23,7 @@
 
 use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
 use crate::engine::manager::ManagerHandle;
-use crate::engine::state::State;
+use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
 use crate::store::link::Link;
@@ -152,12 +152,14 @@ impl Syncify {
         let uuid = Uuid::new_v4();
         let sign_key = SigningKey::generate(&mut OsRng);
         let state = State::new(uuid);
+        let tree = state.hash_tree().clone();
 
         let dir = SharedDirectory {
             uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                 state,
+                tree,
                 HashMap::new(),
                 HashMap::new(),
                 HashMap::new(),
@@ -269,12 +271,14 @@ impl Syncify {
             None
         };
         let state = State::new(link.uuid);
+        let tree = state.hash_tree().clone();
 
         let dir = SharedDirectory {
             uuid: link.uuid,
             path: abs_path.clone(),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                 state,
+                tree,
                 link.neighbors,
                 HashMap::new(),
                 HashMap::new(),
@@ -356,6 +360,7 @@ impl SharedDirectory {
 
 pub(crate) struct InnerSharedDirectory {
     pub(crate) state: State,
+    pub(crate) local_tree: HashTree,
     pub(crate) neighbors: HashMap<[u8; 32], bool>,
     pub(crate) local_provisions: HashMap<Hash, DateTime<Utc>>,
     pub(crate) remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
@@ -366,12 +371,14 @@ pub(crate) struct InnerSharedDirectory {
 impl InnerSharedDirectory {
     pub(crate) fn new(
         state: State,
+        local_tree: HashTree,
         neighbors: HashMap<[u8; 32], bool>,
         local_provisions: HashMap<Hash, DateTime<Utc>>,
         remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
     ) -> Self {
         Self {
             state,
+            local_tree,
             neighbors,
             local_provisions,
             remote_provisions,

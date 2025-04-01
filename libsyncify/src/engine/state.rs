@@ -424,7 +424,7 @@ impl Value for Delta {
         Self: 'a,
     {
         rkyv::from_bytes::<Delta, Error>(data).unwrap_or_else(|e| {
-            error!("Failed to deserialize download job: {e}");
+            error!("Failed to deserialize Delta: {e}");
             Delta {
                 parent: None,
                 hash: Hash::from_bytes([0u8; 32]),
@@ -601,6 +601,43 @@ pub enum HashTree {
         #[rkyv(with = crate::util::HashDef)]
         hash: Hash,
     },
+}
+
+impl Value for HashTree {
+    type SelfType<'a> = HashTree;
+    type AsBytes<'a> = &'a [u8];
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    //noinspection RsTraitObligations
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        rkyv::from_bytes::<HashTree, Error>(data).unwrap_or_else(|e| {
+            error!("Failed to deserialize hash tree: {e}");
+            Void
+        })
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b,
+    {
+        rkyv::to_bytes(value)
+            .unwrap_or_else(|e: Error| {
+                error!("Failed to serialize hash tree: {e}");
+                return AlignedVec::new();
+            })
+            .to_vec()
+            .leak()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("HashTree")
+    }
 }
 
 impl HashTree {

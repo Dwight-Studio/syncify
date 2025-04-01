@@ -173,6 +173,11 @@ impl Downloader {
 
                         if let Ok(file) = File::open(file_path.clone()) {
                             let mut reader = BufReader::new(file);
+                            if let Err(e) = std::io::copy(&mut reader, &mut encoder) {
+                                error!("Cannot write cache file: {e}");
+                                return
+                            }
+                            /*
                             let mut buf = [0u8; CHUNK_SIZE];
                             loop {
                                 match reader.read(&mut buf) {
@@ -189,6 +194,7 @@ impl Downloader {
                                     }
                                 }
                             }
+                             */
 
                             match encoder.finalize() {
                                 Ok(hash) => {

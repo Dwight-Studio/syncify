@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::engine::job::{DownloadJob, JobState, Provision};
-use crate::engine::state::{Delta, State};
+use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir};
 use base64::Engine;
@@ -59,6 +59,8 @@ pub const JOBS_EXPIRATION: TimeDelta = TimeDelta::days(7);
 pub const BASE_TABLE: TableDefinition<&str, [u8; 16]> = TableDefinition::new("base");
 /// Head table (UUID -> State head hash).
 pub const HEAD_TABLE: TableDefinition<[u8; 16], [u8; 32]> = TableDefinition::new("head");
+/// Local tree table (UUID -> Local file tree)
+pub const LOCAL_TREE_TABLE: TableDefinition<[u8; 16], HashTree> = TableDefinition::new("local_tree");
 /// Neighbors table (UUID -> Vec of all neighbors NodeIDs).
 pub const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
 /// Local provisions table (UUID -> * Provision), describing the files that are provided to other pairs.
@@ -195,6 +197,7 @@ impl StoreManager {
         {
             let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
             let head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+            let local_tree_table = transaction.open_table(LOCAL_TREE_TABLE).map_err(StoreError::Table)?;
             let neighbors_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
             let local_provision_table = transaction
                 .open_multimap_table(LOCAL_PROVISIONS_TABLE)
@@ -206,6 +209,7 @@ impl StoreManager {
             for range in base_table.iter().map_err(StoreError::Storage)? {
                 let (path, uuid_bytes) = range.unwrap();
                 let head_opt = head_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
+                let local_tree_opt = local_tree_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
                 let neighbors_opt = neighbors_table.get(uuid_bytes.value()).map_err(StoreError::Storage)?;
                 let local_provisions = local_provision_table
                     .get(uuid_bytes.value())
@@ -216,7 +220,7 @@ impl StoreManager {
 
                 let uuid = Uuid::from_bytes(uuid_bytes.value());
 
-                if let (Some(head), Some(neighbors)) = (head_opt, neighbors_opt) {
+                if let (Some(head), Some(neighbors), Some(tree)) = (head_opt, neighbors_opt, local_tree_opt) {
                     if let Some((sign_key, verif_key)) = Self::get_keys(&keyring, uuid) {
                         let uuid_string = uuid.to_string();
 
@@ -244,6 +248,7 @@ impl StoreManager {
                                         path: PathBuf::from(path.value()),
                                         inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                                             state,
+                                            tree.value(),
                                             neighbors.value().iter().map(|e| (*e, false)).collect(),
                                             local_provisions,
                                             remote_provisions,
@@ -261,7 +266,7 @@ impl StoreManager {
                     }
                 } else {
                     error!(
-                        "Unable to load state for {}: Head, Neighbors or Provisions are missing",
+                        "Unable to load state for {}: Head, Neighbors or Local Tree are missing",
                         uuid
                     );
                 }
