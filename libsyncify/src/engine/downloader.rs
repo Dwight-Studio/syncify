@@ -157,7 +157,12 @@ impl Downloader {
                         }
 
                         let mut encoder = {
-                            match File::create(provision_dir.join(file_hash.to_string())) {
+                            match File::options()
+                                .read(true)
+                                .write(true)
+                                .create(true)
+                                .open(provision_dir.join(file_hash.to_string()))
+                            {
                                 Ok(encode_file) => bao::encode::Encoder::new(encode_file),
                                 Err(err) => {
                                     error!("Cannot create cache file: {err}");

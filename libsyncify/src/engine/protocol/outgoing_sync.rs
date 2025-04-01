@@ -89,7 +89,8 @@ impl FiniteStateMachine for OutgoingSync {
                             match sync_packet {
                                 SyncPacket::Request { .. } => {}
                                 SyncPacket::Success { state } => {
-                                    info!("Outgoing: Receiving state\n{}", state);
+                                    debug!("Outgoing: Receiving state");
+                                    //debug!("Outgoing: Receiving state\n{}", state);
                                     let mutations = self
                                         .dir
                                         .write()

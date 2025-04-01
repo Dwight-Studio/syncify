@@ -140,6 +140,8 @@ impl GossipManager {
                                                     self.dir.path.join(file_path),
                                                 ))
                                                 .await;
+                                        } else {
+                                            warn!("File '{}' not found in the local tree of {}", file_hash, self.dir.uuid)
                                         }
                                     }
                                     Payload::Provision { hash, node_id, expire } => {
