@@ -26,6 +26,7 @@ use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol};
 use crate::store::StoreManager;
+use crate::store::lock::{Store, StoreLock};
 use crate::{SharedDirectory, get_app_config_dir};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId};
@@ -54,7 +55,6 @@ pub const AUTO_FLUSH_PERIOD: Duration = Duration::from_secs(30 * 60);
 
 pub struct Engine {
     store: Arc<RwLock<StoreManager>>,
-    store_flush_handle: JoinHandle<()>,
     router: Router,
     gossip: Gossip,
     ep: Endpoint,
@@ -98,11 +98,8 @@ impl Engine {
 
         let protocol = SyncifyProtocol::new(store.clone(), downloader.clone());
 
-        let store_flush_handle = tokio::task::spawn(Self::auto_flush(store.clone()));
-
         let mut engine = Self {
             store: store.clone(),
-            store_flush_handle,
             ep: builder.endpoint().clone(),
             router: builder
                 .accept(SYNCIFY_ALPN, protocol.clone())
@@ -130,7 +127,14 @@ impl Engine {
             let (_, manager) = entries;
             manager.shutdown().await;
         }
-        self.store_flush_handle.abort();
+        self.downloader.shutdown().await;
+    }
+
+    pub fn new_lock<T, G>(&self, inner: T)
+    where
+        T: Store<G>,
+    {
+        StoreLock::new(self.store.clone(), inner);
     }
 
     /// Create [`Manager`] manager for a [`SharedDirectory`].
@@ -177,16 +181,6 @@ impl Engine {
             Ok(())
         } else {
             Err(AlreadyWatched(dir.uuid()))
-        }
-    }
-
-    async fn auto_flush(store: Arc<RwLock<StoreManager>>) {
-        loop {
-            tokio::time::sleep(AUTO_FLUSH_PERIOD).await;
-            info!("Auto-flushing store...");
-            if let Err(e) = store.write().await.flush().await {
-                warn!("Failed to flush store: {}", e);
-            }
         }
     }
 }
