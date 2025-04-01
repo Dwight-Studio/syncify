@@ -93,13 +93,13 @@ impl GossipManager {
         local_tree: &mut HashTree,
         downloader: DownloaderHandle,
     ) {
-        debug!("Dir {}: {:?}", self.dir.uuid(), gossip_event);
         match gossip_event {
             iroh_gossip::net::Event::Gossip(event) => match event {
                 GossipEvent::Joined(node_id_vec) => {
                     let neighbors = &mut self.dir.write().await.neighbors;
 
                     for node_id in &node_id_vec {
+                        debug!("{node_id} joined the swarm of {}", self.dir.uuid);
                         Self::update_neighbors(neighbors, node_id);
                     }
 
@@ -108,13 +108,16 @@ impl GossipManager {
                 GossipEvent::NeighborUp(node_id) => {
                     let neighbors = &mut self.dir.write().await.neighbors;
 
+                    debug!("{node_id} joined the swarm of {}", self.dir.uuid);
                     Self::update_neighbors(neighbors, &node_id);
                 }
                 GossipEvent::NeighborDown(node_id) => {
+                    debug!("{node_id} leaved the swarm of {}", self.dir.uuid);
                     let neighbors = &mut self.dir.write().await.neighbors;
                     *neighbors.get_mut(node_id.as_bytes()).unwrap() = false;
                 }
                 GossipEvent::Received(message) => {
+                    debug!("Message received from the swarm of {}", self.dir.uuid);
                     if let Ok(msg) =
                         rkyv::from_bytes::<Message, rkyv::rancor::Error>(message.content.to_vec().as_slice())
                     {
@@ -129,6 +132,8 @@ impl GossipManager {
                                     Payload::ProvisionRequest { hash } => {
                                         let local_tree = local_tree.map();
                                         let file_hash = Hash::from_bytes(hash);
+                                        info!("Received provision request for file '{file_hash}' for {}", self.dir.uuid);
+
                                         if let Some(file_path) = local_tree.get(&file_hash) {
                                             downloader
                                                 .send(DownloaderEvent::LocalProvisionUpdate(
@@ -142,7 +147,9 @@ impl GossipManager {
                                     Payload::Provision { hash, node_id, expire } => {
                                         if let Ok(node_id) = NodeId::from_bytes(&node_id) {
                                             let hash = Hash::from_bytes(hash);
-                                            
+
+                                            info!("Received provision update for file '{hash}' for {}", self.dir.uuid);
+
                                             downloader.send(DownloaderEvent::RemoteProvisionUpdate(
                                                 self.dir.uuid,
                                                 node_id,

@@ -119,7 +119,7 @@ impl Downloader {
                 DownloaderEvent::RemoteProvisionUpdate(dir_uuid, node_id, file_hash, expiration) => {
                     // Event sent when a remote provision was updated for a file.
                     // (Received a message from the swarm of the availability of a file)
-
+                    
                     if let Some(dir) = store.read().await.get_shared_dir(&dir_uuid) {
                         dir.write()
                             .await
