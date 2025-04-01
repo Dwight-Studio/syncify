@@ -47,7 +47,6 @@ use uuid::Uuid;
 
 pub mod keyring;
 pub mod link;
-pub mod lock;
 
 /// Store file name.
 pub const STORE_FILENAME: &str = "store.db";
