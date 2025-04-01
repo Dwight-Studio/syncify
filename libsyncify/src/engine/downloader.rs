@@ -161,12 +161,19 @@ impl Downloader {
                         if let Ok(file) = File::open(file_path.clone()) {
                             let mut reader = BufReader::new(file);
                             let mut buf = [0u8; CHUNK_SIZE];
-                            while let Ok(len) = reader.read(&mut buf) {
-                                if len == 0 {
-                                    break;
-                                }
-                                if let Err(err) = encoder.write(&buf[0..len]) {
-                                    error!("Cannot write to cache file: {err}");
+                            loop {
+                                match reader.read(&mut buf) {
+                                    Ok(len) => {
+                                        if len == 0 {
+                                            break;
+                                        }
+                                        if let Err(err) = encoder.write(&buf[0..len]) {
+                                            error!("Cannot write to cache file: {err}");
+                                        }
+                                    }
+                                    Err(err) => {
+                                        error!("Error while reading file {file_hash}: {err}");
+                                    }
                                 }
                             }
 
