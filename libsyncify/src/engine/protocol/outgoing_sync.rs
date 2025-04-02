@@ -20,7 +20,6 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::sync::Arc;
 use crate::SharedDirectory;
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
@@ -28,7 +27,8 @@ use crate::engine::protocol::{SyncPacket, SyncifyPacket, SyncifyProtocol, Syncif
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use blake3::Hash;
 use iroh::{Endpoint, NodeId};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 // TODO: Add provision database sync
 
@@ -82,7 +82,7 @@ impl FiniteStateMachine for OutgoingSync {
             OutgoingState::SendingRequest => {
                 debug!("Outgoing: SendingRequest");
                 let packet = SyncPacket::Request {
-                    head: *self.dir.read().await.state.hash().as_bytes(),
+                    head: *self.dir.state.read().await.hash().as_bytes(),
                 };
 
                 if let Some(ref mut conn) = self.connection {
@@ -91,19 +91,24 @@ impl FiniteStateMachine for OutgoingSync {
                             if let SyncifyPacket::Sync(sync_packet) = packet {
                                 match sync_packet {
                                     SyncPacket::Request { .. } => {}
-                                    SyncPacket::Success { state } => {
+                                    SyncPacket::Success { state: other_state } => {
                                         debug!("Outgoing: Receiving state");
                                         //debug!("Outgoing: Receiving state\n{}", state);
-                                        let mutations = self
-                                            .dir
-                                            .write()
-                                            .await
-                                            .state
-                                            .verify_accept_all(state, self.dir.clone())
-                                            .map_err(|e| match e {
-                                                StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                                _ => ProtocolError::Unexpected,
-                                            })?;
+
+                                        let mutations = match self.dir.state.write().await {
+                                            Ok(mut state) => state
+                                                .verify_accept_all(other_state, &self.dir.read_key)
+                                                .await
+                                                .map_err(|e| match e {
+                                                    StateError::InvalidSignature => ProtocolError::InvalidSignature,
+                                                    _ => ProtocolError::Unexpected,
+                                                })?,
+
+                                            Err(e) => {
+                                                error!("Error when writing state: {}", e);
+                                                return Err(ProtocolError::Unexpected);
+                                            }
+                                        };
 
                                         self.dir
                                             .handle()
@@ -147,7 +152,7 @@ impl FiniteStateMachine for OutgoingSync {
                         return Err(ProtocolError::ReceiveFailed);
                     };
                     let packet = {
-                        match self.dir.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
+                        match self.dir.state.read().await.clone_after(hash, MAX_LOADED_DELTAS) {
                             Some(state) => SyncPacket::Success { state },
                             None => SyncPacket::Failed,
                         }

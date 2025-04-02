@@ -20,19 +20,19 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use std::sync::Arc;
 use crate::SharedDirectory;
 use crate::engine::manager::{ManagerEvent, SyncEvent};
+use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::GossipSender;
 use log::{info, warn};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
-use crate::engine::protocol::SyncifyProtocol;
 
 pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -44,7 +44,12 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    pub async fn new(topic: GossipSender, dir: SharedDirectory, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+    pub async fn new(
+        topic: GossipSender,
+        dir: SharedDirectory,
+        ep: Endpoint,
+        proto: Arc<RwLock<SyncifyProtocol>>,
+    ) -> Self {
         Self { topic, dir, ep, proto }
     }
 

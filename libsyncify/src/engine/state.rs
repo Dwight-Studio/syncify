@@ -130,16 +130,6 @@ impl State {
         }
     }
 
-    pub fn flush_in_table(&mut self, state_table: &mut Table<[u8; 32], Delta>) -> Result<(), StoreError> {
-        for (hash, delta) in self.pool.iter() {
-            state_table.insert(hash, delta.as_ref()).map_err(StoreError::Storage)?;
-        }
-
-        self.timestamp = Utc::now();
-
-        Ok(())
-    }
-
     /// Get head's [`Delta`].
     pub fn head(&self) -> &Arc<Delta> {
         self.get(&self.head).unwrap()
@@ -236,10 +226,14 @@ impl State {
     ///
     /// # Return
     ///
-    /// Returns a vec of all accepted mutations in chronological order.
-    pub fn verify_accept_all(&mut self, other_state: State, dir: SharedDirectory) -> Result<Vec<Mutation>, StateError> {
-        let mut stack: Vec<Arc<Delta>> = Vec::new();
-        let mut mutations: Vec<Mutation> = Vec::new();
+    /// Returns a vec of all accepted [`Delta`]s in chronological order.
+    pub fn verify_accept_all(
+        &mut self,
+        other_state: State,
+        read_key: &VerifyingKey,
+    ) -> Result<Vec<Arc<Delta>>, StateError> {
+        let mut stack = Vec::new();
+        let mut rtn = Vec::new();
 
         for delta in other_state.iter() {
             stack.push(delta);
@@ -254,16 +248,16 @@ impl State {
                 if curr_parent != parent {
                     return Err(UnexpectedHash(parent));
                 }
-                if !delta.verify_signature(dir.read_key) {
+                if !delta.verify_signature(*read_key) {
                     return Err(InvalidSignature);
                 }
-                mutations.push(delta.mutation());
                 self.accept(delta.as_ref().clone());
                 parent = delta.hash();
+                rtn.push(delta);
             }
         }
 
-        Ok(mutations)
+        Ok(rtn)
     }
 
     /// Trim [`State`]'s tree of all deltas over the limit of loaded deltas.
@@ -1166,4 +1160,7 @@ pub enum StateError {
 
     #[error("Invalid Signature")]
     InvalidSignature,
+
+    #[error("{0}")]
+    Store(StoreError),
 }

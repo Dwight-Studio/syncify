@@ -50,7 +50,7 @@ impl FileSystemManager {
     /// Poll the file for changes.
     pub async fn poll(&mut self) {
         // Detect changes
-        let mut mutations = self.dir.read().await.local_tree.mutations_from_disk(&self.dir);
+        let mut mutations = self.dir.local_tree.read().await.mutations_from_disk(&self.dir);
 
         // Return if empty
         if mutations.is_empty() {
@@ -66,7 +66,7 @@ impl FileSystemManager {
 
     /// Fuse [`Mutation`] that correspond to a [`Mutation::Move`].
     pub async fn fuse_move(&self, mutations: &mut Vec<Mutation>) {
-        let local_tree = &self.dir.read().await.local_tree;
+        let local_tree = &self.dir.local_tree.read().await;
         let mut working_buffer = Vec::new();
 
         for n_mut in &*mutations {
@@ -125,22 +125,33 @@ impl FileSystemManager {
             None => return,
         };
 
-        let mut inner = self.dir.write().await;
-
         for mutation in &mutations {
-            match inner.state.mutate(mutation.clone(), write_key) {
-                Ok(_) => match inner.local_tree.apply(mutation) {
-                    Ok(tree) => {
-                        debug!("Applied in {}: {mutation}", self.dir.uuid());
-                        inner.local_tree = tree;
-                    }
+            match self.dir.state.write().await {
+                Ok(state) => match state.mutate(mutation.clone(), write_key).await {
+                    Ok(_) => match self.dir.local_tree.write().await {
+                        Ok(tree) => match tree.apply(mutation).await {
+                            Ok(_) => {
+                                debug!("Applied in {}: {mutation}", self.dir.uuid());
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Cannot apply mutation to current tree in {}: {mutation} ({e})",
+                                    self.dir.uuid()
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            error!(
+                                "Cannot apply mutation to current tree in {}: {mutation} ({e})",
+                                self.dir.uuid()
+                            );
+                        }
+                    },
                     Err(e) => {
-                        error!(
-                            "Cannot apply mutation to current tree in {}: {mutation} ({e})",
-                            self.dir.uuid()
-                        );
+                        error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
                     }
                 },
+
                 Err(e) => {
                     error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
                 }
@@ -213,15 +224,21 @@ impl FileSystemManager {
     }
 
     pub(crate) async fn update_local_tree(&self, mutation: Mutation) {
-        let mut inner = self.dir.write().await;
-        match inner.local_tree.apply(&mutation) {
-            Ok(tree) => {
-                debug!("Applied in {}: {mutation}", self.dir.uuid());
-                inner.local_tree = tree;
-            }
+        match self.dir.local_tree.write().await {
+            Ok(tree) => match tree.apply(&mutation).await {
+                Ok(_) => {
+                    debug!("Applied in {}: {mutation}", self.dir.uuid());
+                }
+                Err(e) => {
+                    error!(
+                        "Cannot apply mutation to current tree in {}: {mutation} ({e})",
+                        self.dir.uuid()
+                    );
+                }
+            },
             Err(e) => {
                 error!(
-                    "Cannot apply mutation to local tree in {}: {mutation} ({e})",
+                    "Cannot apply mutation to current tree in {}: {mutation} ({e})",
                     self.dir.uuid()
                 );
             }

@@ -25,6 +25,7 @@ use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
+use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
 use crate::engine::state::Mutation;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
@@ -38,9 +39,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use sync::SyncManager;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
-use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
 
 pub mod fs;
 pub mod gossip;
@@ -59,7 +59,13 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub async fn new(dir: SharedDirectory, topic: GossipTopic, ep: Endpoint, downloader: DownloaderHandle, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+    pub async fn new(
+        dir: SharedDirectory,
+        topic: GossipTopic,
+        ep: Endpoint,
+        downloader: DownloaderHandle,
+        proto: Arc<RwLock<SyncifyProtocol>>,
+    ) -> Self {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel

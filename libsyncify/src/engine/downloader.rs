@@ -68,7 +68,7 @@ impl Downloader {
         // Initiate download tasks list
         let mut download_tasks: Vec<DownloadTask> = Vec::with_capacity(MAX_DOWNLOAD_TASKS);
         for _ in 0..MAX_DOWNLOAD_TASKS {
-            download_tasks.push(DownloadTask{handle: None});
+            download_tasks.push(DownloadTask { handle: None });
         }
 
         // Spawn new thread
@@ -78,7 +78,7 @@ impl Downloader {
             ep,
             download_tasks,
             handle.clone(),
-            proto
+            proto,
         )));
 
         Downloader { join_handle, handle }
@@ -115,7 +115,7 @@ impl Downloader {
                         download_job.clone(),
                         downloader.clone(),
                         &mut download_tasks,
-                        proto.clone()
+                        proto.clone(),
                     )
                     .await;
                 }
@@ -143,7 +143,7 @@ impl Downloader {
                             job,
                             downloader.clone(),
                             &mut download_tasks,
-                            proto.clone()
+                            proto.clone(),
                         )
                         .await;
                     }
@@ -216,11 +216,8 @@ impl Downloader {
                     let provision_dir = get_app_cache_dir().join("provisions");
 
                     if let Ok(file) = File::open(provision_dir.join(file_hash.to_string())) {
-                        let mut extractor = bao::encode::SliceExtractor::new(
-                            file,
-                            CHUNK_SIZE as u64 * chunk_index,
-                            CHUNK_SIZE as u64,
-                        );
+                        let mut extractor =
+                            bao::encode::SliceExtractor::new(file, CHUNK_SIZE as u64 * chunk_index, CHUNK_SIZE as u64);
                         let mut chunk = Vec::new();
                         if let Err(err) = extractor.read_to_end(&mut chunk) {
                             error!("Unable to get file slice: {}", err.to_string());
@@ -300,7 +297,7 @@ impl Downloader {
                         error!("Cannot write to the cache file: {err}");
                         return;
                     }
-                    
+
                     // Handling the job update
                     job.progress = job.chunk_done as f32 / *job.size() as f32;
                     info!("Downloading... {:.1}%", job.progress * 100.0);
@@ -347,7 +344,7 @@ impl Downloader {
         download_job: Arc<RwLock<DownloadJob>>,
         download_handle: DownloaderHandle,
         download_tasks: &mut [DownloadTask],
-        proto: Arc<RwLock<SyncifyProtocol>>
+        proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
         let mut chunk_index = 0;
         let mut job = download_job.write().await;
@@ -372,7 +369,7 @@ impl Downloader {
                                         chunk_index,
                                         dir.clone(),
                                         download_handle.clone(),
-                                        proto.clone()
+                                        proto.clone(),
                                     ));
                                     chunk_index += 1;
                                     break;

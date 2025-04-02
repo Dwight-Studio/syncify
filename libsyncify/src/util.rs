@@ -109,6 +109,7 @@ pub fn setup_logger() -> Result<(), fern::InitError> {
         .level_for("igd_next", log::LevelFilter::Off)
         .level_for("relm4", log::LevelFilter::Off)
         .level_for("netwatch", log::LevelFilter::Off)
+        .level_for("surge_ping:", log::LevelFilter::Off)
         .chain(std::io::stdout())
         .apply()?;
     Ok(())

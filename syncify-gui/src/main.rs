@@ -40,31 +40,27 @@ fn main() {
     setup_logger().unwrap();
 
     // Initialize
-    let result = Syncify::new();
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut syncify = Syncify::new().await?;
+        syncify.start_sync().await?;
+
+        Ok(syncify)
+    });
+
     relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
 
     // Initialize tr
     tr_init!("/usr/share/locale");
 
     match result {
-        Ok(mut syncify) => match tokio::runtime::Runtime::new().unwrap().block_on(syncify.start_sync()) {
-            Ok(()) => {
-                let app = RelmApp::new("fr.dwightstudio.syncify");
-                app.run_async::<App>(syncify)
-            }
-
-            Err(e) => {
-                error(e);
-            }
-        },
+        Ok(syncify) => {
+            let app = RelmApp::new("fr.dwightstudio.syncify");
+            app.run_async::<App>(syncify)
+        }
 
         Err(e) => {
-            error(e);
+            let app = RelmApp::new("fr.dwightstudio.syncify");
+            app.run::<Error>(e)
         }
     }
-}
-
-fn error(e: SyncifyError) {
-    let app = RelmApp::new("fr.dwightstudio.syncify");
-    app.run::<Error>(e)
 }

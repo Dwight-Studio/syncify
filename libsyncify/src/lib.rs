@@ -27,6 +27,7 @@ use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
 use crate::store::link::Link;
+use crate::store::lock::{StoreLock, StoredHashTree, StoredState};
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
 use chrono::{DateTime, Utc};
@@ -84,13 +85,10 @@ pub struct Syncify {
 
 impl Syncify {
     /// Construct new instance.
-    pub fn new() -> Result<Self, SyncifyError> {
-        let store = StoreManager::new().map_err(SyncifyError::Store)?;
+    pub async fn new() -> Result<Self, SyncifyError> {
+        let store = StoreManager::new().await.map_err(SyncifyError::Store)?;
 
-        Ok(Self {
-            store: Arc::new(RwLock::new(store)),
-            engine: None,
-        })
+        Ok(Self { store, engine: None })
     }
 
     /// Initialize new engine and start syncing.
@@ -157,9 +155,9 @@ impl Syncify {
         let dir = SharedDirectory {
             uuid,
             path: abs_path.clone(),
+            state: StoreLock::new(&self.store, state),
+            local_tree: StoreLock::new(&self.store, tree),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                state,
-                tree,
                 HashMap::new(),
                 HashMap::new(),
                 HashMap::new(),
@@ -276,9 +274,9 @@ impl Syncify {
         let dir = SharedDirectory {
             uuid: link.uuid,
             path: abs_path.clone(),
+            state: StoreLock::new(&self.store, state),
+            local_tree: StoreLock::new(&self.store, tree),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                state,
-                tree,
                 link.neighbors,
                 HashMap::new(),
                 HashMap::new(),
@@ -319,6 +317,8 @@ pub struct SharedDirectory {
     uuid: Uuid,
     path: PathBuf,
     inner: Arc<RwLock<InnerSharedDirectory>>,
+    state: StoreLock<State, StoredState>,
+    local_tree: StoreLock<HashTree, StoredHashTree>,
     write_key: Option<SigningKey>,
     read_key: VerifyingKey,
 }
@@ -359,8 +359,6 @@ impl SharedDirectory {
 }
 
 pub(crate) struct InnerSharedDirectory {
-    pub(crate) state: State,
-    pub(crate) local_tree: HashTree,
     pub(crate) neighbors: HashMap<[u8; 32], bool>,
     pub(crate) local_provisions: HashMap<Hash, DateTime<Utc>>,
     pub(crate) remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
@@ -370,15 +368,11 @@ pub(crate) struct InnerSharedDirectory {
 
 impl InnerSharedDirectory {
     pub(crate) fn new(
-        state: State,
-        local_tree: HashTree,
         neighbors: HashMap<[u8; 32], bool>,
         local_provisions: HashMap<Hash, DateTime<Utc>>,
         remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
     ) -> Self {
         Self {
-            state,
-            local_tree,
             neighbors,
             local_provisions,
             remote_provisions,

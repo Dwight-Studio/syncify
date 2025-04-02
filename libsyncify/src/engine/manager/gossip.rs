@@ -81,11 +81,7 @@ impl GossipManager {
     }
 
     //noinspection RsTraitObligations
-    pub async fn handle_events(
-        &mut self,
-        gossip_event: iroh_gossip::net::Event,
-        downloader: DownloaderHandle,
-    ) {
+    pub async fn handle_events(&mut self, gossip_event: iroh_gossip::net::Event, downloader: DownloaderHandle) {
         match gossip_event {
             iroh_gossip::net::Event::Gossip(event) => match event {
                 GossipEvent::Joined(node_id_vec) => {
@@ -123,7 +119,7 @@ impl GossipManager {
                             {
                                 match payload {
                                     Payload::ProvisionRequest { hash } => {
-                                        let local_tree = self.dir.read().await.local_tree.map();
+                                        let local_tree = self.dir.local_tree.read().await.map();
                                         let file_hash = Hash::from_bytes(hash);
                                         info!(
                                             "Received provision request for file '{file_hash}' for {}",

@@ -23,6 +23,7 @@
 use crate::engine::job::{DownloadJob, JobState, Provision};
 use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
+use crate::store::lock::StoreLock;
 use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
@@ -35,7 +36,7 @@ use iroh_base::{NodeId, PublicKey};
 use log::{debug, error, info, warn};
 use redb::{
     CommitError, Database, DatabaseError, MultimapTable, MultimapTableDefinition, MultimapValue, ReadableMultimapTable,
-    ReadableTable, StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError,
+    ReadableTable, StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError, WriteTransaction,
 };
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -47,6 +48,7 @@ use uuid::Uuid;
 
 pub mod keyring;
 pub mod link;
+pub mod lock;
 
 /// Store file name.
 pub const STORE_FILENAME: &str = "store.db";
@@ -85,7 +87,7 @@ pub struct StoreManager {
 }
 
 impl StoreManager {
-    pub fn new() -> Result<Self, StoreError> {
+    pub async fn new() -> Result<Arc<RwLock<Self>>, StoreError> {
         // Create app dir (and parents)
         if !get_app_config_dir().exists() {
             std::fs::create_dir_all(get_app_config_dir()).map_err(StoreError::IO)?;
@@ -95,18 +97,22 @@ impl StoreManager {
         let database_file = get_app_config_dir().join(STORE_FILENAME);
         let keyring = Keyring::new();
         let secret_key = Self::load_secret_key(&keyring);
-        let cache = Self::build_cache(&keyring, database_file.as_path())?;
         let (jobs, active_jobs) = Self::load_jobs(database_file.as_path(), Utc::now() - JOBS_EXPIRATION)?;
 
-        Ok(StoreManager {
+        let store = Arc::new(RwLock::new(StoreManager {
             timestamp: Utc::now(),
-            cache,
+            cache: HashMap::new(),
             jobs,
             active_jobs,
             secret_key,
             keyring,
-            store_file_path: database_file,
-        })
+            store_file_path: database_file.clone(),
+        }));
+
+        let cache = Self::build_cache(&store, &store.read().await.keyring, database_file.as_path())?;
+        store.write().await.cache = cache;
+
+        Ok(store)
     }
 
     /// Load secret key (for initialization).
@@ -187,7 +193,11 @@ impl StoreManager {
     }
 
     /// Build [`SharedDirectory`] cache (for initialization).
-    fn build_cache(keyring: &Keyring, path: &Path) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
+    fn build_cache(
+        store: &Arc<RwLock<StoreManager>>,
+        keyring: &Keyring,
+        path: &Path,
+    ) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
         info!("Building store cache...");
         let mut cache = HashMap::new();
 
@@ -246,9 +256,9 @@ impl StoreManager {
                                     SharedDirectory {
                                         uuid,
                                         path: PathBuf::from(path.value()),
+                                        state: StoreLock::new(&store, state),
+                                        local_tree: StoreLock::new(&store, tree.value()),
                                         inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                                            state,
-                                            tree.value(),
                                             neighbors.value().iter().map(|e| (*e, false)).collect(),
                                             local_provisions,
                                             remote_provisions,
@@ -341,14 +351,14 @@ impl StoreManager {
             .insert(*download_job.read().await.hash(), download_job.clone());
         self.active_jobs.push(download_job);
     }
-    
+
     pub async fn get_download_job_for_file(&self, file_hash: Hash) -> Option<Arc<RwLock<DownloadJob>>> {
         for job in self.active_jobs.clone() {
             if *job.read().await.hash() == file_hash {
                 return Some(job);
             }
         }
-        
+
         None
     }
 
@@ -439,7 +449,17 @@ impl StoreManager {
             .map_err(StoreError::Keyring)?;
 
         self.cache.insert(dir.uuid, dir.clone());
-        self.flush().await?;
+
+        let transaction = self.get_write_transaction().await?;
+        let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
+        base_table
+            .insert(dir.path.to_string_lossy().as_ref(), dir.uuid.as_bytes())
+            .map_err(StoreError::Storage)?;
+
+        if let Err(e) = dir.state.write().await?.save_new_state().await {
+            warn!("Unable to save new state: {}", e);
+        };
+
         Ok(())
     }
 
@@ -451,7 +471,35 @@ impl StoreManager {
             .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))
             .map_err(StoreError::Keyring)?;
 
-        self.flush().await?;
+        let transaction = self.get_write_transaction().await?;
+        let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
+        let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+        let mut local_tree_table = transaction.open_table(LOCAL_TREE_TABLE).map_err(StoreError::Table)?;
+        let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
+        let mut local_provision_table = transaction
+            .open_multimap_table(LOCAL_PROVISIONS_TABLE)
+            .map_err(StoreError::Table)?;
+        let mut remote_provisions_table = transaction
+            .open_multimap_table(REMOTE_PROVISIONS_TABLE)
+            .map_err(StoreError::Table)?;
+
+        base_table
+            .remove(dir.path.to_string_lossy().as_ref())
+            .map_err(StoreError::Storage)?;
+        head_table.remove(dir.uuid.as_bytes()).map_err(StoreError::Storage)?;
+        local_tree_table
+            .remove(dir.uuid.as_bytes())
+            .map_err(StoreError::Storage)?;
+        neighbor_table
+            .remove(dir.uuid.as_bytes())
+            .map_err(StoreError::Storage)?;
+        local_provision_table
+            .remove_all(dir.uuid.as_bytes())
+            .map_err(StoreError::Storage)?;
+        remote_provisions_table
+            .remove_all(dir.uuid.as_bytes())
+            .map_err(StoreError::Storage)?;
+
         Ok(())
     }
 
@@ -465,6 +513,12 @@ impl StoreManager {
         self.cache.values().cloned().collect()
     }
 
+    /// Get a write transaction for the database.
+    pub async fn get_write_transaction(&self) -> Result<WriteTransaction, StoreError> {
+        let db = Database::create(self.store_file_path.as_path()).map_err(StoreError::Database)?;
+        db.begin_write().map_err(StoreError::Transaction)
+    }
+
     //noinspection RsTraitObligations
     /// Flush cache to database.
     pub async fn flush(&mut self) -> Result<(), StoreError> {
@@ -474,9 +528,6 @@ impl StoreManager {
         let transaction = db.begin_write().map_err(StoreError::Transaction)?;
 
         {
-            let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
-            let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
-            let mut local_tree_table = transaction.open_table(LOCAL_TREE_TABLE).map_err(StoreError::Table)?;
             let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
             let mut local_provision_table = transaction
                 .open_multimap_table(LOCAL_PROVISIONS_TABLE)
@@ -491,18 +542,8 @@ impl StoreManager {
             // Save each SharedDirectory
             for (uuid, dir) in &self.cache {
                 debug!("Saving state for {}", uuid);
-                let mut inner = dir.write().await;
+                let inner = dir.write().await;
 
-                // Update index tables
-                base_table
-                    .insert(dir.path.to_string_lossy().as_ref(), uuid.as_bytes())
-                    .map_err(StoreError::Storage)?;
-                head_table
-                    .insert(uuid.as_bytes(), inner.state.hash().as_bytes())
-                    .map_err(StoreError::Storage)?;
-                local_tree_table
-                    .insert(uuid.as_bytes(), inner.local_tree.clone())
-                    .map_err(StoreError::Storage)?;
                 neighbor_table
                     .insert(
                         uuid.as_bytes(),
@@ -510,18 +551,7 @@ impl StoreManager {
                     )
                     .map_err(StoreError::Storage)?;
 
-                let uuid_string = uuid.to_string();
-
-                let state_table_def: TableDefinition<[u8; 32], Delta> = TableDefinition::new(uuid_string.as_str());
-                let mut state_table = transaction.open_table(state_table_def).map_err(StoreError::Table)?;
-
-                inner.state.flush_in_table(&mut state_table)?;
-
                 Self::flush_provisions(dir, &inner, &mut local_provision_table, &mut remote_provisions_table)?;
-
-                if inner.state.trim() {
-                    debug!("Pruned state {}", uuid_string);
-                }
             }
         }
 

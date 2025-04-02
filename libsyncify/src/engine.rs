@@ -24,7 +24,7 @@
 use crate::engine::EngineError::AlreadyWatched;
 use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
-use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocolHandler, SyncifyProtocol};
+use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol, SyncifyProtocolHandler};
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_config_dir};
 use iroh::protocol::Router;
@@ -93,8 +93,9 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-
-        let protocol = Arc::new(RwLock::new(SyncifyProtocol { connections: Vec::new() }));
+        let protocol = Arc::new(RwLock::new(SyncifyProtocol {
+            connections: Vec::new(),
+        }));
         let downloader = Downloader::new(store.clone(), builder.endpoint().clone(), protocol.clone());
         let protocol_handler = SyncifyProtocolHandler::new(protocol.clone(), store.clone(), downloader.clone());
 
@@ -110,7 +111,7 @@ impl Engine {
             gossip,
             downloader,
             managers: HashMap::new(),
-            proto: protocol
+            proto: protocol,
         };
 
         for dir in &store.read().await.get_all_dirs() {
@@ -159,7 +160,14 @@ impl Engine {
                 .map_err(EngineError::Gossip)?;
 
             // Create manager
-            let manager = Manager::new(dir.clone(), topic, self.ep.clone(), self.downloader.clone(), self.proto.clone()).await;
+            let manager = Manager::new(
+                dir.clone(),
+                topic,
+                self.ep.clone(),
+                self.downloader.clone(),
+                self.proto.clone(),
+            )
+            .await;
 
             self.managers.insert(dir.uuid, manager);
             Ok(())

@@ -25,7 +25,7 @@ use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::protocol::{SyncPacket, SyncifyPacket, SyncifyStream};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 
 #[derive(Eq, PartialEq)]
 pub enum IncomingState {
@@ -61,7 +61,7 @@ impl FiniteStateMachine for IncomingSync {
             IncomingState::ReceivingRequest => {
                 info!("Incoming sync request");
                 let packet = {
-                    match self.dir.read().await.state.clone_after(self.hash, MAX_LOADED_DELTAS) {
+                    match self.dir.state.read().await.clone_after(self.hash, MAX_LOADED_DELTAS) {
                         Some(state) => SyncifyPacket::Sync(SyncPacket::Success { state }),
                         None => SyncifyPacket::Sync(SyncPacket::Failed),
                     }
@@ -77,31 +77,32 @@ impl FiniteStateMachine for IncomingSync {
             IncomingState::SendingRequest => {
                 debug!("Incoming: SendingRequest");
                 let packet = SyncPacket::Request {
-                    head: *self.dir.read().await.state.hash().as_bytes(),
+                    head: *self.dir.state.read().await.hash().as_bytes(),
                 };
 
-                if let Ok(()) = self
-                    .connection
-                    .send(&SyncifyPacket::Sync(packet))
-                    .await
-                {
+                if let Ok(()) = self.connection.send(&SyncifyPacket::Sync(packet)).await {
                     if let Ok(packet) = self.connection.recv().await {
                         if let SyncifyPacket::Sync(sync_packet) = packet {
                             match sync_packet {
                                 SyncPacket::Request { .. } => {}
-                                SyncPacket::Success { state } => {
+                                SyncPacket::Success { state: other_state } => {
                                     debug!("Incoming: Receiving state");
                                     //debug!("Incoming: Receiving state: \n{}", state);
-                                    let mutations = self
-                                        .dir
-                                        .write()
-                                        .await
-                                        .state
-                                        .verify_accept_all(state, self.dir.clone())
-                                        .map_err(|e| match e {
-                                            StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                            _ => ProtocolError::Unexpected,
-                                        })?;
+
+                                    let mutations = match self.dir.state.write().await {
+                                        Ok(mut state) => state
+                                            .verify_accept_all(other_state, &self.dir.read_key)
+                                            .await
+                                            .map_err(|e| match e {
+                                                StateError::InvalidSignature => ProtocolError::InvalidSignature,
+                                                _ => ProtocolError::Unexpected,
+                                            })?,
+
+                                        Err(e) => {
+                                            error!("Error when writing state: {}", e);
+                                            return Err(ProtocolError::Unexpected);
+                                        }
+                                    };
 
                                     self.dir
                                         .handle()
