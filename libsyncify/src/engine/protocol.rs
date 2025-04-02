@@ -34,7 +34,7 @@ use blake3::Hash;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
-use iroh::endpoint::{ClosedStream, Connection, ReadError, ReadExactError, ReadToEndError, RecvStream, SendStream, StoppedError, VarInt, WriteError};
+use iroh::endpoint::{ClosedStream, Connection, ReadExactError, ReadToEndError, RecvStream, SendStream, StoppedError, VarInt, WriteError};
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeId};
 use iroh_base::NodeAddr;
@@ -44,7 +44,6 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use log::debug;
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -89,6 +88,7 @@ pub enum BlobsPacket {
 /// The [`SyncifyProtocol`] struct, used to store the active connections.
 pub struct SyncifyProtocol {
     pub(crate) connections: Vec<Connection>,
+    // TODO: Add the endpoint
 }
 
 impl SyncifyProtocol {
@@ -259,93 +259,98 @@ impl Debug for SyncifyProtocolHandler {
 }
 
 impl ProtocolHandler for SyncifyProtocolHandler {
-    //noinspection RsTraitObligations
+    
     /// Manages incoming SyncifyProtocol connections
     fn accept(&self, connection: Connection) -> Boxed<anyhow::Result<()>> {
         let protocol = self.protocol.clone();
         let store = self.store.clone();
         let downloader = self.downloader.clone();
         Box::pin(async move {
-            protocol.write().await.connections.push(connection.clone());
-
-            debug!("Accepting connection with {}", connection.remote_node_id().unwrap());
-
-            while let Ok((tx, mut rx)) = connection.accept_bi().await {
-                debug!("Accepting stream with {}", connection.remote_node_id().unwrap());
-                
-                let mut header_buffer = [0u8; HEADER_SIZE];
-                rx.read_exact(&mut header_buffer).await.unwrap();
-
-                let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer)
-                    .map_err(SyncifyProtocolError::DeserializeError)?;
-
-                let dir = {
-                    match store.read().await.get_shared_dir(&header.uuid) {
-                        None => {
-                            connection.close(
-                                VarInt::from_u32(1),
-                                SyncifyProtocolError::UuidDoesNotExists.to_string().as_bytes(),
-                            );
-                            return Ok(());
-                        }
-                        Some(dir) => dir,
-                    }
-                };
-
-                let mut packet_buffer = vec![0u8; header.packet_size as usize];
-                rx.read_exact(&mut packet_buffer)
-                    .await
-                    .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
-
-                let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
-                let decrypted_bytes = cipher
-                    .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
-                    .map_err(SyncifyProtocolError::DecryptionError)?;
-
-                let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
-                    .map_err(SyncifyProtocolError::DeserializeError)?;
-
-                let stream = SyncifyStream {
-                    dir: dir.clone(),
-                    send_stream: tx,
-                    recv_stream: rx,
-                };
-
-                match packet {
-                    SyncifyPacket::Sync(sync_packet) => {
-                        if let SyncPacket::Request { head } = sync_packet {
-                            dir.handle()
-                                .await
-                                .clone()
-                                .send(Sync(SyncEvent::RequestSync(stream, blake3::Hash::from(head))))
-                                .await;
-                        }
-                    }
-                    SyncifyPacket::Blobs(blobs_packet) => {
-                        if let BlobsPacket::BlobRequest { file_hash, chunk_index } = blobs_packet {
-                            downloader
-                                .send(DownloaderEvent::Supply {
-                                    conn: stream,
-                                    file_hash: Hash::from(file_hash),
-                                    chunk_index,
-                                })
-                                .await;
-                        }
-                    }
-                }
-            }
-
-            debug!("Dropping connection with {}", connection.remote_node_id().unwrap());
-
-            protocol
-                .write()
-                .await
-                .connections
-                .retain(|c| c.close_reason().is_none());
-
-            Ok(())
+            accept_connection(connection, protocol, store, downloader).await
         })
     }
+}
+
+//noinspection RsTraitObligations
+async fn accept_connection(connection: Connection, protocol: Arc<RwLock<SyncifyProtocol>>, store: Arc<RwLock<StoreManager>>, downloader: DownloaderHandle) -> anyhow::Result<()> {
+    protocol.write().await.connections.push(connection.clone());
+
+    debug!("Accepting connection with {}", connection.remote_node_id().unwrap());
+
+    while let Ok((tx, mut rx)) = connection.accept_bi().await {
+        debug!("Accepting stream with {}", connection.remote_node_id().unwrap());
+
+        let mut header_buffer = [0u8; HEADER_SIZE];
+        rx.read_exact(&mut header_buffer).await.unwrap();
+
+        let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer)
+            .map_err(SyncifyProtocolError::DeserializeError)?;
+
+        let dir = {
+            match store.read().await.get_shared_dir(&header.uuid) {
+                None => {
+                    connection.close(
+                        VarInt::from_u32(1),
+                        SyncifyProtocolError::UuidDoesNotExists.to_string().as_bytes(),
+                    );
+                    return Ok(());
+                }
+                Some(dir) => dir,
+            }
+        };
+
+        let mut packet_buffer = vec![0u8; header.packet_size as usize];
+        rx.read_exact(&mut packet_buffer)
+            .await
+            .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
+
+        let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
+        let decrypted_bytes = cipher
+            .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
+            .map_err(SyncifyProtocolError::DecryptionError)?;
+
+        let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
+            .map_err(SyncifyProtocolError::DeserializeError)?;
+
+        let stream = SyncifyStream {
+            dir: dir.clone(),
+            send_stream: tx,
+            recv_stream: rx,
+        };
+
+        match packet {
+            SyncifyPacket::Sync(sync_packet) => {
+                if let SyncPacket::Request { head } = sync_packet {
+                    dir.handle()
+                        .await
+                        .clone()
+                        .send(Sync(SyncEvent::RequestSync(stream, blake3::Hash::from(head))))
+                        .await;
+                }
+            }
+            SyncifyPacket::Blobs(blobs_packet) => {
+                if let BlobsPacket::BlobRequest { file_hash, chunk_index } = blobs_packet {
+                    downloader
+                        .send(DownloaderEvent::Supply {
+                            conn: stream,
+                            file_hash: Hash::from(file_hash),
+                            chunk_index,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+
+    debug!("Dropping connection with {}", connection.remote_node_id().unwrap());
+
+    protocol
+        .write()
+        .await
+        .connections
+        .retain(|c| c.close_reason().is_none());
+
+    Ok(())
 }
 
 #[derive(Error, Debug)]
