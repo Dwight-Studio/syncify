@@ -167,9 +167,6 @@ impl SyncifyStream {
             uuid: self.dir.uuid,
         };
         let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
-
-        debug!("Sending: {:?}", header);
-        debug!("Sending: {:?}", packet);
         
         self.send_stream.write_all(header_bytes.as_slice()).await.unwrap();
         self.send_stream.write_all(cipher_bytes.as_slice()).await.unwrap();
@@ -269,6 +266,8 @@ impl ProtocolHandler for SyncifyProtocolHandler {
         Box::pin(async move {
             protocol.write().await.connections.push(connection.clone());
 
+            debug!("Accepting connection with {}", connection.remote_node_id().unwrap());
+
             while let Ok((tx, mut rx)) = connection.accept_bi().await {
                 let mut header_buffer = [0u8; HEADER_SIZE];
                 rx.read_exact(&mut header_buffer).await.unwrap();
@@ -331,6 +330,8 @@ impl ProtocolHandler for SyncifyProtocolHandler {
                     }
                 }
             }
+            
+            debug!("Dropping connection with {}", connection.remote_node_id().unwrap());
 
             protocol
                 .write()
