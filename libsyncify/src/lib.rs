@@ -119,13 +119,6 @@ impl Syncify {
         // Add a trailing "/" at the end of the path
         abs_path.push("");
 
-        // Check if the directory is already shared
-        for dir in &self.store.read().await.get_all_dirs() {
-            if dir.path == abs_path {
-                return Err(AlreadyShared(abs_path.clone()));
-            }
-        }
-
         // Check if the dir exists
         if abs_path.exists() {
             // Check if the user has write access in the directory
@@ -144,6 +137,11 @@ impl Syncify {
                     ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
                     _ => InvalidPath(e),
                 })?
+        }
+
+        // Verify if it already exists
+        if self.store.read().await.get_all_dirs().iter().any(|d| d.path == abs_path) {
+            return Err(AlreadyShared(abs_path));
         }
 
         // Add the directory to the store
@@ -268,6 +266,11 @@ impl Syncify {
                     ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
                     _ => InvalidPath(e),
                 })?
+        }
+        
+        // Verify if it already exists
+        if self.store.read().await.get_all_dirs().iter().any(|d| d.path == abs_path) {
+            return Err(AlreadyShared(abs_path));
         }
 
         // Add the directory to the store

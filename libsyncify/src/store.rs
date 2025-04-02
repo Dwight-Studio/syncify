@@ -24,7 +24,7 @@ use crate::engine::job::{DownloadJob, JobState, Provision};
 use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::store::lock::StoreLock;
-use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir};
+use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir, SyncifyError};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
@@ -450,12 +450,20 @@ impl StoreManager {
 
         self.cache.insert(dir.uuid, dir.clone());
 
+        // Adding base tables
         let transaction = self.get_write_transaction()?;
-        let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
-        base_table
-            .insert(dir.path.to_string_lossy().as_ref(), dir.uuid.as_bytes())
-            .map_err(StoreError::Storage)?;
+        {
+            let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
+            base_table
+                .insert(dir.path.to_string_lossy().as_ref(), dir.uuid.as_bytes())
+                .map_err(StoreError::Storage)?;
+        }
         
+        transaction.commit().map_err(StoreError::Commit)?;
+
+        // Flushing store
+        self.flush().await?;
+
         Ok(())
     }
 
@@ -467,34 +475,42 @@ impl StoreManager {
             .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))
             .map_err(StoreError::Keyring)?;
 
+        // Removing tables
         let transaction = self.get_write_transaction()?;
-        let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
-        let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
-        let mut local_tree_table = transaction.open_table(LOCAL_TREE_TABLE).map_err(StoreError::Table)?;
-        let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
-        let mut local_provision_table = transaction
-            .open_multimap_table(LOCAL_PROVISIONS_TABLE)
-            .map_err(StoreError::Table)?;
-        let mut remote_provisions_table = transaction
-            .open_multimap_table(REMOTE_PROVISIONS_TABLE)
-            .map_err(StoreError::Table)?;
+        {
+            let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
+            let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
+            let mut local_tree_table = transaction.open_table(LOCAL_TREE_TABLE).map_err(StoreError::Table)?;
+            let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
+            let mut local_provision_table = transaction
+                .open_multimap_table(LOCAL_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
+            let mut remote_provisions_table = transaction
+                .open_multimap_table(REMOTE_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
 
-        base_table
-            .remove(dir.path.to_string_lossy().as_ref())
-            .map_err(StoreError::Storage)?;
-        head_table.remove(dir.uuid.as_bytes()).map_err(StoreError::Storage)?;
-        local_tree_table
-            .remove(dir.uuid.as_bytes())
-            .map_err(StoreError::Storage)?;
-        neighbor_table
-            .remove(dir.uuid.as_bytes())
-            .map_err(StoreError::Storage)?;
-        local_provision_table
-            .remove_all(dir.uuid.as_bytes())
-            .map_err(StoreError::Storage)?;
-        remote_provisions_table
-            .remove_all(dir.uuid.as_bytes())
-            .map_err(StoreError::Storage)?;
+            base_table
+                .remove(dir.path.to_string_lossy().as_ref())
+                .map_err(StoreError::Storage)?;
+            head_table.remove(dir.uuid.as_bytes()).map_err(StoreError::Storage)?;
+            local_tree_table
+                .remove(dir.uuid.as_bytes())
+                .map_err(StoreError::Storage)?;
+            neighbor_table
+                .remove(dir.uuid.as_bytes())
+                .map_err(StoreError::Storage)?;
+            local_provision_table
+                .remove_all(dir.uuid.as_bytes())
+                .map_err(StoreError::Storage)?;
+            remote_provisions_table
+                .remove_all(dir.uuid.as_bytes())
+                .map_err(StoreError::Storage)?;
+        }
+
+        transaction.commit().map_err(StoreError::Commit)?;
+
+        // Flushing store
+        self.flush().await?;
 
         Ok(())
     }
