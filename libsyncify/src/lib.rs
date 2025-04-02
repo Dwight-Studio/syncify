@@ -33,7 +33,7 @@ use chacha20poly1305::aead::OsRng;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh_base::NodeId;
-use log::info;
+use log::{info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
@@ -179,6 +179,14 @@ impl Syncify {
             .await
             .map_err(SyncifyError::Store)?;
 
+        if let Err(e) = dir.state.write().save_new().await {
+            warn!("Unable to save new state: {}", e);
+        };
+
+        if let Err(e) = dir.local_tree.write().save_new().await {
+            warn!("Unable to save new tree: {}", e);
+        };
+
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
             engine
@@ -297,6 +305,14 @@ impl Syncify {
             .add_shared_dir(&dir)
             .await
             .map_err(SyncifyError::Store)?;
+
+        if let Err(e) = dir.state.write().save_new().await {
+            warn!("Unable to save new state: {}", e);
+        };
+
+        if let Err(e) = dir.local_tree.write().save_new().await {
+            warn!("Unable to save new tree: {}", e);
+        };
 
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {

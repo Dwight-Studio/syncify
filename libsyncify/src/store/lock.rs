@@ -244,6 +244,7 @@ impl StoredHashTree {
     /// Save the [`State`] after creation.
     pub async fn save_new(&self) -> Result<(), StateError> {
         let tree = self.inner.write().await;
+        
         let transaction = self
             .store
             .write()

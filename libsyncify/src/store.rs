@@ -455,15 +455,7 @@ impl StoreManager {
         base_table
             .insert(dir.path.to_string_lossy().as_ref(), dir.uuid.as_bytes())
             .map_err(StoreError::Storage)?;
-
-        if let Err(e) = dir.state.write().save_new().await {
-            warn!("Unable to save new state: {}", e);
-        };
-
-        if let Err(e) = dir.local_tree.write().save_new().await {
-            warn!("Unable to save new tree: {}", e);
-        };
-
+        
         Ok(())
     }
 
