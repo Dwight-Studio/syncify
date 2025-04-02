@@ -78,12 +78,12 @@ pub const JOBS_TABLE: TableDefinition<[u8; 32], DownloadJob> = TableDefinition::
 pub struct StoreManager {
     /// The timestamp is dated from last time the store was flushed.
     timestamp: DateTime<Utc>,
+    db: Database,
     cache: HashMap<Uuid, SharedDirectory>,
     jobs: HashMap<Hash, Arc<RwLock<DownloadJob>>>,
     active_jobs: Vec<Arc<RwLock<DownloadJob>>>,
     secret_key: SecretKey,
     keyring: Keyring,
-    store_file_path: PathBuf,
 }
 
 impl StoreManager {
@@ -95,18 +95,20 @@ impl StoreManager {
 
         // Initialize everything
         let database_file = get_app_config_dir().join(STORE_FILENAME);
+        let db = Database::create(database_file.as_path()).map_err(StoreError::Database)?;
+        
         let keyring = Keyring::new();
         let secret_key = Self::load_secret_key(&keyring);
-        let (jobs, active_jobs) = Self::load_jobs(database_file.as_path(), Utc::now() - JOBS_EXPIRATION)?;
+        let (jobs, active_jobs) = Self::load_jobs(&db, Utc::now() - JOBS_EXPIRATION)?;
 
         let store = Arc::new(RwLock::new(StoreManager {
             timestamp: Utc::now(),
+            db,
             cache: HashMap::new(),
             jobs,
             active_jobs,
             secret_key,
-            keyring,
-            store_file_path: database_file.clone(),
+            keyring
         }));
 
         let cache = Self::build_cache(&store, &store.read().await.keyring, database_file.as_path())?;
@@ -290,13 +292,12 @@ impl StoreManager {
 
     /// Load the [`DownloadJob`]s (for initialization).
     fn load_jobs(
-        path: &Path,
+        db: &Database,
         since: DateTime<Utc>,
     ) -> Result<(HashMap<Hash, Arc<RwLock<DownloadJob>>>, Vec<Arc<RwLock<DownloadJob>>>), StoreError> {
         let mut jobs = HashMap::new();
         let mut active_jobs = Vec::new();
-
-        let db = Database::create(path).map_err(StoreError::Database)?;
+        
         let transaction = db.begin_write().map_err(StoreError::Transaction)?;
 
         {
@@ -515,8 +516,7 @@ impl StoreManager {
 
     /// Get a write transaction for the database.
     pub async fn get_write_transaction(&self) -> Result<WriteTransaction, StoreError> {
-        let db = Database::create(self.store_file_path.as_path()).map_err(StoreError::Database)?;
-        db.begin_write().map_err(StoreError::Transaction)
+        self.db.begin_write().map_err(StoreError::Transaction)
     }
 
     //noinspection RsTraitObligations
@@ -524,8 +524,7 @@ impl StoreManager {
     pub async fn flush(&mut self) -> Result<(), StoreError> {
         info!("Saving store...");
 
-        let db = Database::create(self.store_file_path.as_path()).map_err(StoreError::Database)?;
-        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
+        let transaction = self.db.begin_write().map_err(StoreError::Transaction)?;
 
         {
             let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
