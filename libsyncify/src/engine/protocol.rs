@@ -34,9 +34,7 @@ use blake3::Hash;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
-use iroh::endpoint::{
-    ClosedStream, Connection, ReadError, ReadToEndError, RecvStream, SendStream, StoppedError, VarInt, WriteError,
-};
+use iroh::endpoint::{ClosedStream, Connection, ReadError, ReadExactError, ReadToEndError, RecvStream, SendStream, StoppedError, VarInt, WriteError};
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeId};
 use iroh_base::NodeAddr;
@@ -44,7 +42,9 @@ use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use log::debug;
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -168,6 +168,9 @@ impl SyncifyStream {
         };
         let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
 
+        debug!("Sending: {:?}", header);
+        debug!("Sending: {:?}", packet);
+        
         self.send_stream.write_all(header_bytes.as_slice()).await.unwrap();
         self.send_stream.write_all(cipher_bytes.as_slice()).await.unwrap();
 
@@ -187,9 +190,9 @@ impl SyncifyStream {
     async fn recv_header(&mut self) -> Result<HeaderPacket, SyncifyProtocolError> {
         let mut header_data = [0u8; HEADER_SIZE];
         self.recv_stream
-            .read(&mut header_data)
+            .read_exact(&mut header_data)
             .await
-            .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("header")))?;
+            .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("header")))?;
 
         let res = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_data)
             .map_err(SyncifyProtocolError::DeserializeError)?;
@@ -204,16 +207,10 @@ impl SyncifyStream {
     //noinspection RsTraitObligations
     /// Receive a [`SyncifyPacket`].
     async fn recv_packet(&mut self, header_packet: &HeaderPacket) -> Result<SyncifyPacket, SyncifyProtocolError> {
-        let packet_buffer;
-        match self.recv_stream.read_to_end(header_packet.packet_size as usize).await {
-            Ok(vec) => packet_buffer = vec,
-            Err(err) => {
-                return Err(SyncifyProtocolError::ReadToEndError(
-                    err,
-                    String::from("syncify-packet"),
-                ));
-            }
-        }
+        let mut packet_buffer = vec![0u8; header_packet.packet_size as usize];
+        self.recv_stream.read_exact(&mut packet_buffer)
+            .await
+            .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
 
         let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.read_key.to_bytes()));
         let decrypted_bytes = cipher
@@ -224,7 +221,7 @@ impl SyncifyStream {
     }
 
     /// Close the stream.
-    pub async fn close(mut self) -> Result<(), SyncifyProtocolError> {
+    pub async fn close(&mut self) -> Result<(), SyncifyProtocolError> {
         self.send_stream.finish().map_err(SyncifyProtocolError::ClosedStream)?;
         self.send_stream
             .stopped()
@@ -293,9 +290,9 @@ impl ProtocolHandler for SyncifyProtocolHandler {
                 };
 
                 let mut packet_buffer = vec![0u8; header.packet_size as usize];
-                rx.read(&mut packet_buffer)
+                rx.read_exact(&mut packet_buffer)
                     .await
-                    .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
+                    .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
 
                 let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
                 let decrypted_bytes = cipher
@@ -349,10 +346,7 @@ impl ProtocolHandler for SyncifyProtocolHandler {
 #[derive(Error, Debug)]
 pub enum SyncifyProtocolError {
     #[error("Read error: {0}, {1}")]
-    ReadError(ReadError, String),
-
-    #[error("Read error: {0}, {1}")]
-    ReadToEndError(ReadToEndError, String),
+    ReadExactError(ReadExactError, String),
 
     #[error("Write error: {0}")]
     WriteError(WriteError),

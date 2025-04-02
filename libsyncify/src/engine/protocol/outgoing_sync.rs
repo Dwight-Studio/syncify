@@ -159,6 +159,9 @@ impl FiniteStateMachine for OutgoingSync {
                     };
 
                     if let Ok(()) = conn.send(&SyncifyPacket::Sync(packet)).await {
+                        if conn.close().await.is_err() {
+                            return Err(ProtocolError::Unexpected);
+                        }
                         Ok(OutgoingState::Finish)
                     } else {
                         Err(ProtocolError::SendFailed)

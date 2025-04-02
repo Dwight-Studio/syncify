@@ -113,6 +113,9 @@ impl FiniteStateMachine for IncomingSync {
                                 return Err(ProtocolError::Unexpected);
                             }
 
+                            if self.connection.close().await.is_err() {
+                                return Err(ProtocolError::Unexpected);
+                            }
                             Ok(IncomingState::Finish)
                         }
                         Err(e) => {
