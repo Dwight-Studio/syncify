@@ -24,7 +24,7 @@
 use crate::engine::EngineError::AlreadyWatched;
 use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
-use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol};
+use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocolHandler};
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_config_dir};
 use iroh::protocol::Router;
@@ -95,7 +95,7 @@ impl Engine {
 
         let downloader = Downloader::new(store.clone(), builder.endpoint().clone());
 
-        let protocol = SyncifyProtocol::new(store.clone(), downloader.clone());
+        let protocol = SyncifyProtocolHandler::new(store.clone(), downloader.clone());
 
         let mut engine = Self {
             store: store.clone(),

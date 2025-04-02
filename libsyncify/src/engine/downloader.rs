@@ -44,7 +44,7 @@ use uuid::Uuid;
 /// Size of the event buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 /// Size of the chunk of file that are sent per packet.
-pub const CHUNK_SIZE: usize = 16 * 1024;
+pub const CHUNK_SIZE: usize = 32 * 1024;
 /// Number of concurrent download threads
 pub const MAX_DOWNLOAD_TASKS: usize = 10;
 
@@ -298,9 +298,10 @@ impl Downloader {
                         error!("Cannot write to the cache file: {err}");
                         return;
                     }
-
+                    
                     // Handling the job update
-                    job.progress = (job.chunk_done / job.size()) as f32;
+                    job.progress = (job.chunk_done as f32 / *job.size() as f32);
+                    info!("Downloading... {:.1}%", job.progress * 100.0);
 
                     // Launch new download tasks
                     if job.chunk_done < *job.size() {
