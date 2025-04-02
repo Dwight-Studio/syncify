@@ -111,7 +111,7 @@ impl StoreManager {
             keyring
         }));
 
-        let cache = Self::build_cache(&store, &store.read().await.keyring, database_file.as_path())?;
+        let cache = Self::build_cache(&store, &store.read().await.keyring, &store.read().await.db)?;
         store.write().await.cache = cache;
 
         Ok(store)
@@ -198,12 +198,11 @@ impl StoreManager {
     fn build_cache(
         store: &Arc<RwLock<StoreManager>>,
         keyring: &Keyring,
-        path: &Path,
+        db: &Database
     ) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
         info!("Building store cache...");
         let mut cache = HashMap::new();
 
-        let db = Database::create(path).map_err(StoreError::Database)?;
         let transaction = db.begin_write().map_err(StoreError::Transaction)?;
 
         {
