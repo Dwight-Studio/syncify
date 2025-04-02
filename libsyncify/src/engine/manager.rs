@@ -24,22 +24,23 @@ use crate::SharedDirectory;
 use crate::engine::downloader::DownloaderHandle;
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
-use crate::engine::protocol::SyncifyConnection;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
-use crate::engine::state::{HashTree, Mutation};
+use crate::engine::state::Mutation;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
 use futures::{Sink, StreamExt};
 use iroh::Endpoint;
 use iroh_gossip::net::{GossipSender, GossipTopic};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use sync::SyncManager;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
+use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
 
 pub mod fs;
 pub mod gossip;
@@ -58,7 +59,7 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub async fn new(dir: SharedDirectory, topic: GossipTopic, ep: Endpoint, downloader: DownloaderHandle) -> Self {
+    pub async fn new(dir: SharedDirectory, topic: GossipTopic, ep: Endpoint, downloader: DownloaderHandle, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
         info!("Initializing directory manager for {}", dir.uuid());
 
         // Initiate channel
@@ -95,6 +96,7 @@ impl Manager {
             ep,
             downloader,
             handle.clone(),
+            proto,
         )));
 
         Self {
@@ -122,10 +124,11 @@ impl Manager {
         ep: Endpoint,
         downloader: DownloaderHandle,
         handle: ManagerHandle,
+        proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
         let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone()).await;
         let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), ep.clone(), handle.clone()).await;
-        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), ep.clone()).await;
+        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), ep.clone(), proto.clone()).await;
 
         // Process the event
         while let Some(event) = rx.recv().await {
@@ -234,6 +237,6 @@ pub enum ManagerEvent {
 }
 
 pub enum SyncEvent {
-    RequestSync(SyncifyConnection, Hash),
+    RequestSync(SyncifyStream, Hash),
     TriggerSync(Option<OutgoingSync>),
 }

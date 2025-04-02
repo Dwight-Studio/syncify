@@ -24,24 +24,24 @@ pub mod fsm;
 pub mod incoming_sync;
 pub mod outgoing_sync;
 
-use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::manager::ManagerEvent::Sync;
 use crate::engine::manager::SyncEvent;
 use crate::engine::state::State;
 use crate::store::StoreManager;
+use crate::SharedDirectory;
 use blake3::Hash;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
-use iroh::endpoint::{ClosedStream, Connection, ReadError, ReadToEndError, RecvStream, SendStream, VarInt, WriteError};
+use iroh::endpoint::{ClosedStream, Connection, ReadError, ReadToEndError, RecvStream, SendStream, StoppedError, VarInt, WriteError};
 use iroh::protocol::ProtocolHandler;
-use iroh::{Endpoint, NodeAddr, NodeId};
-use log::{debug};
+use iroh::{Endpoint, NodeId};
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use iroh_base::NodeAddr;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -86,13 +86,40 @@ pub enum BlobsPacket {
 
 /// The [`SyncifyProtocol`] struct, used to store the active connections.
 pub struct SyncifyProtocol {
-    connections: Vec<SyncifyConnection>,
+    pub(crate) connections: Vec<Connection>,
 }
 
 impl SyncifyProtocol {
     /// Use or open a [`Connection`] and open a new bidirectional stream on it.
-    pub async fn open_stream(&mut self, dir: &SharedDirectory, node_id: NodeId) -> Result<SyncifyStream, SyncifyProtocolError> {
-        todo!()
+    pub async fn open_stream(&mut self, dir: &SharedDirectory, ep: Endpoint, node_id: NodeId) -> Result<SyncifyStream, SyncifyProtocolError> {
+        let mut existing_conn: Option<&Connection> = None;
+        for connection in &self.connections {
+            if connection.remote_node_id().unwrap() == node_id {
+                existing_conn = Some(connection);
+                break;
+            }
+        }
+        
+        match existing_conn {
+            Some(conn) => {
+                let (tx, rx) = conn.open_bi().await.map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
+                Ok(SyncifyStream{
+                    dir: dir.clone(),
+                    send_stream: tx,
+                    recv_stream: rx
+                })
+            }
+            None => {
+                let conn = ep.connect(NodeAddr::new(node_id), SYNCIFY_ALPN).await.map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
+                self.connections.push(conn.clone());
+                let (tx, rx) = conn.open_bi().await.map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
+                Ok(SyncifyStream{
+                    dir: dir.clone(),
+                    send_stream: tx,
+                    recv_stream: rx
+                })
+            }
+        }
     }
 }
 
@@ -104,6 +131,7 @@ pub struct SyncifyStream {
 }
 
 impl SyncifyStream {
+       
     /// Send a packet.
     pub async fn send(&mut self, packet: &SyncifyPacket) -> Result<(), SyncifyProtocolError> {
         let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.read_key.to_bytes()));
@@ -172,12 +200,14 @@ impl SyncifyStream {
     }
 
     /// Close the stream.
-    pub fn close(mut self) -> Result<(), SyncifyProtocolError> {
-        self.send_stream.finish().map_err(SyncifyProtocolError::ClosedStream)
+    pub async fn close(mut self) -> Result<(), SyncifyProtocolError> {
+        self.send_stream.finish().map_err(SyncifyProtocolError::ClosedStream)?;
+        self.send_stream.stopped().await.map_err(SyncifyProtocolError::StoppedStream)?;
+        Ok(())
     }
 }
 
-
+#[derive(Clone)]
 /// The [`SyncifyProtocolHandler`] struct, used to handle connections using this protocol.
 pub struct SyncifyProtocolHandler {
     protocol: Arc<RwLock<SyncifyProtocol>>,
@@ -205,97 +235,72 @@ impl ProtocolHandler for SyncifyProtocolHandler {
         let store = self.store.clone();
         let downloader = self.downloader.clone();
         Box::pin(async move {
-            let (_tx, mut rx) = connection.accept_bi().await.unwrap();
+            protocol.write().await.connections.push(connection.clone());
+            
+            while let Ok((tx, mut rx)) = connection.accept_bi().await {
+                let mut header_buffer = [0u8; HEADER_SIZE];
+                rx.read_exact(&mut header_buffer).await.unwrap();
 
-            let mut header_buffer = [0u8; HEADER_SIZE];
-            rx.read_exact(&mut header_buffer).await.unwrap();
+                let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer)
+                    .map_err(SyncifyProtocolError::DeserializeError)?;
 
-            let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer)
-                .map_err(SyncifyProtocolError::DeserializeError)?;
-
-            let conn = SyncifyConnection::accept_new(connection).await.unwrap();
-
-            let dir = {
-                match store.read().await.get_shared_dir(&header.uuid) {
-                    None => {
-                        conn.close(1, SyncifyProtocolError::UuidDoesNotExists);
-                        return Ok(());
+                let dir = {
+                    match store.read().await.get_shared_dir(&header.uuid) {
+                        None => {
+                            connection.close(VarInt::from_u32(1), SyncifyProtocolError::UuidDoesNotExists.to_string().as_bytes());
+                            return Ok(());
+                        }
+                        Some(dir) => dir,
                     }
-                    Some(dir) => dir,
-                }
-            };
-            let mut packet_buffer = vec![0u8; header.packet_size as usize];
-            rx.read(&mut packet_buffer)
-                .await
-                .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
+                };
 
-            let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
-            let decrypted_bytes = cipher
-                .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
-                .map_err(SyncifyProtocolError::DecryptionError)?;
+                let mut packet_buffer = vec![0u8; header.packet_size as usize];
+                rx.read(&mut packet_buffer)
+                    .await
+                    .map_err(|e| SyncifyProtocolError::ReadError(e, String::from("syncify_packet")))?;
 
-            let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
-                .map_err(SyncifyProtocolError::DeserializeError)?;
+                let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
+                let decrypted_bytes = cipher
+                    .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
+                    .map_err(SyncifyProtocolError::DecryptionError)?;
 
-            match packet {
-                SyncifyPacket::Sync(sync_packet) => {
-                    if let SyncPacket::Request { head } = sync_packet {
-                        dir.handle()
-                            .await
-                            .clone()
-                            .send(Sync(SyncEvent::RequestSync(conn.clone(), blake3::Hash::from(head))))
-                            .await;
+                let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
+                    .map_err(SyncifyProtocolError::DeserializeError)?;
+
+                let stream = SyncifyStream {
+                    dir: dir.clone(),
+                    send_stream: tx,
+                    recv_stream: rx,
+                };
+                
+                match packet {
+                    SyncifyPacket::Sync(sync_packet) => {
+                        if let SyncPacket::Request { head } = sync_packet {
+                            dir.handle()
+                                .await
+                                .clone()
+                                .send(Sync(SyncEvent::RequestSync(stream, blake3::Hash::from(head))))
+                                .await;
+                        }
                     }
-                }
-                SyncifyPacket::Blobs(blobs_packet) => {
-                    if let BlobsPacket::BlobRequest { file_hash, chunk_index } = blobs_packet {
-                        downloader
-                            .send(DownloaderEvent::Supply {
-                                conn: conn.clone(),
-                                uuid: dir.uuid,
-                                file_hash: Hash::from(file_hash),
-                                chunk_index,
-                            })
-                            .await;
+                    SyncifyPacket::Blobs(blobs_packet) => {
+                        if let BlobsPacket::BlobRequest { file_hash, chunk_index } = blobs_packet {
+                            downloader
+                                .send(DownloaderEvent::Supply {
+                                    conn: stream,
+                                    file_hash: Hash::from(file_hash),
+                                    chunk_index,
+                                })
+                                .await;
+                        }
                     }
                 }
             }
-
+            
+            protocol.write().await.connections.retain(|c| c.close_reason().is_none());
+            
             Ok(())
         })
-    }
-}
-
-#[derive(Clone)]
-/// Manages SyncifyProtocol connections
-pub struct SyncifyConnection {
-    connection: Connection,
-}
-
-impl SyncifyConnection {
-    pub async fn connect(node_id: NodeId, endpoint: Endpoint) -> Result<Self, anyhow::Error> {
-        let connection = endpoint.connect(NodeAddr::new(node_id), SYNCIFY_ALPN).await?;
-
-        Ok(Self { connection })
-    }
-
-    async fn accept_new(connection: Connection) -> Result<Self, anyhow::Error> {
-        Ok(Self { connection })
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.connection.close_reason().is_some()
-    }
-
-    /// Close the connection
-    pub fn close(&self, err_code: u32, err: SyncifyProtocolError) {
-        debug!("CLOSED: {}", err);
-        self.connection
-            .close(VarInt::from_u32(err_code), err.to_string().as_bytes());
-    }
-
-    pub fn remote(&self) -> NodeId {
-        self.connection.remote_node_id().unwrap()
     }
 }
 
@@ -309,9 +314,15 @@ pub enum SyncifyProtocolError {
 
     #[error("Write error: {0}")]
     WriteError(WriteError),
+    
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
 
     #[error("Closed stream: {0}")]
     ClosedStream(ClosedStream),
+
+    #[error("Stopped stream: {0}")]
+    StoppedStream(StoppedError),
 
     #[error("Unable to deserialize received data: {0}")]
     DeserializeError(RancorError),

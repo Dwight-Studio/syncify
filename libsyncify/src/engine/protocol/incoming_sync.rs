@@ -23,7 +23,7 @@
 use crate::SharedDirectory;
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
-use crate::engine::protocol::{SyncPacket, SyncifyConnection, SyncifyPacket};
+use crate::engine::protocol::{SyncPacket, SyncifyPacket, SyncifyStream};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use log::{debug, info, warn};
 
@@ -38,12 +38,12 @@ pub enum IncomingState {
 pub struct IncomingSync {
     state: IncomingState,
     dir: SharedDirectory,
-    connection: SyncifyConnection,
+    connection: SyncifyStream,
     hash: blake3::Hash,
 }
 
 impl IncomingSync {
-    pub fn new(dir: SharedDirectory, connection: SyncifyConnection, hash: blake3::Hash) -> Self {
+    pub fn new(dir: SharedDirectory, connection: SyncifyStream, hash: blake3::Hash) -> Self {
         Self {
             state: IncomingState::ReceivingRequest,
             dir,
@@ -59,7 +59,7 @@ impl FiniteStateMachine for IncomingSync {
     async fn execute_step(&mut self) -> Result<Self::State, ProtocolError> {
         match &self.state {
             IncomingState::ReceivingRequest => {
-                info!("Incoming sync request from {}", self.connection.remote());
+                info!("Incoming sync request");
                 let packet = {
                     match self.dir.read().await.state.clone_after(self.hash, MAX_LOADED_DELTAS) {
                         Some(state) => SyncifyPacket::Sync(SyncPacket::Success { state }),
@@ -67,7 +67,7 @@ impl FiniteStateMachine for IncomingSync {
                     }
                 };
 
-                if self.connection.send_packet(self.dir.clone(), packet).await.is_err() {
+                if self.connection.send(&packet).await.is_err() {
                     Err(ProtocolError::SendFailed)
                 } else {
                     Ok(IncomingState::SendingRequest)
@@ -82,10 +82,10 @@ impl FiniteStateMachine for IncomingSync {
 
                 if let Ok(()) = self
                     .connection
-                    .send_packet(self.dir.clone(), SyncifyPacket::Sync(packet))
+                    .send(&SyncifyPacket::Sync(packet))
                     .await
                 {
-                    if let Ok(packet) = self.connection.receive_packet(self.dir.clone()).await {
+                    if let Ok(packet) = self.connection.recv().await {
                         if let SyncifyPacket::Sync(sync_packet) = packet {
                             match sync_packet {
                                 SyncPacket::Request { .. } => {}

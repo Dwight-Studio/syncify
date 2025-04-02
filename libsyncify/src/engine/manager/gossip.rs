@@ -23,7 +23,6 @@
 use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
-use crate::engine::state::HashTree;
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};

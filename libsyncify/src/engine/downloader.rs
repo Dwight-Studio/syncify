@@ -23,7 +23,7 @@
 use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::manager::ManagerEvent;
 use crate::engine::manager::gossip::PROVISION_EXPIRATION;
-use crate::engine::protocol::{BlobsPacket, SyncifyConnection, SyncifyPacket};
+use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_cache_dir};
 use blake3::Hash;
@@ -58,7 +58,7 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new(store: Arc<RwLock<StoreManager>>, ep: Endpoint) -> Self {
+    pub fn new(store: Arc<RwLock<StoreManager>>, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
         info!("Initializing downloader");
 
         // Initiate channel
@@ -78,6 +78,7 @@ impl Downloader {
             ep,
             download_tasks,
             handle.clone(),
+            proto
         )));
 
         Downloader { join_handle, handle }
@@ -96,6 +97,7 @@ impl Downloader {
         ep: Endpoint,
         mut download_tasks: Vec<DownloadTask>,
         downloader: DownloaderHandle,
+        proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
         // Process events
         while let Some(event) = rx.recv().await {
@@ -113,6 +115,7 @@ impl Downloader {
                         download_job.clone(),
                         downloader.clone(),
                         &mut download_tasks,
+                        proto.clone()
                     )
                     .await;
                 }
@@ -140,6 +143,7 @@ impl Downloader {
                             job,
                             downloader.clone(),
                             &mut download_tasks,
+                            proto.clone()
                         )
                         .await;
                     }
@@ -205,31 +209,28 @@ impl Downloader {
                 }
 
                 DownloaderEvent::Supply {
-                    conn,
-                    uuid,
+                    mut conn,
                     file_hash,
                     chunk_index,
                 } => {
                     let provision_dir = get_app_cache_dir().join("provisions");
 
-                    if let Some(dir) = store.read().await.get_shared_dir(&uuid) {
-                        if let Ok(file) = File::open(provision_dir.join(file_hash.to_string())) {
-                            let mut extractor = bao::encode::SliceExtractor::new(
-                                file,
-                                CHUNK_SIZE as u64 * chunk_index,
-                                CHUNK_SIZE as u64,
-                            );
-                            let mut chunk = Vec::new();
-                            if let Err(err) = extractor.read_to_end(&mut chunk) {
-                                error!("Unable to get file slice: {}", err.to_string());
-                                return;
-                            }
+                    if let Ok(file) = File::open(provision_dir.join(file_hash.to_string())) {
+                        let mut extractor = bao::encode::SliceExtractor::new(
+                            file,
+                            CHUNK_SIZE as u64 * chunk_index,
+                            CHUNK_SIZE as u64,
+                        );
+                        let mut chunk = Vec::new();
+                        if let Err(err) = extractor.read_to_end(&mut chunk) {
+                            error!("Unable to get file slice: {}", err.to_string());
+                            return;
+                        }
 
-                            let packet = SyncifyPacket::Blobs(BlobsPacket::Blob { chunk });
+                        let packet = SyncifyPacket::Blobs(BlobsPacket::Blob { chunk });
 
-                            if let Err(err) = conn.clone().send_packet(dir, packet).await {
-                                error!("Unable to send blob to {}: {err}", conn.remote());
-                            }
+                        if let Err(err) = conn.send(&packet).await {
+                            error!("Unable to send blob: {err}");
                         }
                     }
                 }
@@ -248,6 +249,7 @@ impl Downloader {
                             download_job.clone(),
                             downloader.clone(),
                             &mut download_tasks,
+                            proto.clone(),
                         )
                         .await;
                     } else if !job.failed_chunks.is_empty() {
@@ -300,7 +302,7 @@ impl Downloader {
                     }
                     
                     // Handling the job update
-                    job.progress = (job.chunk_done as f32 / *job.size() as f32);
+                    job.progress = job.chunk_done as f32 / *job.size() as f32;
                     info!("Downloading... {:.1}%", job.progress * 100.0);
 
                     // Launch new download tasks
@@ -312,6 +314,7 @@ impl Downloader {
                             download_job.clone(),
                             downloader.clone(),
                             &mut download_tasks,
+                            proto.clone(),
                         )
                         .await;
                     } else if !job.failed_chunks.is_empty() {
@@ -344,6 +347,7 @@ impl Downloader {
         download_job: Arc<RwLock<DownloadJob>>,
         download_handle: DownloaderHandle,
         download_tasks: &mut [DownloadTask],
+        proto: Arc<RwLock<SyncifyProtocol>>
     ) {
         let mut chunk_index = 0;
         let mut job = download_job.write().await;
@@ -368,6 +372,7 @@ impl Downloader {
                                         chunk_index,
                                         dir.clone(),
                                         download_handle.clone(),
+                                        proto.clone()
                                     ));
                                     chunk_index += 1;
                                     break;
@@ -394,21 +399,23 @@ impl Downloader {
         chunk_index: u64,
         dir: SharedDirectory,
         download_handle: DownloaderHandle,
+        proto: Arc<RwLock<SyncifyProtocol>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let file_hash = *download_job.read().await.hash();
-            if let Ok(mut connection) = SyncifyConnection::connect(node_id, endpoint).await {
+            let mut proto = proto.write().await;
+            if let Ok(mut connection) = proto.open_stream(&dir, endpoint, node_id).await {
                 let packet = SyncifyPacket::Blobs(BlobsPacket::BlobRequest {
                     file_hash: *file_hash.as_bytes(),
                     chunk_index,
                 });
-                if (connection.send_packet(dir.clone(), packet).await).is_err() {
+                if (connection.send(&packet).await).is_err() {
                     download_handle
                         .send(DownloaderEvent::TaskFailed(download_job, chunk_index))
                         .await;
                     return;
                 }
-                match connection.receive_packet(dir).await {
+                match connection.recv().await {
                     Ok(packet) => {
                         match packet {
                             SyncifyPacket::Blobs(BlobsPacket::Blob { chunk }) => {
@@ -492,8 +499,7 @@ pub enum DownloaderEvent {
 
     // Provision
     Supply {
-        conn: SyncifyConnection,
-        uuid: Uuid,
+        conn: SyncifyStream,
         file_hash: Hash,
         chunk_index: u64,
     },

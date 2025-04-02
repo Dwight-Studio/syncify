@@ -20,15 +20,16 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::sync::Arc;
 use crate::SharedDirectory;
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
-use crate::engine::protocol::{SyncPacket, SyncifyConnection, SyncifyPacket};
+use crate::engine::protocol::{SyncPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use blake3::Hash;
 use iroh::{Endpoint, NodeId};
 use log::{debug, info, warn};
-
+use tokio::sync::RwLock;
 // TODO: Add provision database sync
 
 #[derive(PartialEq, Debug)]
@@ -45,17 +46,19 @@ pub struct OutgoingSync {
     dir: SharedDirectory,
     node_id: NodeId,
     ep: Endpoint,
-    connection: Option<SyncifyConnection>,
+    proto: Arc<RwLock<SyncifyProtocol>>,
+    connection: Option<SyncifyStream>,
 }
 
 impl OutgoingSync {
-    pub fn new(dir: SharedDirectory, node_id: NodeId, ep: Endpoint) -> Self {
+    pub fn new(dir: SharedDirectory, node_id: NodeId, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
         Self {
             state: OutgoingState::Connecting,
             dir,
             node_id,
             ep,
             connection: None,
+            proto,
         }
     }
 }
@@ -64,10 +67,11 @@ impl FiniteStateMachine for OutgoingSync {
     type State = OutgoingState;
 
     async fn execute_step(&mut self) -> Result<Self::State, ProtocolError> {
+        let mut proto = self.proto.write().await;
         match &self.state {
             OutgoingState::Connecting => {
                 info!("Outgoing: Requesting sync to {}", self.node_id);
-                if let Ok(conn) = SyncifyConnection::connect(self.node_id, self.ep.clone()).await {
+                if let Ok(conn) = proto.open_stream(&self.dir, self.ep.clone(), self.node_id).await {
                     self.connection = Some(conn);
                     Ok(OutgoingState::SendingRequest)
                 } else {
@@ -81,76 +85,81 @@ impl FiniteStateMachine for OutgoingSync {
                     head: *self.dir.read().await.state.hash().as_bytes(),
                 };
 
-                let mut conn = self.connection.clone().unwrap();
+                if let Some(ref mut conn) = self.connection {
+                    if let Ok(()) = conn.send(&SyncifyPacket::Sync(packet)).await {
+                        if let Ok(packet) = conn.recv().await {
+                            if let SyncifyPacket::Sync(sync_packet) = packet {
+                                match sync_packet {
+                                    SyncPacket::Request { .. } => {}
+                                    SyncPacket::Success { state } => {
+                                        debug!("Outgoing: Receiving state");
+                                        //debug!("Outgoing: Receiving state\n{}", state);
+                                        let mutations = self
+                                            .dir
+                                            .write()
+                                            .await
+                                            .state
+                                            .verify_accept_all(state, self.dir.clone())
+                                            .map_err(|e| match e {
+                                                StateError::InvalidSignature => ProtocolError::InvalidSignature,
+                                                _ => ProtocolError::Unexpected,
+                                            })?;
 
-                if let Ok(()) = conn.send_packet(self.dir.clone(), SyncifyPacket::Sync(packet)).await {
-                    if let Ok(packet) = conn.receive_packet(self.dir.clone()).await {
-                        if let SyncifyPacket::Sync(sync_packet) = packet {
-                            match sync_packet {
-                                SyncPacket::Request { .. } => {}
-                                SyncPacket::Success { state } => {
-                                    debug!("Outgoing: Receiving state");
-                                    //debug!("Outgoing: Receiving state\n{}", state);
-                                    let mutations = self
-                                        .dir
-                                        .write()
-                                        .await
-                                        .state
-                                        .verify_accept_all(state, self.dir.clone())
-                                        .map_err(|e| match e {
-                                            StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                            _ => ProtocolError::Unexpected,
-                                        })?;
-
-                                    self.dir
-                                        .handle()
-                                        .await
-                                        .send(ManagerEvent::ApplyRemoteMutations(mutations))
-                                        .await;
+                                        self.dir
+                                            .handle()
+                                            .await
+                                            .send(ManagerEvent::ApplyRemoteMutations(mutations))
+                                            .await;
+                                    }
+                                    SyncPacket::Failed => {}
                                 }
-                                SyncPacket::Failed => {}
+                            } else {
+                                return Err(ProtocolError::Unexpected);
                             }
-                        } else {
-                            return Err(ProtocolError::Unexpected);
-                        }
 
-                        Ok(OutgoingState::ReceivingRequest)
+                            Ok(OutgoingState::ReceivingRequest)
+                        } else {
+                            Err(ProtocolError::ReceiveFailed)
+                        }
                     } else {
-                        Err(ProtocolError::ReceiveFailed)
+                        Err(ProtocolError::SendFailed)
                     }
                 } else {
-                    Err(ProtocolError::SendFailed)
+                    Err(ProtocolError::ConnectionFailed)
                 }
             }
 
             OutgoingState::ReceivingRequest => {
                 debug!("Outgoing: ReceivingRequest");
-                let mut conn = self.connection.clone().unwrap();
 
-                let hash = if let Ok(request) = conn.receive_packet(self.dir.clone()).await {
-                    if let SyncifyPacket::Sync(sync_packet) = request {
-                        if let SyncPacket::Request { head } = sync_packet {
-                            Hash::from_bytes(head)
+                if let Some(ref mut conn) = self.connection {
+                    let hash = if let Ok(request) = conn.recv().await {
+                        if let SyncifyPacket::Sync(sync_packet) = request {
+                            if let SyncPacket::Request { head } = sync_packet {
+                                Hash::from_bytes(head)
+                            } else {
+                                return Err(ProtocolError::Unexpected);
+                            }
                         } else {
                             return Err(ProtocolError::Unexpected);
                         }
                     } else {
-                        return Err(ProtocolError::Unexpected);
-                    }
-                } else {
-                    return Err(ProtocolError::ReceiveFailed);
-                };
-                let packet = {
-                    match self.dir.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
-                        Some(state) => SyncPacket::Success { state },
-                        None => SyncPacket::Failed,
-                    }
-                };
+                        return Err(ProtocolError::ReceiveFailed);
+                    };
+                    let packet = {
+                        match self.dir.read().await.state.clone_after(hash, MAX_LOADED_DELTAS) {
+                            Some(state) => SyncPacket::Success { state },
+                            None => SyncPacket::Failed,
+                        }
+                    };
 
-                if let Ok(()) = conn.send_packet(self.dir.clone(), SyncifyPacket::Sync(packet)).await {
-                    Ok(OutgoingState::Finish)
+                    if let Ok(()) = conn.send(&SyncifyPacket::Sync(packet)).await {
+                        Ok(OutgoingState::Finish)
+                    } else {
+                        Err(ProtocolError::SendFailed)
+                    }
                 } else {
-                    Err(ProtocolError::SendFailed)
+                    Err(ProtocolError::ConnectionFailed)
                 }
             }
 

@@ -24,7 +24,7 @@
 use crate::engine::EngineError::AlreadyWatched;
 use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
-use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocolHandler};
+use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocolHandler, SyncifyProtocol};
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_config_dir};
 use iroh::protocol::Router;
@@ -38,7 +38,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 pub mod downloader;
@@ -59,6 +58,7 @@ pub struct Engine {
     ep: Endpoint,
     downloader: Downloader,
     managers: HashMap<Uuid, Manager>,
+    proto: Arc<RwLock<SyncifyProtocol>>,
 }
 
 /// Synchronization engine.
@@ -93,15 +93,16 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let downloader = Downloader::new(store.clone(), builder.endpoint().clone());
 
-        let protocol = SyncifyProtocolHandler::new(store.clone(), downloader.clone());
+        let protocol = Arc::new(RwLock::new(SyncifyProtocol { connections: Vec::new() }));
+        let downloader = Downloader::new(store.clone(), builder.endpoint().clone(), protocol.clone());
+        let protocol_handler = SyncifyProtocolHandler::new(protocol.clone(), store.clone(), downloader.clone());
 
         let mut engine = Self {
             store: store.clone(),
             ep: builder.endpoint().clone(),
             router: builder
-                .accept(SYNCIFY_ALPN, protocol.clone())
+                .accept(SYNCIFY_ALPN, protocol_handler.clone())
                 .accept(iroh_gossip::ALPN, gossip.clone())
                 .spawn()
                 .await
@@ -109,6 +110,7 @@ impl Engine {
             gossip,
             downloader,
             managers: HashMap::new(),
+            proto: protocol
         };
 
         for dir in &store.read().await.get_all_dirs() {
@@ -157,7 +159,7 @@ impl Engine {
                 .map_err(EngineError::Gossip)?;
 
             // Create manager
-            let manager = Manager::new(dir.clone(), topic, self.ep.clone(), self.downloader.clone()).await;
+            let manager = Manager::new(dir.clone(), topic, self.ep.clone(), self.downloader.clone(), self.proto.clone()).await;
 
             self.managers.insert(dir.uuid, manager);
             Ok(())

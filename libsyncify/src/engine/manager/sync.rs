@@ -20,6 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::sync::Arc;
 use crate::SharedDirectory;
 use crate::engine::manager::{ManagerEvent, SyncEvent};
 use crate::engine::protocol::fsm::FiniteStateMachine;
@@ -29,7 +30,9 @@ use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::GossipSender;
 use log::{info, warn};
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tokio::time::sleep;
+use crate::engine::protocol::SyncifyProtocol;
 
 pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -37,11 +40,12 @@ pub struct SyncManager {
     topic: GossipSender,
     dir: SharedDirectory,
     ep: Endpoint,
+    proto: Arc<RwLock<SyncifyProtocol>>,
 }
 
 impl SyncManager {
-    pub async fn new(topic: GossipSender, dir: SharedDirectory, ep: Endpoint) -> Self {
-        Self { topic, dir, ep }
+    pub async fn new(topic: GossipSender, dir: SharedDirectory, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+        Self { topic, dir, ep, proto }
     }
 
     pub async fn handle_events(&mut self, sync_event: SyncEvent) {
@@ -49,7 +53,7 @@ impl SyncManager {
             SyncEvent::RequestSync(conn, hash) => {
                 self.dir.write().await.received_initial_sync = true;
 
-                let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn.clone(), hash);
+                let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn, hash);
 
                 if incoming_sync.step_until_finished(FSM_TIMEOUT).await {
                     incoming_sync.step().await;
@@ -69,7 +73,7 @@ impl SyncManager {
         for node in neighbors {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.ep.clone());
+                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.ep.clone(), self.proto.clone());
 
                 if self.ep.node_id() > node_id {
                     Self::start_sync(outgoing).await;
