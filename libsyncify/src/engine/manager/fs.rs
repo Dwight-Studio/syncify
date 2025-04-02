@@ -127,28 +127,32 @@ impl FileSystemManager {
 
         for mutation in &mutations {
             match self.dir.state.write().await {
-                Ok(state) => match state.mutate(mutation.clone(), write_key).await {
-                    Ok(_) => match self.dir.local_tree.write().await {
-                        Ok(tree) => match tree.apply(mutation).await {
-                            Ok(_) => {
-                                debug!("Applied in {}: {mutation}", self.dir.uuid());
-                            }
-                            Err(e) => {
-                                error!(
+                Ok(state) => {
+                    let result = state.mutate(mutation.clone(), write_key).await;
+                    drop(state);
+                    match result {
+                        Ok(_) => match self.dir.local_tree.write().await {
+                            Ok(tree) => match tree.apply(mutation).await {
+                                Ok(_) => {
+                                    debug!("Applied in {}: {mutation}", self.dir.uuid());
+                                }
+                                Err(e) => {
+                                    error!(
                                     "Cannot apply mutation to current tree in {}: {mutation} ({e})",
                                     self.dir.uuid()
                                 );
-                            }
-                        },
-                        Err(e) => {
-                            error!(
+                                }
+                            },
+                            Err(e) => {
+                                error!(
                                 "Cannot apply mutation to current tree in {}: {mutation} ({e})",
                                 self.dir.uuid()
                             );
+                            }
+                        },
+                        Err(e) => {
+                            error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
                         }
-                    },
-                    Err(e) => {
-                        error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
                     }
                 },
 
