@@ -40,7 +40,7 @@ use redb::{
 };
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -96,7 +96,7 @@ impl StoreManager {
         // Initialize everything
         let database_file = get_app_config_dir().join(STORE_FILENAME);
         let db = Database::create(database_file.as_path()).map_err(StoreError::Database)?;
-        
+
         let keyring = Keyring::new();
         let secret_key = Self::load_secret_key(&keyring);
         let (jobs, active_jobs) = Self::load_jobs(&db, Utc::now() - JOBS_EXPIRATION)?;
@@ -108,7 +108,7 @@ impl StoreManager {
             jobs,
             active_jobs,
             secret_key,
-            keyring
+            keyring,
         }));
 
         let cache = Self::build_cache(&store, &store.read().await.keyring, &store.read().await.db)?;
@@ -198,7 +198,7 @@ impl StoreManager {
     fn build_cache(
         store: &Arc<RwLock<StoreManager>>,
         keyring: &Keyring,
-        db: &Database
+        db: &Database,
     ) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
         info!("Building store cache...");
         let mut cache = HashMap::new();
@@ -257,8 +257,8 @@ impl StoreManager {
                                     SharedDirectory {
                                         uuid,
                                         path: PathBuf::from(path.value()),
-                                        state: StoreLock::new(&store, state),
-                                        local_tree: StoreLock::new(&store, tree.value()),
+                                        state: StoreLock::new(&store, state, uuid),
+                                        local_tree: StoreLock::new(&store, tree.value(), uuid),
                                         inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                                             neighbors.value().iter().map(|e| (*e, false)).collect(),
                                             local_provisions,
@@ -296,7 +296,7 @@ impl StoreManager {
     ) -> Result<(HashMap<Hash, Arc<RwLock<DownloadJob>>>, Vec<Arc<RwLock<DownloadJob>>>), StoreError> {
         let mut jobs = HashMap::new();
         let mut active_jobs = Vec::new();
-        
+
         let transaction = db.begin_write().map_err(StoreError::Transaction)?;
 
         {
@@ -450,14 +450,18 @@ impl StoreManager {
 
         self.cache.insert(dir.uuid, dir.clone());
 
-        let transaction = self.get_write_transaction().await?;
+        let transaction = self.get_write_transaction()?;
         let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
         base_table
             .insert(dir.path.to_string_lossy().as_ref(), dir.uuid.as_bytes())
             .map_err(StoreError::Storage)?;
 
-        if let Err(e) = dir.state.write().await?.save_new_state().await {
+        if let Err(e) = dir.state.write().save_new().await {
             warn!("Unable to save new state: {}", e);
+        };
+
+        if let Err(e) = dir.local_tree.write().save_new().await {
+            warn!("Unable to save new tree: {}", e);
         };
 
         Ok(())
@@ -471,7 +475,7 @@ impl StoreManager {
             .delete_key(Keys::SharedDirKey, Some(dir.uuid.to_string().as_str()))
             .map_err(StoreError::Keyring)?;
 
-        let transaction = self.get_write_transaction().await?;
+        let transaction = self.get_write_transaction()?;
         let mut base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
         let mut head_table = transaction.open_table(HEAD_TABLE).map_err(StoreError::Table)?;
         let mut local_tree_table = transaction.open_table(LOCAL_TREE_TABLE).map_err(StoreError::Table)?;
@@ -514,7 +518,7 @@ impl StoreManager {
     }
 
     /// Get a write transaction for the database.
-    pub async fn get_write_transaction(&self) -> Result<WriteTransaction, StoreError> {
+    pub fn get_write_transaction(&self) -> Result<WriteTransaction, StoreError> {
         self.db.begin_write().map_err(StoreError::Transaction)
     }
 

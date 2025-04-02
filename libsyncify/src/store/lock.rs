@@ -21,31 +21,29 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::SharedDirectory;
 use crate::engine::state::{Delta, HashTree, Mutation, State, StateError};
 use crate::store::{HEAD_TABLE, LOCAL_TREE_TABLE, StoreError, StoreManager};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use log::{debug, error};
-use redb::{TableDefinition, WriteTransaction};
-use std::marker::PhantomData;
+use log::debug;
+use redb::TableDefinition;
 use std::ops::Deref;
 use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
 
 /// A reader-writer lock used to synchronise persistent data with the store.
-pub struct StoreLock<T: Store<T, G>, G> {
-    marker: PhantomData<(T, G)>,
+pub struct StoreLock<T: Store<T>> {
     store: Weak<RwLock<StoreManager>>,
     inner: Arc<RwLock<T>>,
+    id: T::Id,
 }
 
-impl<'a, T: Store<T, G>, G> StoreLock<T, G> {
-    pub fn new(store: &Arc<RwLock<StoreManager>>, inner: T) -> Self {
+impl<T: Store<T>> StoreLock<T> {
+    pub fn new(store: &Arc<RwLock<StoreManager>>, inner: T, id: T::Id) -> Self {
         Self {
-            marker: PhantomData,
             store: Arc::downgrade(&store),
             inner: Arc::new(RwLock::new(inner)),
+            id,
         }
     }
 
@@ -69,61 +67,56 @@ impl<'a, T: Store<T, G>, G> StoreLock<T, G> {
     /// released, the store is updated.
     ///
     /// See [`RwLock::write`] for more details.
-    pub async fn write(&'a self) -> Result<G, StoreError> {
+    pub fn write(&self) -> T::Guard {
         if let Some(rf) = self.store.upgrade() {
-            T::get_guard(self.inner.clone(), rf).await
+            T::get_guard(self.inner.clone(), rf, self.id.clone())
         } else {
             panic!("Store lock was dropped");
         }
     }
 }
 
-impl<T: Store<T, G>, G> Clone for StoreLock<T, G> {
+impl<T: Store<T>> Clone for StoreLock<T> {
     fn clone(&self) -> Self {
         Self {
-            marker: self.marker,
             store: self.store.clone(),
             inner: self.inner.clone(),
+            id: self.id.clone(),
         }
     }
 }
 
 /// Types who can be synchronized with the store.
-pub trait Store<T, G> {
-    fn get_guard(
-        inner: Arc<RwLock<T>>,
-        store: Arc<RwLock<StoreManager>>,
-    ) -> impl Future<Output = Result<G, StoreError>>;
+pub trait Store<T> {
+    type Guard;
+    type Id: Clone;
+
+    fn get_guard(inner: Arc<RwLock<T>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> Self::Guard;
 }
 
-impl Store<State, StoredState> for State {
-    async fn get_guard(inner: Arc<RwLock<State>>, store: Arc<RwLock<StoreManager>>) -> Result<StoredState, StoreError> {
-        Ok(StoredState {
-            inner,
-            transaction: Some(store.write().await.get_write_transaction().await?),
-            dir_uuid: Uuid::from_bytes([0u8; 16]),
-        })
+impl Store<State> for State {
+    type Guard = StoredState;
+    type Id = Uuid;
+
+    fn get_guard(inner: Arc<RwLock<State>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoredState {
+        StoredState { inner, store, uuid: id }
     }
 }
 
 /// Store guard for [`State`].
 pub struct StoredState {
     inner: Arc<RwLock<State>>,
-    transaction: Option<WriteTransaction>,
-    dir_uuid: Uuid,
+    store: Arc<RwLock<StoreManager>>,
+    uuid: Uuid,
 }
 
 impl StoredState {
-    pub fn set_dir(&mut self, dir: &SharedDirectory) {
-        self.dir_uuid = dir.uuid();
-    }
-
     /// Save the [`State`] after creation.
-    pub async fn save_new_state(&self) -> Result<(), StateError> {
+    pub async fn save_new(&self) -> Result<(), StateError> {
         let state = self.inner.write().await;
 
-        self.save_head(&state)?;
-        self.save_deltas(&vec![state.head().clone()])?;
+        self.save_head(&state).await?;
+        self.save_deltas(&vec![state.head().clone()]).await?;
 
         Ok(())
     }
@@ -133,8 +126,8 @@ impl StoredState {
         let mut state = self.inner.write().await;
         state.mutate(mutation, write_key)?;
 
-        self.save_head(&state)?;
-        self.save_deltas(&vec![state.head().clone()])?;
+        self.save_head(&state).await?;
+        self.save_deltas(&vec![state.head().clone()]).await?;
 
         Ok(())
     }
@@ -147,17 +140,18 @@ impl StoredState {
     /// Returns a vec of all accepted [`Mutation`]s in chronological order.
     pub async fn verify_accept_all(
         &mut self,
+        dir_uuid: Uuid,
         other_state: State,
         read_key: &VerifyingKey,
     ) -> Result<Vec<Mutation>, StateError> {
         let mut state = self.inner.write().await;
         let deltas = state.verify_accept_all(other_state, read_key)?;
 
-        self.save_head(&state)?;
-        self.save_deltas(&deltas)?;
+        self.save_head(&state).await?;
+        self.save_deltas(&deltas).await?;
 
         if state.trim() {
-            debug!("Pruned state {}", self.dir_uuid.to_string());
+            debug!("Pruned state {}", dir_uuid.to_string());
         }
 
         Ok(deltas.iter().map(|d| d.mutation()).collect())
@@ -168,33 +162,47 @@ impl StoredState {
         let mut state = self.inner.write().await;
         state.accept(delta);
 
-        self.save_head(&state)?;
-        self.save_deltas(&vec![state.head().clone()])?;
+        self.save_head(&state).await?;
+        self.save_deltas(&vec![state.head().clone()]).await?;
 
         Ok(())
     }
 
     /// Save the head in the store.
-    fn save_head(&self, state: &State) -> Result<(), StateError> {
-        if let Some(transaction) = self.transaction.as_ref() {
+    async fn save_head(&self, state: &State) -> Result<(), StateError> {
+        let transaction = self
+            .store
+            .write()
+            .await
+            .get_write_transaction()
+            .map_err(StateError::Store)?;
+        {
             let mut head_table = transaction
                 .open_table(HEAD_TABLE)
                 .map_err(StoreError::Table)
                 .map_err(StateError::Store)?;
             head_table
-                .insert(self.dir_uuid.as_bytes(), state.hash().as_bytes())
+                .insert(self.uuid.as_bytes(), state.hash().as_bytes())
                 .map_err(StoreError::Storage)
                 .map_err(StateError::Store)?;
-        } else {
-            panic!("Missing transaction");
         }
-        Ok(())
+
+        transaction
+            .commit()
+            .map_err(StoreError::Commit)
+            .map_err(StateError::Store)
     }
 
     /// Save a list of [`Delta`]s in the store.
-    fn save_deltas(&self, deltas: &Vec<Arc<Delta>>) -> Result<(), StateError> {
-        if let Some(transaction) = self.transaction.as_ref() {
-            let uuid_string = self.dir_uuid.to_string();
+    async fn save_deltas(&self, deltas: &Vec<Arc<Delta>>) -> Result<(), StateError> {
+        let transaction = self
+            .store
+            .write()
+            .await
+            .get_write_transaction()
+            .map_err(StateError::Store)?;
+        {
+            let uuid_string = self.uuid.to_string();
             let state_table_def: TableDefinition<[u8; 32], Delta> = TableDefinition::new(&uuid_string);
             let mut state_table = transaction
                 .open_table(state_table_def)
@@ -207,62 +215,56 @@ impl StoredState {
                     .map_err(StoreError::Storage)
                     .map_err(StateError::Store)?;
             }
-        } else {
-            panic!("Missing transaction");
         }
-        Ok(())
+
+        transaction
+            .commit()
+            .map_err(StoreError::Commit)
+            .map_err(StateError::Store)
     }
 }
 
-impl Drop for StoredState {
-    fn drop(&mut self) {
-        if let Err(e) = self.transaction.take().unwrap().commit() {
-            error!("Failed to commit transaction: {:?}", e);
-        }
-    }
-}
+impl Store<HashTree> for HashTree {
+    type Guard = StoredHashTree;
+    type Id = Uuid;
 
-impl Store<HashTree, StoredHashTree> for HashTree {
-    async fn get_guard(
-        inner: Arc<RwLock<HashTree>>,
-        store: Arc<RwLock<StoreManager>>,
-    ) -> Result<StoredHashTree, StoreError> {
-        Ok(StoredHashTree {
-            inner,
-            transaction: Some(store.write().await.get_write_transaction().await?),
-            dir_uuid: Uuid::from_bytes([0u8; 16]),
-        })
+    fn get_guard(inner: Arc<RwLock<HashTree>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoredHashTree {
+        StoredHashTree { inner, store, uuid: id }
     }
 }
 
 /// Store guard for [`State`].
 pub struct StoredHashTree {
     inner: Arc<RwLock<HashTree>>,
-    transaction: Option<WriteTransaction>,
-    dir_uuid: Uuid,
+    store: Arc<RwLock<StoreManager>>,
+    uuid: Uuid,
 }
 
 impl StoredHashTree {
-    pub fn set_dir(&mut self, dir: &SharedDirectory) {
-        self.dir_uuid = dir.uuid();
-    }
-
     /// Save the [`State`] after creation.
-    pub async fn save_new_state(&self) -> Result<(), StateError> {
+    pub async fn save_new(&self) -> Result<(), StateError> {
         let tree = self.inner.write().await;
-
-        if let Some(transaction) = self.transaction.as_ref() {
+        let transaction = self
+            .store
+            .write()
+            .await
+            .get_write_transaction()
+            .map_err(StateError::Store)?;
+        {
             let mut local_tree_table = transaction
                 .open_table(LOCAL_TREE_TABLE)
                 .map_err(StoreError::Table)
                 .map_err(StateError::Store)?;
             local_tree_table
-                .insert(self.dir_uuid.as_bytes(), tree.deref())
+                .insert(self.uuid.as_bytes(), tree.deref())
                 .map_err(StoreError::Storage)
                 .map_err(StateError::Store)?;
         }
 
-        Ok(())
+        transaction
+            .commit()
+            .map_err(StoreError::Commit)
+            .map_err(StateError::Store)
     }
 
     /// Construct a mutated version of the [`HashTree`].
@@ -272,14 +274,6 @@ impl StoredHashTree {
 
         drop(tree);
 
-        self.save_new_state().await
-    }
-}
-
-impl Drop for StoredHashTree {
-    fn drop(&mut self) {
-        if let Err(e) = self.transaction.take().unwrap().commit() {
-            error!("Failed to commit transaction: {:?}", e);
-        }
+        self.save_new().await
     }
 }

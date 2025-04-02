@@ -66,7 +66,7 @@ impl FileSystemManager {
 
     /// Fuse [`Mutation`] that correspond to a [`Mutation::Move`].
     pub async fn fuse_move(&self, mutations: &mut Vec<Mutation>) {
-        let local_tree = &self.dir.local_tree.read().await;
+        let local_tree = self.dir.local_tree.read().await;
         let mut working_buffer = Vec::new();
 
         for n_mut in &*mutations {
@@ -91,7 +91,7 @@ impl FileSystemManager {
                     },
                 ) => {
                     if let Some(HashTree::File { hash: r_hash, .. }) = local_tree.get(r_path) {
-                        if *r_hash == *file_hash {
+                        if r_hash == file_hash {
                             copy = Some(Mutation::Move {
                                 from: r_path.clone(),
                                 to: m_path.clone(),
@@ -126,38 +126,23 @@ impl FileSystemManager {
         };
 
         for mutation in &mutations {
-            match self.dir.state.write().await {
-                Ok(state) => {
-                    let result = state.mutate(mutation.clone(), write_key).await;
-                    drop(state);
-                    match result {
-                        Ok(_) => match self.dir.local_tree.write().await {
-                            Ok(tree) => match tree.apply(mutation).await {
-                                Ok(_) => {
-                                    debug!("Applied in {}: {mutation}", self.dir.uuid());
-                                }
-                                Err(e) => {
-                                    error!(
-                                    "Cannot apply mutation to current tree in {}: {mutation} ({e})",
-                                    self.dir.uuid()
-                                );
-                                }
-                            },
-                            Err(e) => {
-                                error!(
-                                "Cannot apply mutation to current tree in {}: {mutation} ({e})",
-                                self.dir.uuid()
-                            );
-                            }
-                        },
-                        Err(e) => {
-                            error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
-                        }
+            match self.dir.state.write().mutate(mutation.clone(), write_key).await {
+                Ok(_) => match self.dir.local_tree.write().apply(mutation).await {
+                    Ok(_) => {
+                        debug!("Applied in {}: {mutation}", self.dir.uuid());
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot apply mutation to current tree in {}: {mutation} ({e})",
+                            self.dir.uuid()
+                        );
                     }
                 },
-
                 Err(e) => {
-                    error!("Cannot apply mutation in {}: {mutation} ({e})", self.dir.uuid());
+                    error!(
+                        "Cannot apply mutation to current tree in {}: {mutation} ({e})",
+                        self.dir.uuid()
+                    );
                 }
             }
         }
@@ -228,18 +213,10 @@ impl FileSystemManager {
     }
 
     pub(crate) async fn update_local_tree(&self, mutation: Mutation) {
-        match self.dir.local_tree.write().await {
-            Ok(tree) => match tree.apply(&mutation).await {
-                Ok(_) => {
-                    debug!("Applied in {}: {mutation}", self.dir.uuid());
-                }
-                Err(e) => {
-                    error!(
-                        "Cannot apply mutation to current tree in {}: {mutation} ({e})",
-                        self.dir.uuid()
-                    );
-                }
-            },
+        match self.dir.local_tree.write().apply(&mutation).await {
+            Ok(_) => {
+                debug!("Applied in {}: {mutation}", self.dir.uuid());
+            }
             Err(e) => {
                 error!(
                     "Cannot apply mutation to current tree in {}: {mutation} ({e})",

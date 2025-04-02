@@ -155,8 +155,8 @@ impl Syncify {
         let dir = SharedDirectory {
             uuid,
             path: abs_path.clone(),
-            state: StoreLock::new(&self.store, state),
-            local_tree: StoreLock::new(&self.store, tree),
+            state: StoreLock::new(&self.store, state, uuid),
+            local_tree: StoreLock::new(&self.store, tree, uuid),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                 HashMap::new(),
                 HashMap::new(),
@@ -274,8 +274,8 @@ impl Syncify {
         let dir = SharedDirectory {
             uuid: link.uuid,
             path: abs_path.clone(),
-            state: StoreLock::new(&self.store, state),
-            local_tree: StoreLock::new(&self.store, tree),
+            state: StoreLock::new(&self.store, state, link.uuid),
+            local_tree: StoreLock::new(&self.store, tree, link.uuid),
             inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
                 link.neighbors,
                 HashMap::new(),
@@ -317,8 +317,8 @@ pub struct SharedDirectory {
     uuid: Uuid,
     path: PathBuf,
     inner: Arc<RwLock<InnerSharedDirectory>>,
-    state: StoreLock<State, StoredState>,
-    local_tree: StoreLock<HashTree, StoredHashTree>,
+    state: StoreLock<State>,
+    local_tree: StoreLock<HashTree>,
     write_key: Option<SigningKey>,
     read_key: VerifyingKey,
 }

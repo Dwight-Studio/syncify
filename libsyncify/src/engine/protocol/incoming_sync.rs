@@ -81,44 +81,44 @@ impl FiniteStateMachine for IncomingSync {
                 };
 
                 if let Ok(()) = self.connection.send(&SyncifyPacket::Sync(packet)).await {
-                    if let Ok(packet) = self.connection.recv().await {
-                        if let SyncifyPacket::Sync(sync_packet) = packet {
-                            match sync_packet {
-                                SyncPacket::Request { .. } => {}
-                                SyncPacket::Success { state: other_state } => {
-                                    debug!("Incoming: Receiving state");
-                                    //debug!("Incoming: Receiving state: \n{}", state);
+                    match self.connection.recv().await {
+                        Ok(packet) => {
+                            if let SyncifyPacket::Sync(sync_packet) = packet {
+                                match sync_packet {
+                                    SyncPacket::Request { .. } => {}
+                                    SyncPacket::Success { state: other_state } => {
+                                        debug!("Incoming: Receiving state");
+                                        //debug!("Incoming: Receiving state: \n{}", state);
 
-                                    let mutations = match self.dir.state.write().await {
-                                        Ok(mut state) => state
-                                            .verify_accept_all(other_state, &self.dir.read_key)
+                                        let mutations = self
+                                            .dir
+                                            .state
+                                            .write()
+                                            .verify_accept_all(self.dir.uuid(), other_state, &self.dir.read_key)
                                             .await
                                             .map_err(|e| match e {
                                                 StateError::InvalidSignature => ProtocolError::InvalidSignature,
                                                 _ => ProtocolError::Unexpected,
-                                            })?,
+                                            })?;
 
-                                        Err(e) => {
-                                            error!("Error when writing state: {}", e);
-                                            return Err(ProtocolError::Unexpected);
-                                        }
-                                    };
-
-                                    self.dir
-                                        .handle()
-                                        .await
-                                        .send(ManagerEvent::ApplyRemoteMutations(mutations))
-                                        .await;
+                                        self.dir
+                                            .handle()
+                                            .await
+                                            .send(ManagerEvent::ApplyRemoteMutations(mutations))
+                                            .await;
+                                    }
+                                    SyncPacket::Failed => {}
                                 }
-                                SyncPacket::Failed => {}
+                            } else {
+                                return Err(ProtocolError::Unexpected);
                             }
-                        } else {
-                            return Err(ProtocolError::Unexpected);
-                        }
 
-                        Ok(IncomingState::Finish)
-                    } else {
-                        Err(ProtocolError::ReceiveFailed)
+                            Ok(IncomingState::Finish)
+                        }
+                        Err(e) => {
+                            error!("Received failed: {e}");
+                            Err(ProtocolError::ReceiveFailed)
+                        }
                     }
                 } else {
                     Err(ProtocolError::SendFailed)
