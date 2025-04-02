@@ -119,6 +119,7 @@ impl SyncifyProtocol {
                     .open_bi()
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
+                debug!("Opening stream with {}", node_id);
                 Ok(SyncifyStream {
                     dir: dir.clone(),
                     send_stream: tx,
@@ -135,6 +136,7 @@ impl SyncifyProtocol {
                     .open_bi()
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
+                debug!("Opening stream with {}", node_id);
                 Ok(SyncifyStream {
                     dir: dir.clone(),
                     send_stream: tx,
@@ -167,7 +169,7 @@ impl SyncifyStream {
             uuid: self.dir.uuid,
         };
         let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
-        
+
         self.send_stream.write_all(header_bytes.as_slice()).await.unwrap();
         self.send_stream.write_all(cipher_bytes.as_slice()).await.unwrap();
 
@@ -269,6 +271,8 @@ impl ProtocolHandler for SyncifyProtocolHandler {
             debug!("Accepting connection with {}", connection.remote_node_id().unwrap());
 
             while let Ok((tx, mut rx)) = connection.accept_bi().await {
+                debug!("Accepting stream with {}", connection.remote_node_id().unwrap());
+                
                 let mut header_buffer = [0u8; HEADER_SIZE];
                 rx.read_exact(&mut header_buffer).await.unwrap();
 
@@ -330,7 +334,7 @@ impl ProtocolHandler for SyncifyProtocolHandler {
                     }
                 }
             }
-            
+
             debug!("Dropping connection with {}", connection.remote_node_id().unwrap());
 
             protocol
