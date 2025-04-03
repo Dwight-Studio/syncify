@@ -22,14 +22,14 @@
  */
 
 use crate::SyncifyError::{
-    AlreadyShared, DirectoryNotEmpty, InvalidPath, InvalidPathUTF8, NotADirectory, NotShared, ReadOnly,
+    AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, PathEncoding, ReadOnly,
 };
 use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerHandle;
 use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
-use crate::store::link::Link;
+use crate::store::link::{Link, LinkError};
 use crate::store::lock::StoreLock;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
@@ -168,12 +168,12 @@ impl Syncify {
                     .await
                     .remove_watched_directory(&dir)
                     .await
-                    .map_err(SyncifyError::Watcher)?;
+                    .map_err(SyncifyError::Engine)?;
             }
 
             Ok(())
         } else {
-            Err(NotShared(dir.path()))
+            Err(NotShared)
         }
     }
 
@@ -247,29 +247,29 @@ impl Syncify {
         if abs_path.exists() {
             // Check if abs_path is a directory
             if !abs_path.is_dir() {
-                return Err(NotADirectory(abs_path));
+                return Err(NotADirectory);
             }
             // Check if the directory is empty
             if abs_path.read_dir().iter().nth(1).is_some() {
-                return Err(DirectoryNotEmpty(abs_path));
+                return Err(DirectoryNotEmpty);
             }
             // Check if the user has write access in the directory
             let md = abs_path.metadata().map_err(InvalidPath)?;
             if md.permissions().readonly() {
-                return Err(ReadOnly(abs_path));
+                return Err(ReadOnly);
             }
         } else {
             // Create the dir and its parent
             tokio::fs::create_dir_all(&get_app_config_dir())
                 .await
                 .map_err(|e| match e.kind() {
-                    ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
+                    ErrorKind::PermissionDenied => ReadOnly,
                     _ => InvalidPath(e),
                 })?
         }
 
         if abs_path.to_str().is_none() {
-            return Err(InvalidPathUTF8(abs_path));
+            return Err(PathEncoding(abs_path));
         }
 
         // Verify if it already exists
@@ -281,7 +281,7 @@ impl Syncify {
             .iter()
             .any(|d| d.path == abs_path)
         {
-            return Err(AlreadyShared(abs_path));
+            return Err(AlreadyShared);
         }
 
         return Ok(abs_path);
@@ -313,9 +313,9 @@ impl Syncify {
             engine
                 .write()
                 .await
-                .add_watched_directory(self.store.clone(), &dir)
+                .add_watched_directory(self.store.clone(), dir)
                 .await
-                .map_err(SyncifyError::Watcher)?;
+                .map_err(SyncifyError::Engine)?;
         }
 
         Ok(())
@@ -370,11 +370,14 @@ impl SharedDirectory {
 
 #[derive(Error, Debug)]
 pub enum SyncifyError {
-    #[error("Store error: {0}")]
+    #[error("{0}")]
     Store(store::StoreError),
 
-    #[error("Engine {0}")]
+    #[error("{0}")]
     Engine(EngineError),
+
+    #[error("{0}")]
+    LinkError(LinkError),
 
     #[error("Engine not initialized")]
     EngineNotInit(),
@@ -382,33 +385,21 @@ pub enum SyncifyError {
     #[error("Invalid path: {0}")]
     InvalidPath(std::io::Error),
 
-    #[error("Invalid path (not UTF8): {0}")]
-    InvalidPathUTF8(PathBuf),
+    #[error("Invalid path (not UTF-8): {0}")]
+    PathEncoding(PathBuf),
 
-    #[error("Directory is is not writable: {0}")]
-    ReadOnly(PathBuf),
+    #[error("Directory is is not writable")]
+    ReadOnly,
 
-    #[error("Directory is already shared: {0}")]
-    AlreadyShared(PathBuf),
+    #[error("Directory is already shared")]
+    AlreadyShared,
 
     #[error("Directory is not shared")]
-    NotShared(PathBuf),
+    NotShared,
 
-    #[error("{0}")]
-    Watcher(EngineError),
+    #[error("Directory is not empty")]
+    DirectoryNotEmpty,
 
-    #[error("Shared directory does not exists: {0}")]
-    DirectoryDoesNotExists(Uuid),
-
-    #[error("Error while parsing link: {0}")]
-    LinkParseError(String),
-
-    #[error("Directory is not empty: {0}")]
-    DirectoryNotEmpty(PathBuf),
-
-    #[error("{0} is not a directory")]
-    NotADirectory(PathBuf),
-
-    #[error("No write permission")]
-    WritePermission(),
+    #[error("Not a directory")]
+    NotADirectory,
 }

@@ -22,14 +22,15 @@
  */
 
 use crate::store::StoreManager;
-use crate::{SharedDirPermission, Syncify, SyncifyError};
-use base64::Engine;
+use crate::{SharedDirPermission, Syncify};
 use base64::prelude::BASE64_STANDARD;
+use base64::{DecodeError, Engine};
 use rkyv::rancor::Error;
-use rkyv::{Archive, Deserialize, Serialize, deserialize};
+use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -69,29 +70,23 @@ impl Display for Link {
 }
 
 impl FromStr for Link {
-    type Err = SyncifyError;
+    type Err = LinkError;
 
     //noinspection RsTraitObligations
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let payload = if let Some(a) = s.split_at_checked(LINK_PREFIX.len()) {
             a.1
         } else {
-            return Err(SyncifyError::LinkParseError(String::from("Invalid Link")));
+            return Err(LinkError::MalformedLink);
         };
 
         if payload.is_empty() {
-            return Err(SyncifyError::LinkParseError(String::from("Invalid Link")));
+            return Err(LinkError::MalformedLink);
         }
 
-        let decoded = BASE64_STANDARD
-            .decode(payload)
-            .map_err(|e| SyncifyError::LinkParseError(e.to_string()))?;
-        let archive: &ArchivedLink = rkyv::access::<ArchivedLink, Error>(decoded.as_slice())
-            .map_err(|e| SyncifyError::LinkParseError(e.to_string()))?;
-        let deserialize =
-            deserialize::<Link, Error>(archive).map_err(|e| SyncifyError::LinkParseError(e.to_string()))?;
+        let decoded = BASE64_STANDARD.decode(payload).map_err(LinkError::Decoding)?;
 
-        Ok(deserialize)
+        rkyv::from_bytes(decoded.as_slice()).map_err(LinkError::Deserializing)
     }
 }
 
@@ -104,7 +99,7 @@ pub struct LinkBuilder {
 
 impl LinkBuilder {
     /// Build the invitation link
-    pub async fn build(&self) -> Result<Link, SyncifyError> {
+    pub async fn build(&self) -> Result<Link, LinkError> {
         let dir = self.store.read().await.get_shared_dir(&self.uuid);
 
         if let Some(dir) = dir {
@@ -115,7 +110,7 @@ impl LinkBuilder {
                         if let Some(key) = &dir.write_key {
                             key.to_bytes()
                         } else {
-                            return Err(SyncifyError::WritePermission());
+                            return Err(LinkError::InsufficientPermission);
                         }
                     }
                 }
@@ -138,7 +133,7 @@ impl LinkBuilder {
                 neighbors,
             })
         } else {
-            Err(SyncifyError::DirectoryDoesNotExists(self.uuid))
+            Err(LinkError::UnknownDirectory)
         }
     }
 
@@ -153,4 +148,22 @@ impl LinkBuilder {
         self.permission = permission;
         self
     }
+}
+
+#[derive(Error, Debug)]
+pub enum LinkError {
+    #[error("Malformed link")]
+    MalformedLink,
+
+    #[error("Cannot decode (of base64): {0}")]
+    Decoding(DecodeError),
+
+    #[error("Cannot decode (of base64): {0}")]
+    Deserializing(Error),
+
+    #[error("Insufficient permission (lacking write permission)")]
+    InsufficientPermission,
+
+    #[error("Unknown directory")]
+    UnknownDirectory,
 }
