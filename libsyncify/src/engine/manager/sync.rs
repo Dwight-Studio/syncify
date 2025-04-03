@@ -78,7 +78,7 @@ impl SyncManager {
         for node in neighbors {
             if node.1 {
                 let node_id = NodeId::from_bytes(&node.0).unwrap();
-                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.ep.clone(), self.proto.clone());
+                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
 
                 if self.ep.node_id() > node_id {
                     Self::start_sync(outgoing).await;

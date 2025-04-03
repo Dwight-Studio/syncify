@@ -28,7 +28,6 @@ use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_cache_dir};
 use blake3::Hash;
 use chrono::{DateTime, Utc};
-use iroh::Endpoint;
 use iroh_base::NodeId;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
@@ -58,7 +57,7 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new(store: Arc<RwLock<StoreManager>>, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+    pub fn new(store: Arc<RwLock<StoreManager>>, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
         info!("Initializing downloader");
 
         // Initiate channel
@@ -75,7 +74,6 @@ impl Downloader {
         let join_handle = Some(tokio::spawn(Self::handle_event(
             rx,
             store,
-            ep,
             download_tasks,
             handle.clone(),
             proto,
@@ -94,7 +92,6 @@ impl Downloader {
     async fn handle_event(
         mut rx: mpsc::Receiver<DownloaderEvent>,
         store: Arc<RwLock<StoreManager>>,
-        ep: Endpoint,
         mut download_tasks: Vec<DownloadTask>,
         downloader: DownloaderHandle,
         proto: Arc<RwLock<SyncifyProtocol>>,
@@ -111,7 +108,6 @@ impl Downloader {
 
                     Self::spawn_download_tasks(
                         store.clone(),
-                        ep.clone(),
                         download_job.clone(),
                         downloader.clone(),
                         &mut download_tasks,
@@ -139,7 +135,6 @@ impl Downloader {
                     if let Some(job) = store.read().await.get_download_job_for_file(file_hash).await {
                         Self::spawn_download_tasks(
                             store.clone(),
-                            ep.clone(),
                             job,
                             downloader.clone(),
                             &mut download_tasks,
@@ -242,7 +237,6 @@ impl Downloader {
                         drop(job);
                         Self::spawn_download_tasks(
                             store.clone(),
-                            ep.clone(),
                             download_job.clone(),
                             downloader.clone(),
                             &mut download_tasks,
@@ -307,7 +301,6 @@ impl Downloader {
                         drop(job);
                         Self::spawn_download_tasks(
                             store.clone(),
-                            ep.clone(),
                             download_job.clone(),
                             downloader.clone(),
                             &mut download_tasks,
@@ -340,7 +333,6 @@ impl Downloader {
     /// Returns `true` if at least one task has been launched, otherwise returns `false`
     async fn spawn_download_tasks(
         store: Arc<RwLock<StoreManager>>,
-        endpoint: Endpoint,
         download_job: Arc<RwLock<DownloadJob>>,
         download_handle: DownloaderHandle,
         download_tasks: &mut [DownloadTask],
@@ -364,7 +356,6 @@ impl Downloader {
                                 if task.handle.is_none() {
                                     task.handle = Some(Self::spawn_download_task(
                                         *node.0,
-                                        endpoint.clone(),
                                         download_job.clone(),
                                         chunk_index,
                                         dir.clone(),
@@ -391,7 +382,6 @@ impl Downloader {
 
     fn spawn_download_task(
         node_id: NodeId,
-        endpoint: Endpoint,
         download_job: Arc<RwLock<DownloadJob>>,
         chunk_index: u64,
         dir: SharedDirectory,
@@ -401,7 +391,7 @@ impl Downloader {
         tokio::spawn(async move {
             let file_hash = *download_job.read().await.hash();
             let mut proto = proto.write().await;
-            if let Ok(mut connection) = proto.open_stream(&dir, endpoint, node_id).await {
+            if let Ok(mut connection) = proto.open_stream(&dir, node_id).await {
                 let packet = SyncifyPacket::Blobs(BlobsPacket::BlobRequest {
                     file_hash: *file_hash.as_bytes(),
                     chunk_index,

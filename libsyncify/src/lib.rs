@@ -27,7 +27,7 @@ use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
 use crate::store::StoreManager;
 use crate::store::link::Link;
-use crate::store::lock::{StoreLock, StoredHashTree, StoredState};
+use crate::store::lock::StoreLock;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
 use chrono::{DateTime, Utc};

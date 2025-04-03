@@ -24,7 +24,7 @@ use crate::engine::job::{DownloadJob, JobState, Provision};
 use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::store::lock::StoreLock;
-use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir, SyncifyError};
+use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;

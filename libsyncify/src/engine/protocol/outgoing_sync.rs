@@ -26,7 +26,7 @@ use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::protocol::{SyncPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use blake3::Hash;
-use iroh::{Endpoint, NodeId};
+use iroh::NodeId;
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -45,18 +45,16 @@ pub struct OutgoingSync {
     state: OutgoingState,
     dir: SharedDirectory,
     node_id: NodeId,
-    ep: Endpoint,
     proto: Arc<RwLock<SyncifyProtocol>>,
     connection: Option<SyncifyStream>,
 }
 
 impl OutgoingSync {
-    pub fn new(dir: SharedDirectory, node_id: NodeId, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+    pub fn new(dir: SharedDirectory, node_id: NodeId, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
         Self {
             state: OutgoingState::Connecting,
             dir,
             node_id,
-            ep,
             connection: None,
             proto,
         }
@@ -71,7 +69,7 @@ impl FiniteStateMachine for OutgoingSync {
         match &self.state {
             OutgoingState::Connecting => {
                 info!("Outgoing: Requesting sync to {}", self.node_id);
-                if let Ok(conn) = proto.open_stream(&self.dir, self.ep.clone(), self.node_id).await {
+                if let Ok(conn) = proto.open_stream(&self.dir, self.node_id).await {
                     self.connection = Some(conn);
                     Ok(OutgoingState::SendingRequest)
                 } else {

@@ -93,10 +93,9 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let protocol = Arc::new(RwLock::new(SyncifyProtocol {
-            connections: Vec::new(),
-        }));
-        let downloader = Downloader::new(store.clone(), builder.endpoint().clone(), protocol.clone());
+        let protocol = Arc::new(RwLock::new(SyncifyProtocol::new(builder.endpoint().clone(), store.clone())));
+        let downloader = Downloader::new(store.clone(), protocol.clone());
+        protocol.write().await.set_downloader(downloader.clone());
         let protocol_handler = SyncifyProtocolHandler::new(protocol.clone(), store.clone(), downloader.clone());
 
         let mut engine = Self {
