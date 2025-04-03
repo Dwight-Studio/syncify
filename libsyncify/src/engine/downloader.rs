@@ -145,7 +145,8 @@ impl Downloader {
 
                     let provision_dir = get_app_cache_dir().join("provisions");
 
-                    if let Some(dir) = store.read().await.get_shared_dir(&dir_uuid) {
+                    let dir_opt = store.read().await.get_shared_dir(&dir_uuid);
+                    if let Some(dir) = dir_opt {
                         if !provision_dir.exists() {
                             if let Err(err) = tokio::fs::create_dir_all(&provision_dir).await {
                                 error!("Cannot create cache directory: {err}");
@@ -178,13 +179,12 @@ impl Downloader {
                             match encoder.finalize() {
                                 Ok(hash) => {
                                     if hash == provision.hash() {
-                                        let expiration = Utc::now().add(PROVISION_EXPIRATION);
-                                        if let Err(e) = dir.local_provisions.write().insert(provision).await {
+                                        if let Err(e) = dir.local_provisions.write().insert(provision.clone()).await {
                                             error!("Unable to insert provision: {e}");
                                         } else {
                                             dir.handle()
                                                 .await
-                                                .send(ManagerEvent::ConfirmLocalProvision(hash, expiration))
+                                                .send(ManagerEvent::ConfirmLocalProvision(provision.clone()))
                                                 .await;
                                         }
                                     } else {

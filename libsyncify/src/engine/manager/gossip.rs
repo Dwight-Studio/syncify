@@ -195,11 +195,11 @@ impl GossipManager {
         }
     }
 
-    pub async fn confirm_local_provision(&self, hash: Hash, expiration: DateTime<Utc>) {
+    pub async fn confirm_local_provision(&self, provision: LocalProvision) {
         if let Ok(resp_msg) = self.create_message(Payload::Provision {
-            hash: *hash.as_bytes(),
+            hash: *provision.hash().as_bytes(),
             node_id: *self.ep.node_id().as_bytes(),
-            expire: expiration,
+            expire: provision.expiration(),
         }) {
             if self.topic.broadcast(resp_msg).await.is_err() {
                 warn!("Cannot broadcast Provision message!");

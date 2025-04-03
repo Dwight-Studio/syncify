@@ -41,6 +41,7 @@ use std::time::Duration;
 use sync::SyncManager;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
+use crate::engine::job::LocalProvision;
 
 pub mod fs;
 pub mod gossip;
@@ -149,8 +150,8 @@ impl Manager {
                     gossip_manager.handle_events(gossip_event, downloader.clone()).await
                 }
                 ManagerEvent::RequestProvision(hash) => gossip_manager.request_provision(hash).await,
-                ManagerEvent::ConfirmLocalProvision(hash, expiration) => {
-                    gossip_manager.confirm_local_provision(hash, expiration).await
+                ManagerEvent::ConfirmLocalProvision(provision) => {
+                    gossip_manager.confirm_local_provision(provision).await
                 }
 
                 // Protocol
@@ -233,7 +234,7 @@ pub enum ManagerEvent {
     // Gossip
     Gossip(iroh_gossip::net::Event),
     RequestProvision(Hash),
-    ConfirmLocalProvision(Hash, DateTime<Utc>),
+    ConfirmLocalProvision(LocalProvision),
 
     // Protocol
     Sync(SyncEvent),
