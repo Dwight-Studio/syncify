@@ -27,8 +27,6 @@ use crate::store::{
     StoreManager,
 };
 use crate::{LocalProvisionsMap, NeighborsMap, RemoteProvisionsMap};
-use blake3::Hash;
-use chrono::{DateTime, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh_base::NodeId;
 use log::debug;
@@ -396,7 +394,7 @@ impl StoreGuard<RemoteProvisionsMap> {
     pub async fn insert(&self, provision: RemoteProvision) -> Result<(), StoreError> {
         if let Some(node_id) = provision.node_id() {
             let mut map = self.inner.write().await;
-            let mut file_map = map.entry(provision.hash()).or_insert(HashMap::new());
+            let file_map = map.entry(provision.hash()).or_insert(HashMap::new());
             file_map.insert(node_id, provision.clone());
 
             let transaction = self.store.write().await.get_write_transaction()?;
@@ -420,7 +418,7 @@ impl StoreGuard<RemoteProvisionsMap> {
     pub async fn remove(&self, provision: RemoteProvision) -> Result<(), StoreError> {
         if let Some(node_id) = provision.node_id() {
             let mut map = self.inner.write().await;
-            let mut file_map = map.entry(provision.hash()).or_insert(HashMap::new());
+            let file_map = map.entry(provision.hash()).or_insert(HashMap::new());
             file_map.remove(&node_id);
 
             if file_map.is_empty() {

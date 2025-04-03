@@ -27,14 +27,12 @@ use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, Synci
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_cache_dir};
 use blake3::Hash;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use iroh_base::NodeId;
 use log::{debug, error, info, warn};
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::ops::{Add, Deref};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
@@ -448,7 +446,7 @@ impl Downloader {
         }
     }
 
-    fn garbage_collect() {}
+    fn _garbage_collect() {}
 }
 
 impl Deref for Downloader {

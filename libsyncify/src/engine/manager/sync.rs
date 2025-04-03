@@ -27,7 +27,6 @@ use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use iroh::Endpoint;
-use iroh_gossip::net::GossipSender;
 use log::{info, warn};
 use std::ops::Deref;
 use std::sync::Arc;

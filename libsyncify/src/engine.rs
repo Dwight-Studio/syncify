@@ -52,7 +52,7 @@ pub const DOWNLOAD_DIRNAME: &str = "download";
 pub const AUTO_FLUSH_PERIOD: Duration = Duration::from_secs(30 * 60);
 
 pub struct Engine {
-    store: Arc<RwLock<StoreManager>>,
+    _store: Arc<RwLock<StoreManager>>,
     router: Router,
     gossip: Gossip,
     ep: Endpoint,
@@ -102,7 +102,7 @@ impl Engine {
         let protocol_handler = SyncifyProtocolHandler::new(protocol.clone(), store.clone(), downloader.clone());
 
         let mut engine = Self {
-            store: store.clone(),
+            _store: store.clone(),
             ep: builder.endpoint().clone(),
             router: builder
                 .accept(SYNCIFY_ALPN, protocol_handler.clone())

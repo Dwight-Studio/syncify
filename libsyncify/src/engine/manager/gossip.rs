@@ -33,7 +33,6 @@ use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{debug, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
-use std::collections::HashMap;
 use std::ops::Add;
 use thiserror::Error;
 
@@ -207,14 +206,6 @@ impl GossipManager {
             }
         } else {
             warn!("Cannot create Provision message!");
-        }
-    }
-
-    fn update_neighbors(neighbors: &mut HashMap<[u8; 32], bool>, node_id: &NodeId) {
-        if !neighbors.keys().any(|e| node_id.as_bytes() == e) {
-            neighbors.insert(*node_id.as_bytes(), true);
-        } else {
-            *neighbors.get_mut(node_id.as_bytes()).unwrap() = true;
         }
     }
 

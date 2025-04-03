@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use blake3::Hash;
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use iroh_base::NodeId;
 use log::error;
 use redb::{Key, TypeName, Value};
@@ -29,7 +29,7 @@ use rkyv::rancor::Error;
 use rkyv::util::AlignedVec;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 /// A sync job.

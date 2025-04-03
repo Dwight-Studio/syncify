@@ -33,7 +33,6 @@ use crate::store::link::Link;
 use crate::store::lock::StoreLock;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
-use chrono::{DateTime, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh_base::NodeId;
 use log::{info, warn};
@@ -44,8 +43,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLockReadGuard;
-use tokio::sync::{RwLock, RwLockWriteGuard};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod engine;
@@ -200,7 +198,7 @@ impl Syncify {
         } else {
             None
         };
-        
+
         let state = State::new(link.uuid);
         let tree = state.hash_tree().clone();
 
@@ -236,7 +234,7 @@ impl Syncify {
 
         Ok(dir)
     }
-    
+
     /// Check the [`PathBuf`], and create directory if necessary and return formatted version.
     async fn internal_check_path(&mut self, path: PathBuf) -> Result<PathBuf, SyncifyError> {
         // Ge the absolute version
@@ -285,16 +283,16 @@ impl Syncify {
         {
             return Err(AlreadyShared(abs_path));
         }
-        
-        return Ok(abs_path)
+
+        return Ok(abs_path);
     }
-    
+
     /// Add the [`SharedDirectory`] to the store and create the database entries.
     async fn internal_add_directory(&mut self, dir: &SharedDirectory) -> Result<(), SyncifyError> {
         self.store
             .write()
             .await
-            .add_shared_dir(&dir)
+            .add_shared_dir(dir)
             .await
             .map_err(SyncifyError::Store)?;
 
@@ -319,9 +317,9 @@ impl Syncify {
                 .await
                 .map_err(SyncifyError::Watcher)?;
         }
-        
+
         Ok(())
-    } 
+    }
 }
 
 type NeighborsMap = HashMap<NodeId, bool>;
