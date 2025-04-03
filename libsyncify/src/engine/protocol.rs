@@ -40,11 +40,11 @@ use iroh::endpoint::{
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeId};
 use iroh_base::NodeAddr;
-use log::debug;
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use log::{debug, error};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -129,14 +129,6 @@ impl SyncifyProtocol {
                     .open_bi()
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
-                if let Some(downloader) = &self.downloader {
-                    tokio::spawn(accept_connection(
-                        conn.clone(),
-                        self.connections.clone(),
-                        self.store.clone(),
-                        downloader.clone(),
-                    ));
-                }
                 Ok(SyncifyStream {
                     dir: dir.clone(),
                     send_stream: tx,

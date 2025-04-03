@@ -27,13 +27,16 @@ use log::error;
 use redb::{Key, TypeName, Value};
 use rkyv::rancor::Error;
 use rkyv::util::AlignedVec;
+use rkyv::with::Skip;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::fs::File;
+use std::io::BufWriter;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 /// A sync job.
-#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
+#[derive(Archive, Serialize, Deserialize, Debug)]
 pub struct DownloadJob {
     uuid: Uuid,
     path: String,
@@ -44,6 +47,7 @@ pub struct DownloadJob {
     issued: DateTime<Utc>,
     pub(crate) state: JobState,
     pub progress: f32,
+    pub(crate) last_chunk: u64,
     pub(crate) chunk_done: u64,
     pub(crate) failed_chunks: Vec<u64>,
 }
@@ -58,6 +62,7 @@ impl DownloadJob {
             issued,
             state,
             progress: 0f32,
+            last_chunk: 0,
             chunk_done: 0,
             failed_chunks: Vec::new(),
         }
@@ -135,10 +140,10 @@ impl Value for DownloadJob {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Archive, Serialize, Deserialize, Debug)]
 pub enum JobState {
     Pending,
-    Ongoing,
+    Ongoing(#[rkyv(with = Skip)] Option<BufWriter<File>>),
     Done(#[rkyv(with = crate::util::DateTimeDef)] DateTime<Utc>),
     Error(String),
 }

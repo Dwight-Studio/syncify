@@ -28,7 +28,6 @@ use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
 use crate::engine::state::Mutation;
 use blake3::Hash;
-use chrono::{DateTime, Utc};
 use futures::{Sink, StreamExt};
 use iroh::Endpoint;
 use iroh_gossip::net::{GossipSender, GossipTopic};

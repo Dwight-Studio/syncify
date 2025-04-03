@@ -315,12 +315,17 @@ impl StoreManager {
                 let job = job_access.value();
 
                 // If it is still active, add in the active vec
-                if matches!(job.state(), JobState::Pending | JobState::Ongoing) {
-                    let job_ref = Arc::new(RwLock::new(job));
-                    active_jobs.push(job_ref.clone());
-                    jobs.insert(hash, job_ref);
-                } else if *job.issued() > since {
-                    jobs.insert(hash, Arc::new(RwLock::new(job)));
+                match job.state() {
+                    JobState::Pending | JobState::Ongoing(_) => {
+                        let job_ref = Arc::new(RwLock::new(job));
+                        active_jobs.push(job_ref.clone());
+                        jobs.insert(hash, job_ref);
+                    }
+                    _ => {
+                        if *job.issued() > since {
+                            jobs.insert(hash, Arc::new(RwLock::new(job)));
+                        }
+                    }
                 }
             }
         }

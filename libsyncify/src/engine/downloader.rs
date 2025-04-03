@@ -22,7 +22,6 @@
  */
 use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerEvent;
-use crate::engine::manager::gossip::PROVISION_EXPIRATION;
 use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_cache_dir};
@@ -31,8 +30,8 @@ use chrono::Utc;
 use iroh_base::NodeId;
 use log::{debug, error, info, warn};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
-use std::ops::{Add, Deref};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
@@ -41,7 +40,7 @@ use uuid::Uuid;
 /// Size of the event buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 /// Size of the chunk of file that are sent per packet.
-pub const CHUNK_SIZE: usize = 32 * 1024;
+pub const CHUNK_SIZE: usize = 1024 * 1024;
 /// Number of concurrent download threads
 pub const MAX_DOWNLOAD_TASKS: usize = 10;
 
@@ -119,7 +118,8 @@ impl Downloader {
                     // Event sent when a remote provision was updated for a file.
                     // (Received a message from the swarm of the availability of a file)
 
-                    if let Some(dir) = store.read().await.get_shared_dir(&dir_uuid) {
+                    let dir_opt = store.read().await.get_shared_dir(&dir_uuid);
+                    if let Some(dir) = dir_opt {
                         if let Err(e) = dir.remote_provisions.write().insert(provision.clone()).await {
                             warn!("Unable update provision: {e}")
                         }
@@ -127,7 +127,8 @@ impl Downloader {
                         warn!("Received remote provision update for unknown UUID: {}", dir_uuid);
                     }
 
-                    if let Some(job) = store.read().await.get_download_job(provision.hash()).await {
+                    let job_opt = store.read().await.get_download_job(provision.hash()).await;
+                    if let Some(job) = job_opt {
                         Self::spawn_download_tasks(
                             store.clone(),
                             job,
@@ -142,7 +143,7 @@ impl Downloader {
                 DownloaderEvent::LocalProvisionUpdate(dir_uuid, provision) => {
                     // Event sent when a local provision was updated for a file.
                     // (Received a message from the swarm that requested the availability of a file)
-
+                    debug!("LocalProvisionUpdate");
                     let provision_dir = get_app_cache_dir().join("provisions");
 
                     let dir_opt = store.read().await.get_shared_dir(&dir_uuid);
@@ -182,6 +183,7 @@ impl Downloader {
                                         if let Err(e) = dir.local_provisions.write().insert(provision.clone()).await {
                                             error!("Unable to insert provision: {e}");
                                         } else {
+                                            debug!("Finished cutting the file");
                                             dir.handle()
                                                 .await
                                                 .send(ManagerEvent::ConfirmLocalProvision(provision.clone()))
@@ -231,7 +233,7 @@ impl Downloader {
 
                     job.failed_chunks.push(chunk_index);
 
-                    if job.chunk_done < *job.size() {
+                    if job.last_chunk < *job.size() {
                         drop(job);
                         Self::spawn_download_tasks(
                             store.clone(),
@@ -252,32 +254,24 @@ impl Downloader {
 
                 DownloaderEvent::TaskSuccess(download_job, chunk_index, decoded_data) => {
                     // TODO: What should we do when the cache file cannot be opened, seeked, written to ? It shouldn't happen...
+                    debug!("{}", chunk_index);
                     Self::flush_download_tasks(&mut download_tasks);
                     let mut job = download_job.write().await;
-
-                    // Handling the decoded data & cache file
-                    let mut cache_file = get_app_cache_dir().join("downloads");
-                    if !cache_file.exists() {
-                        if let Err(err) = std::fs::create_dir_all(cache_file.clone()) {
-                            error!("Cannot create download cache directory: {err}");
-                            return;
-                        }
-                    }
-                    cache_file = cache_file.join(job.hash().to_string());
-
-                    let mut file = {
-                        if cache_file.exists() {
-                            if let Ok(file) = File::options().append(true).open(cache_file.clone()) {
-                                file
-                            } else {
-                                error!("Cannot open cache file: {}", cache_file.display().to_string());
+                    
+                    let file: &mut BufWriter<File> = {
+                        match job.state {
+                            JobState::Ongoing(ref mut buff) => {
+                                if let Some(buff) = buff {
+                                    buff
+                                } else {
+                                    error!("Cache file cannot be found!");
+                                    return;
+                                }
+                            }
+                            _ => {
+                                error!("Cache file cannot be found!");
                                 return;
                             }
-                        } else if let Ok(file) = File::create(cache_file.clone()) {
-                            file
-                        } else {
-                            error!("Cannot create cache file: {}", cache_file.display().to_string());
-                            return;
                         }
                     };
 
@@ -289,8 +283,9 @@ impl Downloader {
                         error!("Cannot write to the cache file: {err}");
                         return;
                     }
-
+                    
                     // Handling the job update
+                    job.chunk_done += 1;
                     job.progress = job.chunk_done as f32 / *job.size() as f32;
                     info!("Downloading... {:.1}%", job.progress * 100.0);
 
@@ -306,11 +301,13 @@ impl Downloader {
                         )
                         .await;
                     } else if !job.failed_chunks.is_empty() {
+                        drop(job);
                         error!("Not implemented!");
                         // TODO: Handle failed chunks
                     } else {
                         job.set_state(JobState::Done(Utc::now()));
                         info!("Received file {}", job.hash());
+                        drop(job);
                         // TODO: Goto next download job
                     }
                 }
@@ -336,46 +333,54 @@ impl Downloader {
         download_tasks: &mut [DownloadTask],
         proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
-        let mut chunk_index = 0;
         let mut job = download_job.write().await;
 
-        if *job.state() == JobState::Pending {
-            job.set_state(JobState::Ongoing);
-        } else {
-            chunk_index = job.chunk_done;
-        }
-
-        if chunk_index < *job.size() {
-            if let Some(dir) = store.read().await.get_shared_dir(job.uuid()) {
-                if let Some(node_list) = dir.remote_provisions.read().await.get(job.hash()) {
-                    for node in node_list {
-                        if !node.1.is_expired() {
-                            for task in download_tasks.iter_mut() {
-                                if task.handle.is_none() {
-                                    task.handle = Some(Self::spawn_download_task(
-                                        *node.0,
-                                        download_job.clone(),
-                                        chunk_index,
-                                        dir.clone(),
-                                        download_handle.clone(),
-                                        proto.clone(),
-                                    ));
-                                    chunk_index += 1;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    dir.handle()
-                        .await
-                        .send(ManagerEvent::RequestProvision(*job.hash()))
-                        .await;
+        if matches!(*job.state(), JobState::Pending) {
+            let mut cache_file = get_app_cache_dir().join("downloads");
+            if !cache_file.exists() {
+                if let Err(err) = std::fs::create_dir_all(cache_file.clone()) {
+                    error!("Cannot create download cache directory: {err}");
+                    return;
                 }
+            }
+            cache_file = cache_file.join(job.hash().to_string());
+            if let Ok(file) = File::create(cache_file) {
+                job.set_state(JobState::Ongoing (
+                    Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
+                ));
+            } else {
+                error!("Cannot create cache file");
             }
         }
 
-        job.chunk_done = chunk_index;
+        let dir_opt = store.read().await.get_shared_dir(job.uuid());
+        if let Some(dir) = dir_opt {
+            let node_list_opt = dir.remote_provisions.read().await;
+            if let Some(node_list) = node_list_opt.get(job.hash()) {
+                for task in download_tasks.iter_mut() {
+                    if job.last_chunk < *job.size() && task.handle.is_none() {
+                        let nodes: Vec<(&NodeId, &RemoteProvision)> = node_list.iter().collect();
+                        let node = nodes.get(job.last_chunk as usize % nodes.len()).unwrap();
+                        if !node.1.is_expired() {
+                            task.handle = Some(Self::spawn_download_task(
+                                *node.0,
+                                download_job.clone(),
+                                job.last_chunk,
+                                dir.clone(),
+                                download_handle.clone(),
+                                proto.clone(),
+                            ));
+                            job.last_chunk += 1;
+                        }
+                    }
+                }
+            } else {
+                dir.handle()
+                    .await
+                    .send(ManagerEvent::RequestProvision(*job.hash()))
+                    .await;
+            }
+        }
     }
 
     fn spawn_download_task(
@@ -433,6 +438,7 @@ impl Downloader {
                     }
                 }
             }
+            drop(proto);
         })
     }
 

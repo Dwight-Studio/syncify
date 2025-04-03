@@ -13,22 +13,22 @@ publish = false
 
 [dependencies]
 iroh = { version = "0.34.0", features = ["discovery-local-network"] }
-iroh-gossip = { version = "0.34.0" }
+iroh-gossip = { version = "0.34.1" }
 iroh-base = "0.34.0"
 anyhow = "1.0.97"
 directories = "6.0.0"
-log = "0.4.26"
+log = "0.4.27"
 fern = { version = "0.7.1", features = ["colored"] }
 humantime = "2.2.0"
-tokio = "1.44.0"
+tokio = "1.44.1"
 thiserror = "2.0.12"
-uuid = "1.15.1"
+uuid = "1.16.0"
 keyring = { version = "3.6.2", features = ["linux-native-async-persistent", "apple-native", "windows-native", "crypto-rust", "tokio"] }
 futures-lite = "2.6.0"
 chacha20poly1305 = "0.10.1"
 ed25519-dalek = "2.1.1"
 base64 = "0.22.1"
-blake3 = { version = "1.6.1", features = ["std", "mmap", "rayon"] }
+blake3 = { version = "1.8.1", features = ["std", "mmap", "rayon"] }
 futures = "0.3.31"
 walkdir = "2.5.0"
 rkyv = { version = "0.8.10", features = ["default", "unaligned", "uuid-1"] }
@@ -36,4 +36,3 @@ redb = "2.4.0"
 chrono = { version = "0.4.40", features = ["default", "rkyv-64", "rkyv-validation"] }
 bytes = "1.10.1"
 bao = "0.13.0"
-paths-as-strings = "0.1.1"
