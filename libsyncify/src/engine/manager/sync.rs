@@ -44,11 +44,7 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    pub async fn new(
-        dir: SharedDirectory,
-        ep: Endpoint,
-        proto: Arc<RwLock<SyncifyProtocol>>,
-    ) -> Self {
+    pub async fn new(dir: SharedDirectory, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
         Self { dir, ep, proto }
     }
 

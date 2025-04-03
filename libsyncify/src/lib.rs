@@ -117,48 +117,10 @@ impl Syncify {
 
     /// Create shared directory.
     pub async fn create_shared_directory(&mut self, path: PathBuf) -> Result<SharedDirectory, SyncifyError> {
-        let mut abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
+        // Check and format path
+        let abs_path = self.internal_check_path(path).await?;
 
-        // Add a trailing "/" at the end of the path
-        abs_path.push("");
-
-        // Check if the dir exists
-        if abs_path.exists() {
-            // Check if the user has write access in the directory
-            if !abs_path.is_dir() {
-                return Err(NotADirectory(abs_path));
-            }
-            let md = abs_path.metadata().map_err(InvalidPath)?;
-            if md.permissions().readonly() {
-                return Err(ReadOnly(abs_path));
-            }
-        } else {
-            // Create the dir and its parent
-            tokio::fs::create_dir_all(&get_app_config_dir())
-                .await
-                .map_err(|e| match e.kind() {
-                    ErrorKind::PermissionDenied => ReadOnly(abs_path.clone()),
-                    _ => InvalidPath(e),
-                })?
-        }
-
-        if abs_path.to_str().is_none() {
-            return Err(InvalidPathUTF8(abs_path));
-        }
-
-        // Verify if it already exists
-        if self
-            .store
-            .read()
-            .await
-            .get_all_dirs()
-            .iter()
-            .any(|d| d.path == abs_path)
-        {
-            return Err(AlreadyShared(abs_path));
-        }
-
-        // Add the directory to the store
+        // Create the SharedDirectory
         let uuid = Uuid::new_v4();
         let sign_key = SigningKey::generate(&mut OsRng);
         let state = State::new(uuid);
@@ -184,34 +146,7 @@ impl Syncify {
             dir.path().display()
         );
 
-        self.store
-            .write()
-            .await
-            .add_shared_dir(&dir)
-            .await
-            .map_err(SyncifyError::Store)?;
-
-        if let Err(e) = dir.state.write().save_new().await {
-            warn!("Unable to save new state: {}", e);
-        };
-
-        if let Err(e) = dir.local_tree.write().save_new().await {
-            warn!("Unable to save new tree: {}", e);
-        };
-
-        if let Err(e) = dir.neighbors.write().save_new().await {
-            warn!("Unable to save new neighbors: {}", e);
-        };
-
-        // If the engine is available, add the directory to watched directory
-        if let Some(engine) = &mut self.engine {
-            engine
-                .write()
-                .await
-                .add_watched_directory(self.store.clone(), &dir)
-                .await
-                .map_err(SyncifyError::Watcher)?;
-        }
+        self.internal_add_directory(&dir).await?;
 
         Ok(dir)
     }
@@ -256,6 +191,55 @@ impl Syncify {
 
     /// Join a shared directory
     pub async fn join_shared_directory(&mut self, link: Link, path: PathBuf) -> Result<SharedDirectory, SyncifyError> {
+        // Check and format path
+        let abs_path = self.internal_check_path(path).await?;
+
+        // Create the SharedDirectory
+        let sign_key = if link.permission == SharedDirPermission::Write {
+            Some(SigningKey::from_bytes(&link.key))
+        } else {
+            None
+        };
+        
+        let state = State::new(link.uuid);
+        let tree = state.hash_tree().clone();
+
+        // Neighbors from link
+        let mut neighbors = HashMap::new();
+        for n in link.neighbors {
+            if let Ok(node_id) = NodeId::from_bytes(&n) {
+                neighbors.insert(node_id, false);
+            }
+        }
+
+        let dir = SharedDirectory {
+            uuid: link.uuid,
+            path: abs_path.clone(),
+            state: StoreLock::new(&self.store, state, link.uuid),
+            local_tree: StoreLock::new(&self.store, tree, link.uuid),
+            neighbors: StoreLock::new(&self.store, neighbors, link.uuid),
+            local_provisions: StoreLock::new(&self.store, HashMap::new(), link.uuid),
+            remote_provisions: StoreLock::new(&self.store, HashMap::new(), link.uuid),
+            handle: Arc::new(RwLock::new(None)),
+            initial_sync: Arc::new(RwLock::new(false)),
+            write_key: sign_key.clone(),
+            read_key: if let Some(key) = sign_key {
+                key.verifying_key()
+            } else {
+                VerifyingKey::from_bytes(&link.key).unwrap()
+            },
+        };
+
+        info!("Added shared directory {} at \"{}\"", dir.uuid(), dir.path().display());
+
+        self.internal_add_directory(&dir).await?;
+
+        Ok(dir)
+    }
+    
+    /// Check the [`PathBuf`], and create directory if necessary and return formatted version.
+    async fn internal_check_path(&mut self, path: PathBuf) -> Result<PathBuf, SyncifyError> {
+        // Ge the absolute version
         let mut abs_path = std::path::absolute(&path).map_err(InvalidPath)?;
 
         // Add a trailing "/" at the end of the path
@@ -301,48 +285,12 @@ impl Syncify {
         {
             return Err(AlreadyShared(abs_path));
         }
-
-        // Add the directory to the store
-        let sign_key = if link.permission == SharedDirPermission::Write {
-            Some(SigningKey::from_bytes(&link.key))
-        } else {
-            None
-        };
-
-        // State
-        let state = State::new(link.uuid);
-
-        // Tree from state
-        let tree = state.hash_tree().clone();
-
-        // Neighbors from link
-        let mut neighbors = HashMap::new();
-        for n in link.neighbors {
-            if let Ok(node_id) = NodeId::from_bytes(&n) {
-                neighbors.insert(node_id, false);
-            }
-        }
-
-        let dir = SharedDirectory {
-            uuid: link.uuid,
-            path: abs_path.clone(),
-            state: StoreLock::new(&self.store, state, link.uuid),
-            local_tree: StoreLock::new(&self.store, tree, link.uuid),
-            neighbors: StoreLock::new(&self.store, neighbors, link.uuid),
-            local_provisions: StoreLock::new(&self.store, HashMap::new(), link.uuid),
-            remote_provisions: StoreLock::new(&self.store, HashMap::new(), link.uuid),
-            handle: Arc::new(RwLock::new(None)),
-            initial_sync: Arc::new(RwLock::new(false)),
-            write_key: sign_key.clone(),
-            read_key: if let Some(key) = sign_key {
-                key.verifying_key()
-            } else {
-                VerifyingKey::from_bytes(&link.key).unwrap()
-            },
-        };
-
-        info!("Added shared directory {} at \"{}\"", dir.uuid(), dir.path().display());
-
+        
+        return Ok(abs_path)
+    }
+    
+    /// Add the [`SharedDirectory`] to the store and create the database entries.
+    async fn internal_add_directory(&mut self, dir: &SharedDirectory) -> Result<(), SyncifyError> {
         self.store
             .write()
             .await
@@ -358,6 +306,10 @@ impl Syncify {
             warn!("Unable to save new tree: {}", e);
         };
 
+        if let Err(e) = dir.neighbors.write().save_new().await {
+            warn!("Unable to save new neighbors: {}", e);
+        };
+
         // If the engine is available, add the directory to watched directory
         if let Some(engine) = &mut self.engine {
             engine
@@ -367,9 +319,9 @@ impl Syncify {
                 .await
                 .map_err(SyncifyError::Watcher)?;
         }
-
-        Ok(dir)
-    }
+        
+        Ok(())
+    } 
 }
 
 type NeighborsMap = HashMap<NodeId, bool>;
