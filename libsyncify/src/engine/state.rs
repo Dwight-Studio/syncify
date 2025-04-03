@@ -1016,37 +1016,39 @@ impl HashTree {
                         }
 
                         if let Some(relative_path) = FileSystemManager::relative(dir, file.path()) {
-                            let relative_path_string = relative_path.to_string_lossy().to_string();
+                            if let Some(relative_path_str) = relative_path.to_str() {
+                                // Remove the file from the current file
+                                current_files.retain(|e| e != relative_path_str);
 
-                            // Remove the file from the current file
-                            current_files.retain(|e| e != &relative_path_string);
+                                // Check if the file is in the hash tree
+                                if let Some(File { timestamp, .. }) = self.get(relative_path_str) {
+                                    // If so, check the timestamp
+                                    if let Ok(modified) = metadata.modified() {
+                                        let new_timestamp: DateTime<Utc> = DateTime::from(modified);
 
-                            // Check if the file is in the hash tree
-                            if let Some(File { timestamp, .. }) = self.get(&relative_path_string) {
-                                // If so, check the timestamp
-                                if let Ok(modified) = metadata.modified() {
-                                    let new_timestamp: DateTime<Utc> = DateTime::from(modified);
-
-                                    // Check if the saved timestamp is more recent
-                                    if *timestamp >= new_timestamp {
-                                        // If so, continue
-                                        continue;
+                                        // Check if the saved timestamp is more recent
+                                        if *timestamp >= new_timestamp {
+                                            // If so, continue
+                                            continue;
+                                        }
                                     }
                                 }
-                            }
 
-                            // If we can't verify the file, re-hash it
-                            if let Err(e) = hasher.update_mmap(file.path()) {
-                                warn!("Unable to hash: '{}' ({})", file.path().display(), e);
-                            }
+                                // If we can't verify the file, re-hash it
+                                if let Err(e) = hasher.update_mmap(file.path()) {
+                                    warn!("Unable to hash: '{}' ({})", file.path().display(), e);
+                                }
 
-                            // Push the mutation
-                            rtn.push(Mutation::Modify {
-                                file_path: relative_path_string.clone(),
-                                file_hash: hasher.finalize(),
-                                file_size: u64::div_ceil(metadata.len(), CHUNK_SIZE as u64),
-                                timestamp: Utc::now(),
-                            })
+                                // Push the mutation
+                                rtn.push(Mutation::Modify {
+                                    file_path: relative_path_str.to_string(),
+                                    file_hash: hasher.finalize(),
+                                    file_size: u64::div_ceil(metadata.len(), CHUNK_SIZE as u64),
+                                    timestamp: Utc::now(),
+                                })
+                            } else {
+                                warn!("File with invalid name: '{}'", file.path().display())
+                            }
                         }
                     } else {
                         warn!("Cannot retrieve metatdata of '{}'", file.path().display());

@@ -29,6 +29,7 @@ use rkyv::rancor::Error;
 use rkyv::util::AlignedVec;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// A sync job.
@@ -142,8 +143,8 @@ pub enum JobState {
     Error(String),
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug)]
-pub struct Provision {
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+pub struct RemoteProvision {
     node: [u8; 32],
     #[rkyv(with = crate::util::HashDef)]
     hash: Hash,
@@ -151,8 +152,8 @@ pub struct Provision {
     expire: DateTime<Utc>,
 }
 
-impl Value for Provision {
-    type SelfType<'a> = Provision;
+impl Value for RemoteProvision {
+    type SelfType<'a> = RemoteProvision;
     type AsBytes<'a> = &'a [u8];
 
     fn fixed_width() -> Option<usize> {
@@ -164,10 +165,10 @@ impl Value for Provision {
     where
         Self: 'a,
     {
-        rkyv::from_bytes::<Provision, Error>(data).unwrap_or_else(|e| {
+        rkyv::from_bytes::<RemoteProvision, Error>(data).unwrap_or_else(|e| {
             error!("Failed to deserialize download job: {e}");
-            Provision {
-                node: [0u8; 32],
+            RemoteProvision {
+                node: [0; 32],
                 hash: Hash::from_bytes([0u8; 32]),
                 expire: Default::default(),
             }
@@ -192,16 +193,16 @@ impl Value for Provision {
     }
 }
 
-impl Key for Provision {
+impl Key for RemoteProvision {
     //noinspection RsTraitObligations
     fn compare(data1_bytes: &[u8], data2_bytes: &[u8]) -> Ordering {
         if let (Ok(data1), Ok(data2)) = (
-            rkyv::from_bytes::<Provision, Error>(data1_bytes),
-            rkyv::from_bytes::<Provision, Error>(data2_bytes),
+            rkyv::from_bytes::<RemoteProvision, Error>(data1_bytes),
+            rkyv::from_bytes::<RemoteProvision, Error>(data2_bytes),
         ) {
             match data1.hash.as_bytes().cmp(data2.hash.as_bytes()) {
                 Ordering::Equal => data1.node.cmp(&data2.node),
-                other => other,
+                ordering => ordering,
             }
         } else {
             Ordering::Greater
@@ -209,18 +210,10 @@ impl Key for Provision {
     }
 }
 
-impl Provision {
-    pub fn remote(node_id: NodeId, hash: Hash, expiration: DateTime<Utc>) -> Self {
+impl RemoteProvision {
+    pub fn new(node_id: NodeId, hash: Hash, expiration: DateTime<Utc>) -> Self {
         Self {
             node: *node_id.as_bytes(),
-            hash,
-            expire: expiration,
-        }
-    }
-
-    pub fn local(hash: Hash, expiration: DateTime<Utc>) -> Self {
-        Self {
-            node: [0u8; 32],
             hash,
             expire: expiration,
         }
@@ -232,18 +225,116 @@ impl Provision {
     ///
     /// Returns true if expired, false otherwise.
     pub fn is_expired(&self) -> bool {
-        self.expire.signed_duration_since(Utc::now()).le(&TimeDelta::zero())
+        self.expire < Utc::now()
     }
 
     pub fn expiration(&self) -> DateTime<Utc> {
         self.expire
     }
 
-    pub fn node_id(&self) -> NodeId {
-        NodeId::from_bytes(&self.node).unwrap()
+    pub fn node_id(&self) -> Option<NodeId> {
+        match NodeId::from_bytes(&self.node) {
+            Ok(node_id) => Some(node_id),
+            Err(_) => None,
+        }
     }
 
     pub fn hash(&self) -> Hash {
-        self.hash
+        self.hash.clone()
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+pub struct LocalProvision {
+    #[rkyv(with = crate::util::HashDef)]
+    hash: Hash,
+    #[rkyv(with = crate::util::DateTimeDef)]
+    expire: DateTime<Utc>,
+    path: String,
+}
+
+impl Value for LocalProvision {
+    type SelfType<'a> = LocalProvision;
+    type AsBytes<'a> = &'a [u8];
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    //noinspection RsTraitObligations
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        rkyv::from_bytes::<LocalProvision, Error>(data).unwrap_or_else(|e| {
+            error!("Failed to deserialize download job: {e}");
+            LocalProvision {
+                hash: Hash::from_bytes([0u8; 32]),
+                expire: Default::default(),
+                path: "".to_string(),
+            }
+        })
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'b,
+    {
+        rkyv::to_bytes(value)
+            .unwrap_or_else(|e: rkyv::rancor::Error| {
+                error!("Failed to serialize download job: {e}");
+                AlignedVec::new()
+            })
+            .to_vec()
+            .leak()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("Provided")
+    }
+}
+
+impl Key for LocalProvision {
+    //noinspection RsTraitObligations
+    fn compare(data1_bytes: &[u8], data2_bytes: &[u8]) -> Ordering {
+        if let (Ok(data1), Ok(data2)) = (
+            rkyv::from_bytes::<LocalProvision, Error>(data1_bytes),
+            rkyv::from_bytes::<LocalProvision, Error>(data2_bytes),
+        ) {
+            data1.hash.as_bytes().cmp(data2.hash.as_bytes())
+        } else {
+            Ordering::Greater
+        }
+    }
+}
+
+impl LocalProvision {
+    pub fn new(hash: Hash, expiration: DateTime<Utc>, path: PathBuf) -> Self {
+        Self {
+            hash,
+            expire: expiration,
+            path: path.to_string_lossy().to_string(),
+        }
+    }
+
+    /// Check expiration.
+    ///
+    /// # Return
+    ///
+    /// Returns true if expired, false otherwise.
+    pub fn is_expired(&self) -> bool {
+        self.expire < Utc::now()
+    }
+
+    pub fn expiration(&self) -> DateTime<Utc> {
+        self.expire.clone()
+    }
+
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from(&self.path)
+    }
+
+    pub fn hash(&self) -> Hash {
+        self.hash.clone()
     }
 }

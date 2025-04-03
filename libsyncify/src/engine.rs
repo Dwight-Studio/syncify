@@ -27,8 +27,8 @@ use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol, SyncifyProtocolHandler};
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_config_dir};
+use iroh::Endpoint;
 use iroh::protocol::Router;
-use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use log::{info, warn};
@@ -93,7 +93,10 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let protocol = Arc::new(RwLock::new(SyncifyProtocol::new(builder.endpoint().clone(), store.clone())));
+        let protocol = Arc::new(RwLock::new(SyncifyProtocol::new(
+            builder.endpoint().clone(),
+            store.clone(),
+        )));
         let downloader = Downloader::new(store.clone(), protocol.clone());
         protocol.write().await.set_downloader(downloader.clone());
         let protocol_handler = SyncifyProtocolHandler::new(protocol.clone(), store.clone(), downloader.clone());
@@ -149,12 +152,7 @@ impl Engine {
                 .gossip
                 .subscribe(
                     TopicId::from_bytes(<[u8; 32]>::try_from(dir.uuid().as_simple().to_string().as_bytes()).unwrap()),
-                    dir.read()
-                        .await
-                        .neighbors
-                        .keys()
-                        .map(|n| NodeId::from_bytes(n).unwrap())
-                        .collect(),
+                    dir.neighbors.read().await.iter().map(|(node_id, _)| *node_id).collect(),
                 )
                 .map_err(EngineError::Gossip)?;
 

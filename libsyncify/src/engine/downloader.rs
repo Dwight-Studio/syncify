@@ -20,7 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::job::{DownloadJob, JobState};
+use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerEvent;
 use crate::engine::manager::gossip::PROVISION_EXPIRATION;
 use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
@@ -117,22 +117,19 @@ impl Downloader {
                 }
 
                 // Provision
-                DownloaderEvent::RemoteProvisionUpdate(dir_uuid, node_id, file_hash, expiration) => {
+                DownloaderEvent::RemoteProvisionUpdate(dir_uuid, provision) => {
                     // Event sent when a remote provision was updated for a file.
                     // (Received a message from the swarm of the availability of a file)
 
                     if let Some(dir) = store.read().await.get_shared_dir(&dir_uuid) {
-                        dir.write()
-                            .await
-                            .remote_provisions
-                            .entry(file_hash)
-                            .or_insert(HashMap::new())
-                            .insert(node_id, expiration);
+                        if let Err(e) = dir.remote_provisions.write().insert(provision.clone()).await {
+                            warn!("Unable update provision: {e}")
+                        }
                     } else {
                         warn!("Received remote provision update for unknown UUID: {}", dir_uuid);
                     }
 
-                    if let Some(job) = store.read().await.get_download_job_for_file(file_hash).await {
+                    if let Some(job) = store.read().await.get_download_job(provision.hash()).await {
                         Self::spawn_download_tasks(
                             store.clone(),
                             job,
@@ -144,7 +141,7 @@ impl Downloader {
                     }
                 }
 
-                DownloaderEvent::LocalProvisionUpdate(dir_uuid, file_hash, file_path) => {
+                DownloaderEvent::LocalProvisionUpdate(dir_uuid, provision) => {
                     // Event sent when a local provision was updated for a file.
                     // (Received a message from the swarm that requested the availability of a file)
 
@@ -163,7 +160,7 @@ impl Downloader {
                                 .read(true)
                                 .write(true)
                                 .create(true)
-                                .open(provision_dir.join(file_hash.to_string()))
+                                .open(provision_dir.join(provision.hash().to_string()))
                             {
                                 Ok(encode_file) => bao::encode::Encoder::new(encode_file),
                                 Err(err) => {
@@ -173,7 +170,7 @@ impl Downloader {
                             }
                         };
 
-                        if let Ok(file) = File::open(file_path.clone()) {
+                        if let Ok(file) = File::open(provision.path()) {
                             let mut reader = BufReader::new(file);
                             if let Err(e) = std::io::copy(&mut reader, &mut encoder) {
                                 error!("Cannot write cache file: {e}");
@@ -182,15 +179,18 @@ impl Downloader {
 
                             match encoder.finalize() {
                                 Ok(hash) => {
-                                    if hash == file_hash {
+                                    if hash == provision.hash() {
                                         let expiration = Utc::now().add(PROVISION_EXPIRATION);
-                                        dir.write().await.local_provisions.insert(hash, expiration);
-                                        dir.handle()
-                                            .await
-                                            .send(ManagerEvent::ConfirmLocalProvision(hash, expiration))
-                                            .await;
+                                        if let Err(e) = dir.local_provisions.write().insert(provision).await {
+                                            error!("Unable to insert provision: {e}");
+                                        } else {
+                                            dir.handle()
+                                                .await
+                                                .send(ManagerEvent::ConfirmLocalProvision(hash, expiration))
+                                                .await;
+                                        }
                                     } else {
-                                        error!("Error while encoding file: {}", file_path.display());
+                                        error!("Error while encoding file: {}", provision.path().display());
                                     }
                                 }
                                 Err(err) => {
@@ -349,9 +349,9 @@ impl Downloader {
 
         if chunk_index < *job.size() {
             if let Some(dir) = store.read().await.get_shared_dir(job.uuid()) {
-                if let Some(node_list) = dir.read().await.remote_provisions.get(job.hash()) {
+                if let Some(node_list) = dir.remote_provisions.read().await.get(job.hash()) {
                     for node in node_list {
-                        if Utc::now() < *node.1 {
+                        if !node.1.is_expired() {
                             for task in download_tasks.iter_mut() {
                                 if task.handle.is_none() {
                                     task.handle = Some(Self::spawn_download_task(
@@ -490,8 +490,8 @@ pub enum DownloaderEvent {
         file_hash: Hash,
         chunk_index: u64,
     },
-    RemoteProvisionUpdate(Uuid, NodeId, Hash, DateTime<Utc>),
-    LocalProvisionUpdate(Uuid, Hash, PathBuf),
+    RemoteProvisionUpdate(Uuid, RemoteProvision),
+    LocalProvisionUpdate(Uuid, LocalProvision),
 
     // Download task related
     TaskFailed(Arc<RwLock<DownloadJob>>, u64),

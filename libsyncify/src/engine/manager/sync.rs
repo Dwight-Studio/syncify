@@ -26,9 +26,10 @@ use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
-use iroh::{Endpoint, NodeId};
+use iroh::Endpoint;
 use iroh_gossip::net::GossipSender;
 use log::{info, warn};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -37,7 +38,6 @@ use tokio::time::sleep;
 pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct SyncManager {
-    topic: GossipSender,
     dir: SharedDirectory,
     ep: Endpoint,
     proto: Arc<RwLock<SyncifyProtocol>>,
@@ -45,18 +45,17 @@ pub struct SyncManager {
 
 impl SyncManager {
     pub async fn new(
-        topic: GossipSender,
         dir: SharedDirectory,
         ep: Endpoint,
         proto: Arc<RwLock<SyncifyProtocol>>,
     ) -> Self {
-        Self { topic, dir, ep, proto }
+        Self { dir, ep, proto }
     }
 
     pub async fn handle_events(&mut self, sync_event: SyncEvent) {
         match sync_event {
             SyncEvent::RequestSync(conn, hash) => {
-                self.dir.write().await.received_initial_sync = true;
+                *self.dir.initial_sync.write().await = true;
 
                 let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn, hash);
 
@@ -74,21 +73,19 @@ impl SyncManager {
     }
 
     pub async fn initial_sync(&mut self) {
-        let neighbors = self.dir.read().await.neighbors.clone();
-        for node in neighbors {
-            if node.1 {
-                let node_id = NodeId::from_bytes(&node.0).unwrap();
-                let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
+        let neighbors = self.dir.neighbors.read().await;
+        for node in neighbors.deref() {
+            if *node.1 {
+                let outgoing = OutgoingSync::new(self.dir.clone(), *node.0, self.proto.clone());
 
-                if self.ep.node_id() > node_id {
+                if self.ep.node_id() > *node.0 {
                     Self::start_sync(outgoing).await;
                 } else {
                     let dir = self.dir.clone();
 
                     tokio::spawn(async move {
                         sleep(Duration::from_secs(2)).await; // Wait 2 seconds for RequestDeltas
-                        let inner = dir.read().await;
-                        let received_request = inner.received_initial_sync;
+                        let received_request = *dir.initial_sync.read().await;
 
                         if !received_request {
                             info!("Initial sync: No sync request received. Initiating sync myself.");

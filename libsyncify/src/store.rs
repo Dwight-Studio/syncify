@@ -20,11 +20,11 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::job::{DownloadJob, JobState, Provision};
+use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::store::lock::StoreLock;
-use crate::{InnerSharedDirectory, SharedDirectory, get_app_config_dir};
+use crate::{LocalProvisionsMap, RemoteProvisionsMap, SharedDirectory, get_app_config_dir};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
@@ -33,17 +33,17 @@ use chrono::{DateTime, TimeDelta, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use iroh_base::{NodeId, PublicKey};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use redb::{
-    CommitError, Database, DatabaseError, MultimapTable, MultimapTableDefinition, MultimapValue, ReadableMultimapTable,
-    ReadableTable, StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError, WriteTransaction,
+    CommitError, Database, DatabaseError, MultimapTableDefinition, MultimapValue, ReadableMultimapTable, ReadableTable,
+    StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError, WriteTransaction,
 };
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{RwLock, RwLockWriteGuard};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod keyring;
@@ -66,10 +66,10 @@ pub const LOCAL_TREE_TABLE: TableDefinition<[u8; 16], HashTree> = TableDefinitio
 /// Neighbors table (UUID -> Vec of all neighbors NodeIDs).
 pub const NEIGHBORS_TABLE: TableDefinition<[u8; 16], Vec<[u8; 32]>> = TableDefinition::new("neighbors");
 /// Local provisions table (UUID -> * Provision), describing the files that are provided to other pairs.
-pub const LOCAL_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], Provision> =
+pub const LOCAL_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], LocalProvision> =
     MultimapTableDefinition::new("local-provision");
 /// Remote provisions table (UUID -> * Provision), describing the files that are provided by other pairs.
-pub const REMOTE_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], Provision> =
+pub const REMOTE_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], RemoteProvision> =
     MultimapTableDefinition::new("remote-provision");
 /// Jobs table (Hash of the file -> DownloadJob).
 pub const JOBS_TABLE: TableDefinition<[u8; 32], DownloadJob> = TableDefinition::new("jobs");
@@ -249,6 +249,14 @@ impl StoreManager {
                             let (local_provisions, remote_provisions) =
                                 Self::load_provisions(local_provisions, remote_provisions)?;
 
+                            // Load neighbors
+                            let mut neighbors_map = HashMap::new();
+                            for n in neighbors.value() {
+                                if let Ok(node_id) = NodeId::from_bytes(&n) {
+                                    neighbors_map.insert(node_id, false);
+                                }
+                            }
+
                             // Build state
                             info!("Building state for {}", uuid);
                             if let Some(state) = State::from_table(&state_table, head.value()) {
@@ -259,11 +267,11 @@ impl StoreManager {
                                         path: PathBuf::from(path.value()),
                                         state: StoreLock::new(&store, state, uuid),
                                         local_tree: StoreLock::new(&store, tree.value(), uuid),
-                                        inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                                            neighbors.value().iter().map(|e| (*e, false)).collect(),
-                                            local_provisions,
-                                            remote_provisions,
-                                        ))),
+                                        neighbors: StoreLock::new(&store, neighbors_map, uuid),
+                                        local_provisions: StoreLock::new(&store, local_provisions, uuid),
+                                        remote_provisions: StoreLock::new(&store, remote_provisions, uuid),
+                                        handle: Arc::new(RwLock::new(None)),
+                                        initial_sync: Arc::new(RwLock::new(false)),
                                         write_key: sign_key,
                                         read_key: verif_key,
                                     },
@@ -352,7 +360,7 @@ impl StoreManager {
         self.active_jobs.push(download_job);
     }
 
-    pub async fn get_download_job_for_file(&self, file_hash: Hash) -> Option<Arc<RwLock<DownloadJob>>> {
+    pub async fn get_download_job(&self, file_hash: Hash) -> Option<Arc<RwLock<DownloadJob>>> {
         for job in self.active_jobs.clone() {
             if *job.read().await.hash() == file_hash {
                 return Some(job);
@@ -364,70 +372,28 @@ impl StoreManager {
 
     /// Load the local and remote [`Provision`]s of a [`SharedDirectory`] (for initialization).
     fn load_provisions(
-        local_provision: MultimapValue<Provision>,
-        remote_provisions: MultimapValue<Provision>,
-    ) -> Result<
-        (
-            HashMap<Hash, DateTime<Utc>>,
-            HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
-        ),
-        StoreError,
-    > {
+        local_provision: MultimapValue<LocalProvision>,
+        remote_provisions: MultimapValue<RemoteProvision>,
+    ) -> Result<(LocalProvisionsMap, RemoteProvisionsMap), StoreError> {
         let mut local = HashMap::new();
         let mut remote = HashMap::new();
 
         for provision_access in local_provision.into_iter().flatten() {
             let provision = provision_access.value();
-            if !provision.is_expired() {
-                local.insert(provision.hash(), provision.expiration());
-            }
+            local.insert(provision.hash(), provision);
         }
 
         for provision_access in remote_provisions.into_iter().flatten() {
             let provision = provision_access.value();
-            if !provision.is_expired() {
+            if let Some(node_id) = provision.node_id() {
                 remote
                     .entry(provision.hash())
                     .or_insert(HashMap::new())
-                    .insert(provision.node_id(), provision.expiration());
+                    .insert(node_id, provision);
             }
         }
 
         Ok((local, remote))
-    }
-
-    /// Save the local and remote [`Provision`]s of a [`SharedDirectory`].
-    fn flush_provisions(
-        dir: &SharedDirectory,
-        inner: &RwLockWriteGuard<'_, InnerSharedDirectory>,
-        local_table: &mut MultimapTable<'_, [u8; 16], Provision>,
-        remote_table: &mut MultimapTable<'_, [u8; 16], Provision>,
-    ) -> Result<(), StoreError> {
-        local_table
-            .remove_all(dir.uuid.as_bytes())
-            .map_err(StoreError::Storage)?;
-
-        for (hash, expiration) in inner.local_provisions.iter() {
-            let provision = Provision::local(*hash, *expiration);
-            if !provision.is_expired() && local_table.insert(dir.uuid.as_bytes(), provision).is_err() {
-                error!("Unable to flush local provision {}", hash);
-            }
-        }
-
-        remote_table
-            .remove_all(dir.uuid.as_bytes())
-            .map_err(StoreError::Storage)?;
-
-        for (hash, table) in inner.remote_provisions.iter() {
-            for (node_id, expiration) in table {
-                let provision = Provision::remote(*node_id, *hash, *expiration);
-                if !provision.is_expired() && local_table.insert(dir.uuid.as_bytes(), provision).is_err() {
-                    error!("Unable to flush remote provision {} of {}", hash, node_id);
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Add a [`SharedDirectory`] to the store.
@@ -458,7 +424,7 @@ impl StoreManager {
                 .insert(dir.path.to_string_lossy().as_ref(), dir.uuid.as_bytes())
                 .map_err(StoreError::Storage)?;
         }
-        
+
         transaction.commit().map_err(StoreError::Commit)?;
 
         // Flushing store
@@ -538,31 +504,9 @@ impl StoreManager {
         let transaction = self.db.begin_write().map_err(StoreError::Transaction)?;
 
         {
-            let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
-            let mut local_provision_table = transaction
-                .open_multimap_table(LOCAL_PROVISIONS_TABLE)
-                .map_err(StoreError::Table)?;
-            let mut remote_provisions_table = transaction
-                .open_multimap_table(REMOTE_PROVISIONS_TABLE)
-                .map_err(StoreError::Table)?;
             let mut jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
 
             Self::flush_jobs(&mut self.jobs, &mut jobs_table).await;
-
-            // Save each SharedDirectory
-            for (uuid, dir) in &self.cache {
-                debug!("Saving state for {}", uuid);
-                let inner = dir.write().await;
-
-                neighbor_table
-                    .insert(
-                        uuid.as_bytes(),
-                        inner.neighbors.keys().copied().collect::<Vec<[u8; 32]>>(),
-                    )
-                    .map_err(StoreError::Storage)?;
-
-                Self::flush_provisions(dir, &inner, &mut local_provision_table, &mut remote_provisions_table)?;
-            }
         }
 
         transaction.commit().map_err(StoreError::Commit)?;

@@ -20,25 +20,33 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
+use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, Mutation, State, StateError};
-use crate::store::{HEAD_TABLE, LOCAL_TREE_TABLE, StoreError, StoreManager};
+use crate::store::{
+    HEAD_TABLE, LOCAL_PROVISIONS_TABLE, LOCAL_TREE_TABLE, NEIGHBORS_TABLE, REMOTE_PROVISIONS_TABLE, StoreError,
+    StoreManager,
+};
+use crate::{LocalProvisionsMap, NeighborsMap, RemoteProvisionsMap};
+use blake3::Hash;
+use chrono::{DateTime, Utc};
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use iroh_base::NodeId;
 use log::debug;
 use redb::TableDefinition;
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
 
 /// A reader-writer lock used to synchronise persistent data with the store.
-pub struct StoreLock<T: Store<T>> {
+pub struct StoreLock<T: Store> {
     store: Weak<RwLock<StoreManager>>,
     inner: Arc<RwLock<T>>,
     id: T::Id,
 }
 
-impl<T: Store<T>> StoreLock<T> {
+impl<T: Store> StoreLock<T> {
     pub fn new(store: &Arc<RwLock<StoreManager>>, inner: T, id: T::Id) -> Self {
         Self {
             store: Arc::downgrade(&store),
@@ -67,7 +75,7 @@ impl<T: Store<T>> StoreLock<T> {
     /// released, the store is updated.
     ///
     /// See [`RwLock::write`] for more details.
-    pub fn write(&self) -> T::Guard {
+    pub fn write(&self) -> StoreGuard<T> {
         if let Some(rf) = self.store.upgrade() {
             T::get_guard(self.inner.clone(), rf, self.id.clone())
         } else {
@@ -76,7 +84,7 @@ impl<T: Store<T>> StoreLock<T> {
     }
 }
 
-impl<T: Store<T>> Clone for StoreLock<T> {
+impl<T: Store> Clone for StoreLock<T> {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
@@ -86,31 +94,29 @@ impl<T: Store<T>> Clone for StoreLock<T> {
     }
 }
 
-/// Types who can be synchronized with the store.
-pub trait Store<T> {
-    type Guard;
-    type Id: Clone;
-
-    fn get_guard(inner: Arc<RwLock<T>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> Self::Guard;
+/// Store guard for [`State`].
+pub struct StoreGuard<S: Store> {
+    inner: Arc<RwLock<S>>,
+    store: Arc<RwLock<StoreManager>>,
+    id: S::Id,
 }
 
-impl Store<State> for State {
-    type Guard = StoredState;
+/// Types who can be synchronized with the store.
+pub trait Store: Sized {
+    type Id: Clone + Sized;
+
+    fn get_guard(inner: Arc<RwLock<Self>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self>;
+}
+
+impl Store for State {
     type Id = Uuid;
 
-    fn get_guard(inner: Arc<RwLock<State>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoredState {
-        StoredState { inner, store, uuid: id }
+    fn get_guard(inner: Arc<RwLock<State>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
+        StoreGuard { inner, store, id }
     }
 }
 
-/// Store guard for [`State`].
-pub struct StoredState {
-    inner: Arc<RwLock<State>>,
-    store: Arc<RwLock<StoreManager>>,
-    uuid: Uuid,
-}
-
-impl StoredState {
+impl StoreGuard<State> {
     /// Save the [`State`] after creation.
     pub async fn save_new(&self) -> Result<(), StateError> {
         let state = self.inner.write().await;
@@ -182,7 +188,7 @@ impl StoredState {
                 .map_err(StoreError::Table)
                 .map_err(StateError::Store)?;
             head_table
-                .insert(self.uuid.as_bytes(), state.hash().as_bytes())
+                .insert(self.id.as_bytes(), state.hash().as_bytes())
                 .map_err(StoreError::Storage)
                 .map_err(StateError::Store)?;
         }
@@ -202,7 +208,7 @@ impl StoredState {
             .get_write_transaction()
             .map_err(StateError::Store)?;
         {
-            let uuid_string = self.uuid.to_string();
+            let uuid_string = self.id.to_string();
             let state_table_def: TableDefinition<[u8; 32], Delta> = TableDefinition::new(&uuid_string);
             let mut state_table = transaction
                 .open_table(state_table_def)
@@ -224,27 +230,19 @@ impl StoredState {
     }
 }
 
-impl Store<HashTree> for HashTree {
-    type Guard = StoredHashTree;
+impl Store for HashTree {
     type Id = Uuid;
 
-    fn get_guard(inner: Arc<RwLock<HashTree>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoredHashTree {
-        StoredHashTree { inner, store, uuid: id }
+    fn get_guard(inner: Arc<RwLock<HashTree>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<HashTree> {
+        StoreGuard { inner, store, id }
     }
 }
 
-/// Store guard for [`State`].
-pub struct StoredHashTree {
-    inner: Arc<RwLock<HashTree>>,
-    store: Arc<RwLock<StoreManager>>,
-    uuid: Uuid,
-}
-
-impl StoredHashTree {
-    /// Save the [`State`] after creation.
+impl StoreGuard<HashTree> {
+    /// Save the [`HashTree`] after creation.
     pub async fn save_new(&self) -> Result<(), StateError> {
         let tree = self.inner.write().await;
-        
+
         let transaction = self
             .store
             .write()
@@ -257,7 +255,7 @@ impl StoredHashTree {
                 .map_err(StoreError::Table)
                 .map_err(StateError::Store)?;
             local_tree_table
-                .insert(self.uuid.as_bytes(), tree.deref())
+                .insert(self.id.as_bytes(), tree.deref())
                 .map_err(StoreError::Storage)
                 .map_err(StateError::Store)?;
         }
@@ -276,5 +274,173 @@ impl StoredHashTree {
         drop(tree);
 
         self.save_new().await
+    }
+}
+
+impl Store for NeighborsMap {
+    type Id = Uuid;
+
+    fn get_guard(
+        inner: Arc<RwLock<NeighborsMap>>,
+        store: Arc<RwLock<StoreManager>>,
+        id: Self::Id,
+    ) -> StoreGuard<NeighborsMap> {
+        StoreGuard { inner, store, id }
+    }
+}
+
+impl StoreGuard<NeighborsMap> {
+    /// Save the [`NeighborsMap`] after creation.
+    pub async fn save_new(&self) -> Result<(), StoreError> {
+        let map = self.inner.read().await;
+
+        let transaction = self.store.write().await.get_write_transaction()?;
+        {
+            let mut neighbor_table = transaction.open_table(NEIGHBORS_TABLE).map_err(StoreError::Table)?;
+            neighbor_table
+                .insert(
+                    self.id.as_bytes(),
+                    map.keys().map(|n| *n.as_bytes()).collect::<Vec<[u8; 32]>>(),
+                )
+                .map_err(StoreError::Storage)?;
+        }
+
+        transaction.commit().map_err(StoreError::Commit)
+    }
+
+    /// Update a neighbor status.
+    pub async fn update(&self, node_id: &NodeId, up: bool) -> Result<(), StoreError> {
+        let mut map = self.inner.write().await;
+        map.insert(*node_id, up);
+
+        drop(map);
+        self.save_new().await
+    }
+
+    /// Remove a neighbor.
+    pub async fn remove(&self, node_id: &NodeId) -> Result<(), StoreError> {
+        let mut map = self.inner.write().await;
+        map.remove(node_id.as_bytes());
+
+        drop(map);
+        self.save_new().await
+    }
+}
+
+impl Store for LocalProvisionsMap {
+    type Id = Uuid;
+
+    fn get_guard(
+        inner: Arc<RwLock<LocalProvisionsMap>>,
+        store: Arc<RwLock<StoreManager>>,
+        id: Self::Id,
+    ) -> StoreGuard<LocalProvisionsMap> {
+        StoreGuard { inner, store, id }
+    }
+}
+
+impl StoreGuard<LocalProvisionsMap> {
+    /// Insert a new [`LocalProvision`].
+    pub async fn insert(&self, provision: LocalProvision) -> Result<(), StoreError> {
+        let mut map = self.inner.write().await;
+        map.insert(provision.hash(), provision.clone());
+
+        let transaction = self.store.write().await.get_write_transaction()?;
+        {
+            let mut local_provision_table = transaction
+                .open_multimap_table(LOCAL_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
+
+            local_provision_table
+                .insert(self.id.as_bytes(), provision)
+                .map_err(StoreError::Storage)?;
+        }
+
+        transaction.commit().map_err(StoreError::Commit)
+    }
+
+    /// Remove a [`LocalProvision`].
+    pub async fn remove(&self, provision: LocalProvision) -> Result<(), StoreError> {
+        let mut map = self.inner.write().await;
+        map.insert(provision.hash(), provision.clone());
+
+        let transaction = self.store.write().await.get_write_transaction()?;
+        {
+            let mut local_provision_table = transaction
+                .open_multimap_table(LOCAL_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
+
+            local_provision_table
+                .remove(self.id.as_bytes(), provision)
+                .map_err(StoreError::Storage)?;
+        }
+
+        transaction.commit().map_err(StoreError::Commit)
+    }
+}
+
+impl Store for RemoteProvisionsMap {
+    type Id = Uuid;
+
+    fn get_guard(
+        inner: Arc<RwLock<RemoteProvisionsMap>>,
+        store: Arc<RwLock<StoreManager>>,
+        id: Self::Id,
+    ) -> StoreGuard<RemoteProvisionsMap> {
+        StoreGuard { inner, store, id }
+    }
+}
+
+impl StoreGuard<RemoteProvisionsMap> {
+    /// Insert a new [`RemoteProvision`].
+    pub async fn insert(&self, provision: RemoteProvision) -> Result<(), StoreError> {
+        if let Some(node_id) = provision.node_id() {
+            let mut map = self.inner.write().await;
+            let mut file_map = map.entry(provision.hash()).or_insert(HashMap::new());
+            file_map.insert(node_id, provision.clone());
+
+            let transaction = self.store.write().await.get_write_transaction()?;
+            {
+                let mut remote_provisions_table = transaction
+                    .open_multimap_table(REMOTE_PROVISIONS_TABLE)
+                    .map_err(StoreError::Table)?;
+
+                remote_provisions_table
+                    .insert(self.id.as_bytes(), provision)
+                    .map_err(StoreError::Storage)?;
+            }
+
+            transaction.commit().map_err(StoreError::Commit)?;
+        }
+
+        Ok(())
+    }
+
+    /// Remove a [`LocalProvision`].
+    pub async fn remove(&self, provision: RemoteProvision) -> Result<(), StoreError> {
+        if let Some(node_id) = provision.node_id() {
+            let mut map = self.inner.write().await;
+            let mut file_map = map.entry(provision.hash()).or_insert(HashMap::new());
+            file_map.remove(&node_id);
+
+            if file_map.is_empty() {
+                map.remove(&provision.hash());
+            }
+
+            let transaction = self.store.write().await.get_write_transaction()?;
+            {
+                let mut remote_provisions_table = transaction
+                    .open_multimap_table(REMOTE_PROVISIONS_TABLE)
+                    .map_err(StoreError::Table)?;
+
+                remote_provisions_table
+                    .remove(self.id.as_bytes(), provision)
+                    .map_err(StoreError::Storage)?;
+            }
+
+            transaction.commit().map_err(StoreError::Commit)?;
+        }
+
+        Ok(())
     }
 }

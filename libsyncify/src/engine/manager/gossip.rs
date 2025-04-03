@@ -22,6 +22,7 @@
  */
 use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
+use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
 use blake3::Hash;
 use bytes::Bytes;
@@ -33,6 +34,7 @@ use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{debug, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ops::Add;
 use thiserror::Error;
 
 /// Duration after which provision expires.
@@ -71,7 +73,7 @@ pub struct GossipManager {
 }
 
 impl GossipManager {
-    pub async fn new(topic: GossipSender, dir: SharedDirectory, ep: Endpoint, handle: ManagerHandle) -> Self {
+    pub async fn new(dir: SharedDirectory, topic: GossipSender, ep: Endpoint, handle: ManagerHandle) -> Self {
         Self {
             topic,
             dir,
@@ -85,25 +87,32 @@ impl GossipManager {
         match gossip_event {
             iroh_gossip::net::Event::Gossip(event) => match event {
                 GossipEvent::Joined(node_id_vec) => {
-                    let neighbors = &mut self.dir.write().await.neighbors;
+                    let neighbors = &mut self.dir.neighbors.write();
 
                     for node_id in &node_id_vec {
                         debug!("{node_id} joined the swarm of {}", self.dir.uuid);
-                        Self::update_neighbors(neighbors, node_id);
+                        if let Err(e) = neighbors.update(node_id, true).await {
+                            warn!("Cannot update neighbors: {e}")
+                        }
                     }
 
                     self.handle.send(ManagerEvent::Sync(SyncEvent::TriggerSync(None))).await;
                 }
                 GossipEvent::NeighborUp(node_id) => {
-                    let neighbors = &mut self.dir.write().await.neighbors;
+                    let neighbors = &mut self.dir.neighbors.write();
 
                     debug!("{node_id} joined the swarm of {}", self.dir.uuid);
-                    Self::update_neighbors(neighbors, &node_id);
+                    if let Err(e) = neighbors.update(&node_id, true).await {
+                        warn!("Cannot update neighbors: {e}")
+                    }
                 }
                 GossipEvent::NeighborDown(node_id) => {
+                    let neighbors = &mut self.dir.neighbors.write();
+
                     debug!("{node_id} leaved the swarm of {}", self.dir.uuid);
-                    let neighbors = &mut self.dir.write().await.neighbors;
-                    *neighbors.get_mut(node_id.as_bytes()).unwrap() = false;
+                    if let Err(e) = neighbors.update(&node_id, false).await {
+                        warn!("Cannot update neighbors: {e}")
+                    }
                 }
                 GossipEvent::Received(message) => {
                     debug!("Message received from the swarm of {}", self.dir.uuid);
@@ -130,8 +139,11 @@ impl GossipManager {
                                             downloader
                                                 .send(DownloaderEvent::LocalProvisionUpdate(
                                                     self.dir.uuid(),
-                                                    file_hash,
-                                                    self.dir.path.join(file_path),
+                                                    LocalProvision::new(
+                                                        file_hash,
+                                                        Utc::now().add(PROVISION_EXPIRATION),
+                                                        self.dir.path.join(file_path),
+                                                    ),
                                                 ))
                                                 .await;
                                         } else {
@@ -150,9 +162,7 @@ impl GossipManager {
                                             downloader
                                                 .send(DownloaderEvent::RemoteProvisionUpdate(
                                                     self.dir.uuid,
-                                                    node_id,
-                                                    hash,
-                                                    expire,
+                                                    RemoteProvision::new(node_id, hash, expire),
                                                 ))
                                                 .await;
                                         } else {

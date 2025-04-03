@@ -34,15 +34,17 @@ use blake3::Hash;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Error, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use futures_lite::future::Boxed;
-use iroh::endpoint::{ClosedStream, Connection, ReadExactError, RecvStream, SendStream, StoppedError, VarInt, WriteError};
+use iroh::endpoint::{
+    ClosedStream, Connection, ReadExactError, RecvStream, SendStream, StoppedError, VarInt, WriteError,
+};
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeId};
 use iroh_base::NodeAddr;
+use log::debug;
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use log::debug;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -102,7 +104,7 @@ impl SyncifyProtocol {
             store,
         }
     }
-    
+
     pub fn set_downloader(&mut self, downloader: DownloaderHandle) {
         self.downloader = Some(downloader);
     }
@@ -128,7 +130,12 @@ impl SyncifyProtocol {
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
                 if let Some(downloader) = &self.downloader {
-                    tokio::spawn(accept_connection(conn.clone(), self.connections.clone(), self.store.clone(), downloader.clone()));
+                    tokio::spawn(accept_connection(
+                        conn.clone(),
+                        self.connections.clone(),
+                        self.store.clone(),
+                        downloader.clone(),
+                    ));
                 }
                 Ok(SyncifyStream {
                     dir: dir.clone(),
@@ -137,7 +144,8 @@ impl SyncifyProtocol {
                 })
             }
             None => {
-                let conn = self.ep
+                let conn = self
+                    .ep
                     .connect(NodeAddr::new(node_id), SYNCIFY_ALPN)
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
@@ -147,7 +155,12 @@ impl SyncifyProtocol {
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
                 if let Some(downloader) = &self.downloader {
-                    tokio::spawn(accept_connection(conn, self.connections.clone(), self.store.clone(), downloader.clone()));
+                    tokio::spawn(accept_connection(
+                        conn,
+                        self.connections.clone(),
+                        self.store.clone(),
+                        downloader.clone(),
+                    ));
                 }
                 Ok(SyncifyStream {
                     dir: dir.clone(),
@@ -219,7 +232,8 @@ impl SyncifyStream {
     /// Receive a [`SyncifyPacket`].
     async fn recv_packet(&mut self, header_packet: &HeaderPacket) -> Result<SyncifyPacket, SyncifyProtocolError> {
         let mut packet_buffer = vec![0u8; header_packet.packet_size as usize];
-        self.recv_stream.read_exact(&mut packet_buffer)
+        self.recv_stream
+            .read_exact(&mut packet_buffer)
             .await
             .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
 
@@ -271,7 +285,6 @@ impl Debug for SyncifyProtocolHandler {
 }
 
 impl ProtocolHandler for SyncifyProtocolHandler {
-    
     /// Manages incoming SyncifyProtocol connections
     fn accept(&self, connection: Connection) -> Boxed<anyhow::Result<()>> {
         let protocol = self.protocol.clone();
@@ -285,7 +298,12 @@ impl ProtocolHandler for SyncifyProtocolHandler {
 }
 
 //noinspection RsTraitObligations
-async fn accept_connection(connection: Connection, mut connections: Vec<Connection>, store: Arc<RwLock<StoreManager>>, downloader: DownloaderHandle) -> anyhow::Result<()> {
+async fn accept_connection(
+    connection: Connection,
+    mut connections: Vec<Connection>,
+    store: Arc<RwLock<StoreManager>>,
+    downloader: DownloaderHandle,
+) -> anyhow::Result<()> {
     connections.push(connection.clone());
 
     while let Ok((tx, mut rx)) = connection.accept_bi().await {
@@ -353,8 +371,7 @@ async fn accept_connection(connection: Connection, mut connections: Vec<Connecti
 
     debug!("Dropping connection with {}", connection.remote_node_id()?);
 
-    connections
-        .retain(|c| c.close_reason().is_none());
+    connections.retain(|c| c.close_reason().is_none());
 
     Ok(())
 }

@@ -27,7 +27,6 @@ use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use rkyv::rancor::Error;
 use rkyv::{Archive, Deserialize, Serialize, deserialize};
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -43,7 +42,7 @@ pub struct Link {
     pub(crate) uuid: Uuid,
     pub(crate) permission: SharedDirPermission,
     pub(crate) key: [u8; 32],
-    pub(crate) neighbors: HashMap<[u8; 32], bool>,
+    pub(crate) neighbors: Vec<[u8; 32]>,
 }
 
 impl Link {
@@ -116,14 +115,21 @@ impl LinkBuilder {
                         if let Some(key) = &dir.write_key {
                             key.to_bytes()
                         } else {
-                            return Err(SyncifyError::DirectoryReadOnly());
+                            return Err(SyncifyError::WritePermission());
                         }
                     }
                 }
             };
 
-            let mut neighbors = dir.read().await.neighbors.clone();
-            neighbors.insert(*self.store.read().await.public_key().as_bytes(), false);
+            // Neighbors to list
+            let mut neighbors = dir
+                .neighbors
+                .read()
+                .await
+                .iter()
+                .map(|(node_id, _)| *node_id.as_bytes())
+                .collect::<Vec<[u8; 32]>>();
+            neighbors.insert(0, *self.store.read().await.public_key().as_bytes());
 
             Ok(Link {
                 uuid: self.uuid,

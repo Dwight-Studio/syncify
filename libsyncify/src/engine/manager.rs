@@ -71,7 +71,7 @@ impl Manager {
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = ManagerHandle { tx };
-        dir.write().await.handle = Some(handle.clone());
+        *dir.handle.write().await = Some(handle.clone());
 
         // Plug gossip stream into the channel
         let (gossip_tx, gossip_rx) = topic.split();
@@ -88,7 +88,7 @@ impl Manager {
 
                     loop {
                         interval.tick().await;
-                        handle.send(ManagerEvent::PollFiles).await;
+                        handle.send(ManagerEvent::Poll).await;
                     }
                 }))
             }
@@ -132,15 +132,15 @@ impl Manager {
         handle: ManagerHandle,
         proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
-        let mut fs_manager = FileSystemManager::new(topic.clone(), downloader.clone(), dir.clone()).await;
-        let mut gossip_manager = GossipManager::new(topic.clone(), dir.clone(), ep.clone(), handle.clone()).await;
-        let mut sync_manager = SyncManager::new(topic.clone(), dir.clone(), ep.clone(), proto.clone()).await;
+        let mut fs_manager = FileSystemManager::new(dir.clone(), topic.clone(), downloader.clone()).await;
+        let mut gossip_manager = GossipManager::new(dir.clone(), topic.clone(), ep.clone(), handle.clone()).await;
+        let mut sync_manager = SyncManager::new(dir.clone(), ep.clone(), proto.clone()).await;
 
         // Process the event
         while let Some(event) = rx.recv().await {
             match event {
                 // FileSystem
-                ManagerEvent::PollFiles => fs_manager.poll().await,
+                ManagerEvent::Poll => fs_manager.poll().await,
                 ManagerEvent::ApplyRemoteMutations(mutations) => fs_manager.apply_remote_mutations(mutations).await,
                 ManagerEvent::UpdateLocalTree(mutation) => fs_manager.update_local_tree(mutation).await,
 
@@ -226,7 +226,7 @@ impl Sink<iroh_gossip::net::Event> for ManagerHandle {
 /// Event to control the [`Manager`].
 pub enum ManagerEvent {
     // FileSystem
-    PollFiles,
+    Poll,
     ApplyRemoteMutations(Vec<Mutation>),
     UpdateLocalTree(Mutation),
 

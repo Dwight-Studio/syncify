@@ -39,7 +39,7 @@ pub struct FileSystemManager {
 }
 
 impl FileSystemManager {
-    pub async fn new(topic: GossipSender, downloader: DownloaderHandle, dir: SharedDirectory) -> Self {
+    pub async fn new(dir: SharedDirectory, topic: GossipSender, downloader: DownloaderHandle) -> Self {
         Self {
             topic,
             downloader,
@@ -47,7 +47,7 @@ impl FileSystemManager {
         }
     }
 
-    /// Poll the file for changes.
+    /// Poll the file system for changes.
     pub async fn poll(&mut self) {
         // Detect changes
         let mut mutations = self.dir.local_tree.read().await.mutations_from_disk(&self.dir);

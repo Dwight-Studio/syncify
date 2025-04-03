@@ -21,7 +21,10 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::SyncifyError::{AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, ReadOnly};
+use crate::SyncifyError::{
+    AlreadyShared, DirectoryNotEmpty, InvalidPath, InvalidPathUTF8, NotADirectory, NotShared, ReadOnly,
+};
+use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerHandle;
 use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
@@ -139,8 +142,19 @@ impl Syncify {
                 })?
         }
 
+        if abs_path.to_str().is_none() {
+            return Err(InvalidPathUTF8(abs_path));
+        }
+
         // Verify if it already exists
-        if self.store.read().await.get_all_dirs().iter().any(|d| d.path == abs_path) {
+        if self
+            .store
+            .read()
+            .await
+            .get_all_dirs()
+            .iter()
+            .any(|d| d.path == abs_path)
+        {
             return Err(AlreadyShared(abs_path));
         }
 
@@ -155,11 +169,11 @@ impl Syncify {
             path: abs_path.clone(),
             state: StoreLock::new(&self.store, state, uuid),
             local_tree: StoreLock::new(&self.store, tree, uuid),
-            inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                HashMap::new(),
-                HashMap::new(),
-                HashMap::new(),
-            ))),
+            neighbors: StoreLock::new(&self.store, HashMap::new(), uuid),
+            local_provisions: StoreLock::new(&self.store, HashMap::new(), uuid),
+            remote_provisions: StoreLock::new(&self.store, HashMap::new(), uuid),
+            handle: Arc::new(RwLock::new(None)),
+            initial_sync: Arc::new(RwLock::new(false)),
             write_key: Some(sign_key.clone()),
             read_key: sign_key.verifying_key(),
         };
@@ -183,6 +197,10 @@ impl Syncify {
 
         if let Err(e) = dir.local_tree.write().save_new().await {
             warn!("Unable to save new tree: {}", e);
+        };
+
+        if let Err(e) = dir.neighbors.write().save_new().await {
+            warn!("Unable to save new neighbors: {}", e);
         };
 
         // If the engine is available, add the directory to watched directory
@@ -267,9 +285,20 @@ impl Syncify {
                     _ => InvalidPath(e),
                 })?
         }
-        
+
+        if abs_path.to_str().is_none() {
+            return Err(InvalidPathUTF8(abs_path));
+        }
+
         // Verify if it already exists
-        if self.store.read().await.get_all_dirs().iter().any(|d| d.path == abs_path) {
+        if self
+            .store
+            .read()
+            .await
+            .get_all_dirs()
+            .iter()
+            .any(|d| d.path == abs_path)
+        {
             return Err(AlreadyShared(abs_path));
         }
 
@@ -279,19 +308,31 @@ impl Syncify {
         } else {
             None
         };
+
+        // State
         let state = State::new(link.uuid);
+
+        // Tree from state
         let tree = state.hash_tree().clone();
+
+        // Neighbors from link
+        let mut neighbors = HashMap::new();
+        for n in link.neighbors {
+            if let Ok(node_id) = NodeId::from_bytes(&n) {
+                neighbors.insert(node_id, false);
+            }
+        }
 
         let dir = SharedDirectory {
             uuid: link.uuid,
             path: abs_path.clone(),
             state: StoreLock::new(&self.store, state, link.uuid),
             local_tree: StoreLock::new(&self.store, tree, link.uuid),
-            inner: Arc::new(RwLock::new(InnerSharedDirectory::new(
-                link.neighbors,
-                HashMap::new(),
-                HashMap::new(),
-            ))),
+            neighbors: StoreLock::new(&self.store, neighbors, link.uuid),
+            local_provisions: StoreLock::new(&self.store, HashMap::new(), link.uuid),
+            remote_provisions: StoreLock::new(&self.store, HashMap::new(), link.uuid),
+            handle: Arc::new(RwLock::new(None)),
+            initial_sync: Arc::new(RwLock::new(false)),
             write_key: sign_key.clone(),
             read_key: if let Some(key) = sign_key {
                 key.verifying_key()
@@ -331,13 +372,21 @@ impl Syncify {
     }
 }
 
+type NeighborsMap = HashMap<NodeId, bool>;
+type LocalProvisionsMap = HashMap<Hash, LocalProvision>;
+type RemoteProvisionsMap = HashMap<Hash, HashMap<NodeId, RemoteProvision>>;
+
 #[derive(Clone)]
 pub struct SharedDirectory {
     uuid: Uuid,
     path: PathBuf,
-    inner: Arc<RwLock<InnerSharedDirectory>>,
     state: StoreLock<State>,
     local_tree: StoreLock<HashTree>,
+    neighbors: StoreLock<NeighborsMap>,
+    local_provisions: StoreLock<LocalProvisionsMap>,
+    remote_provisions: StoreLock<RemoteProvisionsMap>,
+    handle: Arc<RwLock<Option<ManagerHandle>>>,
+    initial_sync: Arc<RwLock<bool>>,
     write_key: Option<SigningKey>,
     read_key: VerifyingKey,
 }
@@ -359,44 +408,12 @@ impl SharedDirectory {
         self.write_key.is_none()
     }
 
-    pub(crate) async fn read(&self) -> RwLockReadGuard<InnerSharedDirectory> {
-        self.inner.read().await
-    }
-
-    pub(crate) async fn write(&self) -> RwLockWriteGuard<InnerSharedDirectory> {
-        self.inner.write().await
-    }
-
     /// Get the handle. Panics if not available.
     pub(crate) async fn handle(&self) -> ManagerHandle {
-        if let Some(handle) = &self.read().await.handle {
+        if let Some(handle) = self.handle.read().await.as_ref() {
             handle.clone()
         } else {
             panic!("Handle is not available for {}", self.uuid);
-        }
-    }
-}
-
-pub(crate) struct InnerSharedDirectory {
-    pub(crate) neighbors: HashMap<[u8; 32], bool>,
-    pub(crate) local_provisions: HashMap<Hash, DateTime<Utc>>,
-    pub(crate) remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
-    pub(crate) handle: Option<ManagerHandle>,
-    pub(crate) received_initial_sync: bool,
-}
-
-impl InnerSharedDirectory {
-    pub(crate) fn new(
-        neighbors: HashMap<[u8; 32], bool>,
-        local_provisions: HashMap<Hash, DateTime<Utc>>,
-        remote_provisions: HashMap<Hash, HashMap<NodeId, DateTime<Utc>>>,
-    ) -> Self {
-        Self {
-            neighbors,
-            local_provisions,
-            remote_provisions,
-            handle: None,
-            received_initial_sync: false,
         }
     }
 }
@@ -415,6 +432,9 @@ pub enum SyncifyError {
     #[error("Invalid path: {0}")]
     InvalidPath(std::io::Error),
 
+    #[error("Invalid path (not UTF8): {0}")]
+    InvalidPathUTF8(PathBuf),
+
     #[error("Directory is is not writable: {0}")]
     ReadOnly(PathBuf),
 
@@ -423,9 +443,6 @@ pub enum SyncifyError {
 
     #[error("Directory is not shared")]
     NotShared(PathBuf),
-
-    #[error("Shared directory is in read-only mode")]
-    DirectoryReadOnly(),
 
     #[error("{0}")]
     Watcher(EngineError),
@@ -441,4 +458,7 @@ pub enum SyncifyError {
 
     #[error("{0} is not a directory")]
     NotADirectory(PathBuf),
+
+    #[error("No write permission")]
+    WritePermission(),
 }
