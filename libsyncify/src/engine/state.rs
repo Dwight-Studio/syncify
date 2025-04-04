@@ -1038,7 +1038,7 @@ impl HashTree {
                                         warn!("Unable to hash: '{}' ({})", file.path().display(), e);
                                         continue;
                                     }
-                                    
+
                                     // Ignore the file if it already exists
                                     if *hash == hasher.finalize() {
                                         continue;

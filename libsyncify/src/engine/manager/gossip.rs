@@ -24,6 +24,8 @@ use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
+use crate::engine::protocol::SyncifyProtocol;
+use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
@@ -37,8 +39,6 @@ use std::ops::Add;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use crate::engine::protocol::outgoing_sync::OutgoingSync;
-use crate::engine::protocol::SyncifyProtocol;
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
@@ -169,10 +169,7 @@ impl GossipManager {
         match payload {
             Payload::ProvisionRequest { hash } => {
                 let local_tree = self.dir.local_tree.read().await.map();
-                info!(
-                    "Received provision request for file '{hash}' for {}",
-                    self.dir.uuid
-                );
+                info!("Received provision request for file '{hash}' for {}", self.dir.uuid);
 
                 if let Some(file_path) = local_tree.get(&hash) {
                     self.downloader
@@ -191,7 +188,6 @@ impl GossipManager {
             }
             Payload::Provision { hash, node_id, expire } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-
                     info!("Received provision update for file '{hash}' for {}", self.dir.uuid);
 
                     self.downloader
@@ -207,11 +203,13 @@ impl GossipManager {
             Payload::Update { node_id, new_head } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
                     info!("Received update notification from {node_id} for {}", self.dir.uuid);
-                    
+
                     // Synchronize if the head is different
                     if self.dir.state.read().await.hash() != new_head {
                         let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
-                        self.handle.send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
+                        self.handle
+                            .send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing))))
+                            .await;
                     }
                 }
             }

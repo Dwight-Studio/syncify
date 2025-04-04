@@ -27,7 +27,7 @@ use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
-use crate::engine::state::{Mutation, State};
+use crate::engine::state::Mutation;
 use blake3::Hash;
 use futures::{Sink, StreamExt};
 use iroh::Endpoint;

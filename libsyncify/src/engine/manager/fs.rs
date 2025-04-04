@@ -23,7 +23,7 @@
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::manager::{ManagerEvent, ManagerHandle};
-use crate::engine::state::{HashTree, MAX_LOADED_DELTAS, Mutation};
+use crate::engine::state::{HashTree, Mutation};
 use crate::{SharedDirectory, get_app_cache_dir};
 use chrono::Utc;
 use log::{debug, error};
@@ -137,7 +137,7 @@ impl FileSystemManager {
                             self.dir.uuid()
                         );
                     }
-                }
+                },
                 Err(e) => {
                     error!(
                         "Cannot apply mutation to current tree in {}: {mutation} ({e})",
@@ -146,7 +146,7 @@ impl FileSystemManager {
                 }
             }
         }
-        
+
         self.handle.send(ManagerEvent::BroadcastUpdate).await
 
         //debug!("New state: \n{}", inner.state);
@@ -192,7 +192,7 @@ impl FileSystemManager {
                 _ => continue,
             }
         }
-        
+
         self.handle.send(ManagerEvent::BroadcastUpdate).await
     }
 
