@@ -1005,8 +1005,6 @@ impl HashTree {
             .same_file_system(true)
             .into_iter();
 
-        let mut hasher = blake3::Hasher::new();
-
         for file_result in files_iter {
             match file_result {
                 Ok(file) => {
@@ -1019,6 +1017,8 @@ impl HashTree {
                             if let Some(relative_path_str) = relative_path.to_str() {
                                 // Remove the file from the current file
                                 current_files.retain(|e| e != relative_path_str);
+
+                                let mut hasher = blake3::Hasher::new();
 
                                 // Check if the file is in the hash tree
                                 if let Some(File { hash, timestamp, .. }) = self.get(relative_path_str) {

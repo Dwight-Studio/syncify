@@ -199,6 +199,7 @@ impl Downloader {
                                         }
                                     } else {
                                         error!("Error while encoding file: {}", provision.path().display());
+                                        error!("{hash} {}", provision.hash())
                                     }
                                 }
                                 Err(err) => {

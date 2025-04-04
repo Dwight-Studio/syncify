@@ -150,7 +150,9 @@ impl GossipManager {
                     }
                 }
             },
-            iroh_gossip::net::Event::Lagged => {}
+            iroh_gossip::net::Event::Lagged => {
+                debug!("Je suis une merde");
+            }
         }
     }
 
