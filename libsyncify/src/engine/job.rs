@@ -34,54 +34,65 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
 use uuid::Uuid;
+use crate::engine::state::Mutation;
 
 /// A sync job.
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub struct DownloadJob {
-    uuid: Uuid,
-    path: String,
-    #[rkyv(with = crate::util::HashDef)]
-    hash: Hash,
-    size: u64,
+    dir_uuid: Uuid,
+    mutation: Mutation,
     #[rkyv(with = crate::util::DateTimeDef)]
     issued: DateTime<Utc>,
-    pub(crate) state: JobState,
+    state: JobState,
     pub progress: f32,
     pub(crate) last_chunk: u64,
     pub(crate) chunk_done: u64,
     pub(crate) failed_chunks: Vec<u64>,
+    #[rkyv(with = Skip)]
+    pub(crate) file: Option<BufWriter<File>>
 }
 
 impl DownloadJob {
-    pub fn new(uuid: Uuid, path: String, hash: Hash, size: u64, issued: DateTime<Utc>, state: JobState) -> Self {
+    pub fn new(dir_uuid: Uuid, mutation: Mutation, issued: DateTime<Utc>, state: JobState) -> Self {
         Self {
-            uuid,
-            path,
-            hash,
-            size,
+            dir_uuid,
+            mutation,
             issued,
             state,
             progress: 0f32,
             last_chunk: 0,
             chunk_done: 0,
             failed_chunks: Vec::new(),
+            file: None
         }
     }
 
-    pub fn uuid(&self) -> &Uuid {
-        &self.uuid
+    pub fn dir_uuid(&self) -> &Uuid {
+        &self.dir_uuid
     }
 
     pub fn path(&self) -> &str {
-        &self.path
+        if let Mutation::Modify { file_path, .. } = &self.mutation {
+            file_path
+        } else {
+            unreachable!()
+        }
     }
 
     pub fn hash(&self) -> &Hash {
-        &self.hash
+        if let Mutation::Modify { file_hash, .. } = &self.mutation {
+            file_hash
+        } else {
+            unreachable!()
+        }
     }
 
     pub fn size(&self) -> &u64 {
-        &self.size
+        if let Mutation::Modify { file_size, .. } = &self.mutation {
+            file_size
+        } else {
+            unreachable!()
+        }
     }
 
     pub fn issued(&self) -> &DateTime<Utc> {
@@ -93,6 +104,10 @@ impl DownloadJob {
     }
     pub fn set_state(&mut self, state: JobState) {
         self.state = state;
+    }
+    
+    pub fn mutation(&self) -> &Mutation {
+        &self.mutation
     }
 }
 
@@ -113,9 +128,12 @@ impl Value for DownloadJob {
             error!("Failed to deserialize Download Job: {e}");
             DownloadJob::new(
                 Uuid::default(),
-                "Error".to_string(),
-                Hash::from_bytes([0u8; 32]),
-                0,
+                Mutation::Modify {
+                    file_path: "Error".to_string(),
+                    file_hash: Hash::from_bytes([0u8; 32]),
+                    file_size: 0,
+                    timestamp: Utc::now(),
+                },
                 Utc::now(),
                 JobState::Error("Serialization".to_string()),
             )
@@ -143,7 +161,7 @@ impl Value for DownloadJob {
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub enum JobState {
     Pending,
-    Ongoing(#[rkyv(with = Skip)] Option<BufWriter<File>>),
+    Ongoing,
     Done(#[rkyv(with = crate::util::DateTimeDef)] DateTime<Utc>),
     Error(String),
 }

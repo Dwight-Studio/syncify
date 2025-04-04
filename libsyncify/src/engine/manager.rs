@@ -26,7 +26,7 @@ use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
-use crate::engine::state::Mutation;
+use crate::engine::state::{Mutation, State};
 use blake3::Hash;
 use futures::{Sink, StreamExt};
 use iroh::Endpoint;
@@ -40,7 +40,7 @@ use std::time::Duration;
 use sync::SyncManager;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
-use crate::engine::job::LocalProvision;
+use crate::engine::job::{DownloadJob, LocalProvision};
 
 pub mod fs;
 pub mod gossip;
@@ -132,8 +132,8 @@ impl Manager {
         handle: ManagerHandle,
         proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
-        let mut fs_manager = FileSystemManager::new(dir.clone(), topic.clone(), downloader.clone()).await;
-        let mut gossip_manager = GossipManager::new(dir.clone(), topic.clone(), ep.clone(), handle.clone()).await;
+        let mut fs_manager = FileSystemManager::new(dir.clone(), handle.clone(), downloader.clone()).await;
+        let mut gossip_manager = GossipManager::new(dir.clone(), topic.clone(), ep.clone(), handle.clone(), downloader.clone()).await;
         let mut sync_manager = SyncManager::new(dir.clone(), ep.clone(), proto.clone()).await;
 
         // Process the event
@@ -142,16 +142,17 @@ impl Manager {
                 // FileSystem
                 ManagerEvent::Poll => fs_manager.poll().await,
                 ManagerEvent::ApplyRemoteMutations(mutations) => fs_manager.apply_remote_mutations(mutations).await,
-                ManagerEvent::UpdateLocalTree(mutation) => fs_manager.update_local_tree(mutation).await,
+                ManagerEvent::DownloadFinished(job) => fs_manager.download_finished(job).await,
 
                 // Gossip
                 ManagerEvent::Gossip(gossip_event) => {
-                    gossip_manager.handle_events(gossip_event, downloader.clone()).await
+                    gossip_manager.handle_events(gossip_event).await
                 }
                 ManagerEvent::RequestProvision(hash) => gossip_manager.request_provision(hash).await,
                 ManagerEvent::ConfirmLocalProvision(provision) => {
                     gossip_manager.confirm_local_provision(provision).await
                 }
+                ManagerEvent::BroadcastChange(state) => gossip_manager.broadcast_changes(state).await,
 
                 // Protocol
                 ManagerEvent::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
@@ -228,12 +229,13 @@ pub enum ManagerEvent {
     // FileSystem
     Poll,
     ApplyRemoteMutations(Vec<Mutation>),
-    UpdateLocalTree(Mutation),
+    DownloadFinished(Arc<RwLock<DownloadJob>>),
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
     RequestProvision(Hash),
     ConfirmLocalProvision(LocalProvision),
+    BroadcastChange(State),
 
     // Protocol
     Sync(SyncEvent),

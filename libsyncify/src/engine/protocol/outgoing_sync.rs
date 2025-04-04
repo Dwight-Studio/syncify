@@ -98,7 +98,7 @@ impl FiniteStateMachine for OutgoingSync {
                                                 .dir
                                                 .state
                                                 .write()
-                                                .verify_accept_all(self.dir.uuid(), other_state, &self.dir.read_key)
+                                                .verify_accept_all(other_state, &self.dir.read_key)
                                                 .await
                                                 .map_err(|e| match e {
                                                     StateError::InvalidSignature => ProtocolError::InvalidSignature,

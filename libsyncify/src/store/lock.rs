@@ -144,7 +144,6 @@ impl StoreGuard<State> {
     /// Returns a vec of all accepted [`Mutation`]s in chronological order.
     pub async fn verify_accept_all(
         &mut self,
-        dir_uuid: Uuid,
         other_state: State,
         read_key: &VerifyingKey,
     ) -> Result<Vec<Mutation>, StateError> {
@@ -155,7 +154,7 @@ impl StoreGuard<State> {
         self.save_deltas(&deltas).await?;
 
         if state.trim() {
-            debug!("Pruned state {}", dir_uuid.to_string());
+            debug!("Pruned state {}", self.id.to_string());
         }
 
         Ok(deltas.iter().map(|d| d.mutation()).collect())

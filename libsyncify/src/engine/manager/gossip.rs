@@ -24,6 +24,7 @@ use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
+use crate::engine::state::{Delta, State};
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
@@ -31,7 +32,7 @@ use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::ops::Add;
 use thiserror::Error;
@@ -56,6 +57,10 @@ pub enum Payload {
         #[rkyv(with= crate::util::DateTimeDef)]
         expire: DateTime<Utc>,
     } = 1,
+    Changes {
+        node_id: [u8; 32],
+        state: State,
+    },
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -69,20 +74,28 @@ pub struct GossipManager {
     dir: SharedDirectory,
     ep: Endpoint,
     handle: ManagerHandle,
+    downloader: DownloaderHandle,
 }
 
 impl GossipManager {
-    pub async fn new(dir: SharedDirectory, topic: GossipSender, ep: Endpoint, handle: ManagerHandle) -> Self {
+    pub async fn new(
+        dir: SharedDirectory,
+        topic: GossipSender,
+        ep: Endpoint,
+        handle: ManagerHandle,
+        downloader: DownloaderHandle,
+    ) -> Self {
         Self {
             topic,
             dir,
-            ep: ep,
+            ep,
             handle,
+            downloader,
         }
     }
 
     //noinspection RsTraitObligations
-    pub async fn handle_events(&mut self, gossip_event: iroh_gossip::net::Event, downloader: DownloaderHandle) {
+    pub async fn handle_events(&mut self, gossip_event: iroh_gossip::net::Event) {
         match gossip_event {
             iroh_gossip::net::Event::Gossip(event) => match event {
                 GossipEvent::Joined(node_id_vec) => {
@@ -125,50 +138,7 @@ impl GossipManager {
                             if let Ok(payload) =
                                 rkyv::from_bytes::<Payload, rkyv::rancor::Error>(decrypted_payload.as_slice())
                             {
-                                match payload {
-                                    Payload::ProvisionRequest { hash } => {
-                                        let local_tree = self.dir.local_tree.read().await.map();
-                                        let file_hash = Hash::from_bytes(hash);
-                                        info!(
-                                            "Received provision request for file '{file_hash}' for {}",
-                                            self.dir.uuid
-                                        );
-
-                                        if let Some(file_path) = local_tree.get(&file_hash) {
-                                            downloader
-                                                .send(DownloaderEvent::LocalProvisionUpdate(
-                                                    self.dir.uuid(),
-                                                    LocalProvision::new(
-                                                        file_hash,
-                                                        Utc::now().add(PROVISION_EXPIRATION),
-                                                        self.dir.path.join(file_path),
-                                                    ),
-                                                ))
-                                                .await;
-                                        } else {
-                                            warn!(
-                                                "File '{}' not found in the local tree of {}",
-                                                file_hash, self.dir.uuid
-                                            )
-                                        }
-                                    }
-                                    Payload::Provision { hash, node_id, expire } => {
-                                        if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                                            let hash = Hash::from_bytes(hash);
-
-                                            info!("Received provision update for file '{hash}' for {}", self.dir.uuid);
-
-                                            downloader
-                                                .send(DownloaderEvent::RemoteProvisionUpdate(
-                                                    self.dir.uuid,
-                                                    RemoteProvision::new(node_id, hash, expire),
-                                                ))
-                                                .await;
-                                        } else {
-                                            warn!("Invalid NodeID!");
-                                        }
-                                    }
-                                }
+                                self.receive_message(payload).await;
                             } else {
                                 warn!("Cannot process received gossip message!");
                             }
@@ -184,8 +154,72 @@ impl GossipManager {
         }
     }
 
+    pub async fn receive_message(&self, payload: Payload) {
+        match payload {
+            Payload::ProvisionRequest { hash } => {
+                let local_tree = self.dir.local_tree.read().await.map();
+                let file_hash = Hash::from_bytes(hash);
+                info!(
+                    "Received provision request for file '{file_hash}' for {}",
+                    self.dir.uuid
+                );
+
+                if let Some(file_path) = local_tree.get(&file_hash) {
+                    self.downloader
+                        .send(DownloaderEvent::LocalProvisionUpdate(
+                            self.dir.uuid(),
+                            LocalProvision::new(
+                                file_hash,
+                                Utc::now().add(PROVISION_EXPIRATION),
+                                self.dir.path.join(file_path),
+                            ),
+                        ))
+                        .await;
+                } else {
+                    warn!("File '{}' not found in the local tree of {}", file_hash, self.dir.uuid)
+                }
+            }
+            Payload::Provision { hash, node_id, expire } => {
+                if let Ok(node_id) = NodeId::from_bytes(&node_id) {
+                    let hash = Hash::from_bytes(hash);
+
+                    info!("Received provision update for file '{hash}' for {}", self.dir.uuid);
+
+                    self.downloader
+                        .send(DownloaderEvent::RemoteProvisionUpdate(
+                            self.dir.uuid,
+                            RemoteProvision::new(node_id, hash, expire),
+                        ))
+                        .await;
+                } else {
+                    warn!("Invalid NodeID!");
+                }
+            }
+            Payload::Changes { node_id, state } => {
+                if let Ok(node_id) = NodeId::from_bytes(&node_id) {
+                    info!("Received changes (by {node_id}) for {}", self.dir.uuid);
+
+                    let mutations = match self
+                        .dir
+                        .state
+                        .write()
+                        .verify_accept_all(state, &self.dir.read_key)
+                        .await {
+                        Ok(m) => m,
+                        Err(e) => {
+                            error!("Cannot process changes for {e}");
+                            return
+                        }
+                    };
+                    
+                    self.handle.send(ManagerEvent::ApplyRemoteMutations(mutations)).await;
+                }
+            }
+        }
+    }
+
     pub async fn request_provision(&self, hash: Hash) {
-        debug!("Asking if someone have '{hash}'");
+        debug!("Requesting provision of '{hash}' for {}", self.dir.uuid);
         if let Ok(msg) = self.create_message(Payload::ProvisionRequest { hash: *hash.as_bytes() }) {
             if self.topic.broadcast(msg).await.is_err() {
                 warn!("Cannot broadcast ProvisionRequest message!");
@@ -233,6 +267,20 @@ impl GossipManager {
             }
         } else {
             Err(GossipError::Encrypt)
+        }
+    }
+    
+    pub async fn broadcast_changes(&self, state: State) {
+        debug!("Broadcasting changes for {}", self.dir.uuid());
+        
+        let node_id = *self.ep.node_id().as_bytes();
+        
+        if let Ok(msg) = self.create_message(Payload::Changes { node_id, state }) {
+            if self.topic.broadcast(msg).await.is_err() {
+                warn!("Cannot broadcast Changes message!");
+            }
+        } else {
+            warn!("Cannot create Changes message!");
         }
     }
 }

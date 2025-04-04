@@ -316,7 +316,7 @@ impl StoreManager {
 
                 // If it is still active, add in the active vec
                 match job.state() {
-                    JobState::Pending | JobState::Ongoing(_) => {
+                    JobState::Pending | JobState::Ongoing => {
                         let job_ref = Arc::new(RwLock::new(job));
                         active_jobs.push(job_ref.clone());
                         jobs.insert(hash, job_ref);

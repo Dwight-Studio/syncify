@@ -61,17 +61,10 @@ impl Downloader {
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = DownloaderHandle { tx };
 
-        // Initiate download tasks list
-        let mut download_tasks: Vec<DownloadTask> = Vec::with_capacity(MAX_DOWNLOAD_TASKS);
-        for _ in 0..MAX_DOWNLOAD_TASKS {
-            download_tasks.push(DownloadTask { handle: None });
-        }
-
         // Spawn new thread
         let join_handle = Some(tokio::spawn(Self::handle_event(
             rx,
             store,
-            download_tasks,
             handle.clone(),
             proto,
         )));
@@ -89,10 +82,25 @@ impl Downloader {
     async fn handle_event(
         mut rx: mpsc::Receiver<DownloaderEvent>,
         store: Arc<RwLock<StoreManager>>,
-        mut download_tasks: Vec<DownloadTask>,
         downloader: DownloaderHandle,
         proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
+        // Creating the provision directory
+        let provision_dir = get_app_cache_dir().join("provisions");
+
+        if !provision_dir.exists() {
+            if let Err(err) = tokio::fs::create_dir_all(&provision_dir).await {
+                error!("Cannot create cache directory: {err}");
+                return;
+            }
+        }
+
+        // Initiate download tasks list
+        let mut download_tasks: Vec<DownloadTask> = Vec::with_capacity(MAX_DOWNLOAD_TASKS);
+        for _ in 0..MAX_DOWNLOAD_TASKS {
+            download_tasks.push(DownloadTask { handle: None });
+        }
+        
         // Process events
         while let Some(event) = rx.recv().await {
             match event {
@@ -143,17 +151,10 @@ impl Downloader {
                 DownloaderEvent::LocalProvisionUpdate(dir_uuid, provision) => {
                     // Event sent when a local provision was updated for a file.
                     // (Received a message from the swarm that requested the availability of a file)
-                    debug!("LocalProvisionUpdate");
-                    let provision_dir = get_app_cache_dir().join("provisions");
+                    debug!("Updating local provision for {dir_uuid}");
 
                     let dir_opt = store.read().await.get_shared_dir(&dir_uuid);
                     if let Some(dir) = dir_opt {
-                        if !provision_dir.exists() {
-                            if let Err(err) = tokio::fs::create_dir_all(&provision_dir).await {
-                                error!("Cannot create cache directory: {err}");
-                                return;
-                            }
-                        }
 
                         let mut encoder = {
                             match File::options()
@@ -199,7 +200,7 @@ impl Downloader {
                             }
                         }
                     } else {
-                        warn!("Received local provision update for unknown UUID: {}", dir_uuid);
+                        warn!("Received local provision update for unknown directory: {}", dir_uuid);
                     }
                 }
 
@@ -256,23 +257,14 @@ impl Downloader {
                     // TODO: What should we do when the cache file cannot be opened, seeked, written to ? It shouldn't happen...
                     debug!("{}", chunk_index);
                     Self::flush_download_tasks(&mut download_tasks);
+                    let download_job_tmp = download_job.clone();
                     let mut job = download_job.write().await;
                     
-                    let file: &mut BufWriter<File> = {
-                        match job.state {
-                            JobState::Ongoing(ref mut buff) => {
-                                if let Some(buff) = buff {
-                                    buff
-                                } else {
-                                    error!("Cache file cannot be found!");
-                                    return;
-                                }
-                            }
-                            _ => {
-                                error!("Cache file cannot be found!");
-                                return;
-                            }
-                        }
+                    let file: &mut BufWriter<File> = if let Some(buf) = &mut job.file {
+                        buf
+                    } else {
+                        error!("Cache file cannot be found!");
+                        return;
                     };
 
                     if let Err(err) = file.seek(SeekFrom::Start(chunk_index * CHUNK_SIZE as u64)) {
@@ -307,6 +299,27 @@ impl Downloader {
                     } else {
                         job.set_state(JobState::Done(Utc::now()));
                         info!("Received file {}", job.hash());
+
+                        let file: &mut BufWriter<File> = if let Some(buf) = &mut job.file {
+                            buf
+                        } else {
+                            error!("Cache file cannot be found!");
+                            return;
+                        };
+                        
+                        if let Err(e) = file.flush() {
+                            error!("Unable to flush cache file: {e}");
+                        }
+                        
+                        job.file = None;
+
+                        let dir_opt = store.read().await.get_shared_dir(&job.dir_uuid());
+                        if let Some(dir) = dir_opt {
+                            dir.handle().await.send(ManagerEvent::DownloadFinished(download_job_tmp)).await;
+                        } else {
+                            warn!("Received local provision update for unknown directory: {}", job.dir_uuid());
+                        }
+
                         drop(job);
                         // TODO: Goto next download job
                     }
@@ -345,15 +358,14 @@ impl Downloader {
             }
             cache_file = cache_file.join(job.hash().to_string());
             if let Ok(file) = File::create(cache_file) {
-                job.set_state(JobState::Ongoing (
-                    Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
-                ));
+                job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
             } else {
                 error!("Cannot create cache file");
             }
+            job.set_state(JobState::Ongoing)
         }
 
-        let dir_opt = store.read().await.get_shared_dir(job.uuid());
+        let dir_opt = store.read().await.get_shared_dir(job.dir_uuid());
         if let Some(dir) = dir_opt {
             let node_list_opt = dir.remote_provisions.read().await;
             if let Some(node_list) = node_list_opt.get(job.hash()) {

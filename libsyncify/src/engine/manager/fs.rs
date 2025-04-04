@@ -20,30 +20,31 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{DownloadJob, JobState};
-use crate::engine::state::{HashTree, Mutation};
+use crate::engine::manager::{ManagerEvent, ManagerHandle};
+use crate::engine::state::{HashTree, MAX_LOADED_DELTAS, Mutation};
+use crate::{SharedDirectory, get_app_cache_dir};
 use chrono::Utc;
-use iroh_gossip::net::GossipSender;
 use log::{debug, error};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::RwLock;
 
 pub struct FileSystemManager {
-    topic: GossipSender,
-    downloader: DownloaderHandle,
     dir: SharedDirectory,
+    handle: ManagerHandle,
+    downloader: DownloaderHandle,
 }
 
 impl FileSystemManager {
-    pub async fn new(dir: SharedDirectory, topic: GossipSender, downloader: DownloaderHandle) -> Self {
+    pub async fn new(dir: SharedDirectory, handle: ManagerHandle, downloader: DownloaderHandle) -> Self {
         Self {
-            topic,
+            dir,
+            handle,
             downloader,
-            dir: dir.clone(),
         }
     }
 
@@ -126,18 +127,27 @@ impl FileSystemManager {
         };
 
         for mutation in &mutations {
+            let prev_head = self.dir.state.read().await.hash();
             match self.dir.state.write().mutate(mutation.clone(), write_key).await {
-                Ok(_) => match self.dir.local_tree.write().apply(mutation).await {
-                    Ok(_) => {
-                        debug!("Applied in {}: {mutation}", self.dir.uuid());
+                Ok(_) => {
+                    if let Some(state) = self.dir.state.read().await.clone_after(prev_head, MAX_LOADED_DELTAS) {
+                        self.handle.send(ManagerEvent::BroadcastChange(state)).await;
+                    } else {
+                        error!("State is now invalid (unable to find previous head)");
                     }
-                    Err(e) => {
-                        error!(
-                            "Cannot apply mutation to current tree in {}: {mutation} ({e})",
-                            self.dir.uuid()
-                        );
+
+                    match self.dir.local_tree.write().apply(mutation).await {
+                        Ok(_) => {
+                            debug!("Applied in {}: {mutation}", self.dir.uuid());
+                        }
+                        Err(e) => {
+                            error!(
+                                "Cannot apply mutation to current tree in {}: {mutation} ({e})",
+                                self.dir.uuid()
+                            );
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     error!(
                         "Cannot apply mutation to current tree in {}: {mutation} ({e})",
@@ -154,18 +164,11 @@ impl FileSystemManager {
     pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
         for mutation in mutations {
             match &mutation {
-                Mutation::Modify {
-                    file_path,
-                    file_hash,
-                    file_size,
-                    ..
-                } => {
+                Mutation::Modify { .. } => {
                     // Creating DownloadJob
                     let job_ref = Arc::new(RwLock::new(DownloadJob::new(
                         self.dir.uuid,
-                        self.dir.path.join(file_path).to_string_lossy().to_string(),
-                        *file_hash,
-                        *file_size,
+                        mutation,
                         Utc::now(),
                         JobState::Pending,
                     )));
@@ -209,6 +212,30 @@ impl FileSystemManager {
                 );
                 None
             }
+        }
+    }
+
+    pub(crate) async fn download_finished(&self, download_job: Arc<RwLock<DownloadJob>>) {
+        let job = download_job.read().await;
+
+        let final_path = self.dir.path.join(match job.mutation() {
+            Mutation::Modify { file_path, .. } => file_path,
+            _ => {
+                unreachable!();
+            }
+        });
+
+        self.update_local_tree(job.mutation().clone()).await;
+
+        debug!("Download finished, copying cache file into directory...");
+        let provision_dir = get_app_cache_dir().join("provisions");
+
+        if let Err(e) = tokio::fs::copy(provision_dir.join(job.hash().to_string()), final_path.clone()).await {
+            error!(
+                "Cannot copy cache file to '{}' for {} ({e})",
+                self.dir.uuid,
+                final_path.display()
+            );
         }
     }
 
