@@ -172,21 +172,43 @@ impl FileSystemManager {
                     let from = self.dir.path.join(from);
                     let to = self.dir.path.join(to);
 
-                    match fs::rename(&from, &to).await {
-                        Ok(_) => self.update_local_tree(mutation).await,
-                        Err(e) => {
-                            error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
+                    if let Some(parent) = from.parent() {
+                        match tokio::fs::rename(&from, &to).await {
+                            Ok(_) => {
+                                if parent.read_dir().iter().nth(1).is_none() {
+                                    if let Err(e) = tokio::fs::remove_dir(parent).await {
+                                        error!("Cannot remove directory '{}' ({e})", parent.display());
+                                    }
+                                }
+                                self.update_local_tree(mutation).await
+                            },
+                            Err(e) => {
+                                error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
+                            }
                         }
+                    } else {
+                        error!("Cannot get file directory")
                     }
                 }
                 Mutation::Remove { file_path, .. } => {
                     let path = self.dir.path.join(PathBuf::from(file_path));
 
-                    match fs::remove_file(&path).await {
-                        Ok(_) => self.update_local_tree(mutation).await,
-                        Err(e) => {
-                            error!("Cannot remove file: '{}' ({e})", path.display());
+                    if let Some(parent) = path.parent() {
+                        match fs::remove_file(&path).await {
+                            Ok(_) => {
+                                if parent.read_dir().iter().nth(1).is_none() {
+                                    if let Err(e) = tokio::fs::remove_dir(parent).await {
+                                        error!("Cannot remove directory '{}' ({e})", parent.display());
+                                    }
+                                }
+                                self.update_local_tree(mutation).await
+                            },
+                            Err(e) => {
+                                error!("Cannot remove file '{}' ({e})", path.display());
+                            }
                         }
+                    } else {
+                        error!("Cannot get file directory")
                     }
                 }
                 _ => continue,
@@ -201,7 +223,7 @@ impl FileSystemManager {
             Ok(path) => Some(path),
             Err(_) => {
                 error!(
-                    "Cannot get relative path: '{:?}' in '{:?}'",
+                    "Cannot get relative path '{:?}' in '{:?}'",
                     file.display(),
                     dir.path.display()
                 );
@@ -225,12 +247,22 @@ impl FileSystemManager {
         debug!("Download finished, copying cache file into directory...");
         let downloads_dir = get_app_cache_dir().join("downloads");
 
-        if let Err(e) = tokio::fs::copy(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {
-            error!(
+        let file = downloads_dir.join(job.hash().to_string());
+        
+        if let Some(parent) = file.parent() {
+            if !parent.exists() {
+                tokio::fs::create_dir_all(&downloads_dir).await.unwrap();
+            }
+
+            if let Err(e) = tokio::fs::copy(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {
+                error!(
                 "Cannot copy cache file to '{}' for {} ({e})",
                 final_path.display(),
                 self.dir.uuid,
             );
+            }
+        } else { 
+            error!("Cannot get file directory")
         }
     }
 
