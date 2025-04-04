@@ -80,6 +80,7 @@ pub struct StoreManager {
     timestamp: DateTime<Utc>,
     db: Database,
     cache: HashMap<Uuid, SharedDirectory>,
+    // TODO: Add Store lock for the jobs/active_jobs
     jobs: HashMap<Hash, Arc<RwLock<DownloadJob>>>,
     active_jobs: Vec<Arc<RwLock<DownloadJob>>>,
     secret_key: SecretKey,

@@ -428,6 +428,7 @@ impl Downloader {
             job.set_state(JobState::Ongoing)
         } else if matches!(*job.state(), JobState::Ongoing) {
             match File::options()
+                .create(true)
                 .write(true)
                 .truncate(false)
                 .open(download_dir.join(job.hash().to_string())) {
