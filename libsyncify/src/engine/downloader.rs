@@ -219,7 +219,6 @@ impl Downloader {
                 } => {
                     let dir = provisions_dir.clone();
                     tokio::spawn(async move {
-                        info!("WTF");
                         if let Ok(file) = File::open(dir.join(file_hash.to_string())) {
                             let mut extractor = bao::encode::SliceExtractor::new(
                                 file,

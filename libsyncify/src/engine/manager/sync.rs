@@ -91,6 +91,7 @@ impl SyncManager {
                                 .await;
                         } else {
                             info!("Initial sync: Sync request received. No need to start sync.");
+                            *dir.initial_sync.write().await = false
                         }
                     });
                 }

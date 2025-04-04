@@ -24,7 +24,6 @@ use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
-use crate::engine::state::State;
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
@@ -35,7 +34,11 @@ use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{debug, error, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::ops::Add;
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::RwLock;
+use crate::engine::protocol::outgoing_sync::OutgoingSync;
+use crate::engine::protocol::SyncifyProtocol;
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
@@ -49,17 +52,20 @@ pub struct GossipHeader {
 #[derive(Archive, Serialize, Deserialize)]
 pub enum Payload {
     ProvisionRequest {
-        hash: [u8; 32],
+        #[rkyv(with = crate::util::HashDef)]
+        hash: Hash,
     } = 0,
     Provision {
-        hash: [u8; 32],
+        #[rkyv(with = crate::util::HashDef)]
+        hash: Hash,
         node_id: [u8; 32],
         #[rkyv(with= crate::util::DateTimeDef)]
         expire: DateTime<Utc>,
     } = 1,
-    Changes {
+    Update {
         node_id: [u8; 32],
-        state: State,
+        #[rkyv(with = crate::util::HashDef)]
+        new_head: Hash,
     },
 }
 
@@ -73,6 +79,7 @@ pub struct GossipManager {
     topic: GossipSender,
     dir: SharedDirectory,
     ep: Endpoint,
+    proto: Arc<RwLock<SyncifyProtocol>>,
     handle: ManagerHandle,
     downloader: DownloaderHandle,
 }
@@ -82,6 +89,7 @@ impl GossipManager {
         dir: SharedDirectory,
         topic: GossipSender,
         ep: Endpoint,
+        proto: Arc<RwLock<SyncifyProtocol>>,
         handle: ManagerHandle,
         downloader: DownloaderHandle,
     ) -> Self {
@@ -89,6 +97,7 @@ impl GossipManager {
             topic,
             dir,
             ep,
+            proto,
             handle,
             downloader,
         }
@@ -151,7 +160,7 @@ impl GossipManager {
                 }
             },
             iroh_gossip::net::Event::Lagged => {
-                debug!("Je suis une merde");
+                debug!("Message lagged");
             }
         }
     }
@@ -160,30 +169,28 @@ impl GossipManager {
         match payload {
             Payload::ProvisionRequest { hash } => {
                 let local_tree = self.dir.local_tree.read().await.map();
-                let file_hash = Hash::from_bytes(hash);
                 info!(
-                    "Received provision request for file '{file_hash}' for {}",
+                    "Received provision request for file '{hash}' for {}",
                     self.dir.uuid
                 );
 
-                if let Some(file_path) = local_tree.get(&file_hash) {
+                if let Some(file_path) = local_tree.get(&hash) {
                     self.downloader
                         .send(DownloaderEvent::LocalProvisionUpdate(
                             self.dir.uuid(),
                             LocalProvision::new(
-                                file_hash,
+                                hash,
                                 Utc::now().add(PROVISION_EXPIRATION),
                                 self.dir.path.join(file_path),
                             ),
                         ))
                         .await;
                 } else {
-                    warn!("File '{}' not found in the local tree of {}", file_hash, self.dir.uuid)
+                    warn!("File '{}' not found in the local tree of {}", hash, self.dir.uuid)
                 }
             }
             Payload::Provision { hash, node_id, expire } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                    let hash = Hash::from_bytes(hash);
 
                     info!("Received provision update for file '{hash}' for {}", self.dir.uuid);
 
@@ -197,25 +204,15 @@ impl GossipManager {
                     warn!("Invalid NodeID!");
                 }
             }
-            Payload::Changes { node_id, state } => {
+            Payload::Update { node_id, new_head } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                    info!("Received changes (by {node_id}) for {}", self.dir.uuid);
-
-                    let mutations = match self
-                        .dir
-                        .state
-                        .write()
-                        .verify_accept_all(state, &self.dir.read_key)
-                        .await
-                    {
-                        Ok(m) => m,
-                        Err(e) => {
-                            error!("Cannot process changes for {e}");
-                            return;
-                        }
-                    };
-
-                    self.handle.send(ManagerEvent::ApplyRemoteMutations(mutations)).await;
+                    info!("Received update notification from {node_id} for {}", self.dir.uuid);
+                    
+                    // Synchronize if the head is different
+                    if self.dir.state.read().await.hash() != new_head {
+                        let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
+                        self.handle.send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing)))).await;
+                    }
                 }
             }
         }
@@ -223,7 +220,7 @@ impl GossipManager {
 
     pub async fn request_provision(&self, hash: Hash) {
         debug!("Requesting provision of '{hash}' for {}", self.dir.uuid);
-        if let Ok(msg) = self.create_message(Payload::ProvisionRequest { hash: *hash.as_bytes() }) {
+        if let Ok(msg) = self.create_message(Payload::ProvisionRequest { hash }) {
             if self.topic.broadcast(msg).await.is_err() {
                 warn!("Cannot broadcast ProvisionRequest message!");
             }
@@ -235,7 +232,7 @@ impl GossipManager {
     pub async fn confirm_local_provision(&self, provision: LocalProvision) {
         debug!("Sending Provision notification for '{}'", provision.hash());
         if let Ok(resp_msg) = self.create_message(Payload::Provision {
-            hash: *provision.hash().as_bytes(),
+            hash: provision.hash(),
             node_id: *self.ep.node_id().as_bytes(),
             expire: provision.expiration(),
         }) {
@@ -273,17 +270,18 @@ impl GossipManager {
         }
     }
 
-    pub async fn broadcast_changes(&self, state: State) {
-        debug!("Broadcasting changes for {}", self.dir.uuid());
+    pub async fn notify_changes(&self) {
+        debug!("Broadcasting update notification for {}", self.dir.uuid());
 
         let node_id = *self.ep.node_id().as_bytes();
+        let new_head = self.dir.state.read().await.hash().clone();
 
-        if let Ok(msg) = self.create_message(Payload::Changes { node_id, state }) {
+        if let Ok(msg) = self.create_message(Payload::Update { node_id, new_head }) {
             if self.topic.broadcast(msg).await.is_err() {
-                warn!("Cannot broadcast Changes message!");
+                warn!("Cannot broadcast Update message!");
             }
         } else {
-            warn!("Cannot create Changes message!");
+            warn!("Cannot create Update message!");
         }
     }
 }

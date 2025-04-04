@@ -118,14 +118,13 @@ impl FileSystemManager {
         mutations.extend(working_buffer);
     }
 
-    /// Apply [`Mutation`] to a [`SharedDirectory`].
+    /// Apply locally generated [`Mutation`]s to a [`SharedDirectory`].
     pub async fn apply_local_mutations(&self, mutations: Vec<Mutation>) {
         let write_key = match &self.dir.write_key {
             Some(key) => key,
             None => return,
         };
 
-        let prev_head = self.dir.state.read().await.hash();
         for mutation in &mutations {
             match self.dir.state.write().mutate(mutation.clone(), write_key).await {
                 Ok(_) => match self.dir.local_tree.write().apply(mutation).await {
@@ -148,16 +147,13 @@ impl FileSystemManager {
             }
         }
         
-        if let Some(state) = self.dir.state.read().await.clone_after(prev_head, MAX_LOADED_DELTAS) {
-            self.handle.send(ManagerEvent::BroadcastChange(state)).await;
-        } else {
-            error!("State is now invalid (unable to find previous head)");
-        }
+        self.handle.send(ManagerEvent::BroadcastUpdate).await
 
         //debug!("New state: \n{}", inner.state);
         //debug!("New file tree: \n{}", local_tree);
     }
 
+    /// Apply remotely generated [`Mutation`]s to a [`SharedDirectory`].
     pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
         for mutation in mutations {
             match &mutation {
@@ -196,6 +192,8 @@ impl FileSystemManager {
                 _ => continue,
             }
         }
+        
+        self.handle.send(ManagerEvent::BroadcastUpdate).await
     }
 
     pub fn relative<'a>(dir: &SharedDirectory, file: &'a Path) -> Option<&'a Path> {

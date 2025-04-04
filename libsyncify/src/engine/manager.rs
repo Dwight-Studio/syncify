@@ -137,6 +137,7 @@ impl Manager {
             dir.clone(),
             topic.clone(),
             ep.clone(),
+            proto.clone(),
             handle.clone(),
             downloader.clone(),
         )
@@ -157,7 +158,7 @@ impl Manager {
                 ManagerEvent::ConfirmLocalProvision(provision) => {
                     gossip_manager.confirm_local_provision(provision).await
                 }
-                ManagerEvent::BroadcastChange(state) => gossip_manager.broadcast_changes(state).await,
+                ManagerEvent::BroadcastUpdate => gossip_manager.notify_changes().await,
 
                 // Protocol
                 ManagerEvent::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
@@ -240,7 +241,7 @@ pub enum ManagerEvent {
     Gossip(iroh_gossip::net::Event),
     RequestProvision(Hash),
     ConfirmLocalProvision(LocalProvision),
-    BroadcastChange(State),
+    BroadcastUpdate,
 
     // Protocol
     Sync(SyncEvent),
