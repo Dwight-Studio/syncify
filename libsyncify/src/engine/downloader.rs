@@ -37,6 +37,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+//use crate::engine::state::Mutation;
 
 /// Size of the event buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
@@ -107,6 +108,19 @@ impl Downloader {
             download_tasks.push(DownloadTask { handle: None });
         }
 
+        // Resume unfinished downloads
+        let jobs = store.read().await.get_download_jobs();
+        for job in jobs {
+            Self::spawn_download_tasks(
+                store.clone(),
+                downloads_dir.clone(),
+                job,
+                downloader.clone(),
+                &mut download_tasks,
+                proto.clone()
+            ).await;
+        }
+
         // Process events
         while let Some(event) = rx.recv().await {
             match event {
@@ -114,8 +128,21 @@ impl Downloader {
                 DownloaderEvent::Accept(download_job) => {
                     // Event sent when a new download job is requested from the filesystem watcher
                     // If download tasks are available it will start downloading chunks.
-
-                    // TODO: Verify if the file has already been downloaded
+                    
+                    /*let job = download_job.read().await;
+                    let dir_opt = store.read().await.get_shared_dir(job.dir_uuid());
+                    
+                    if let Some(dir) = dir_opt {
+                        let final_path = dir.path.join(match job.mutation() {
+                            Mutation::Modify { file_path, .. } => file_path,
+                            _ => {
+                                unreachable!();
+                            }
+                        });
+                        
+                        
+                    }*/
+                    
                     store.write().await.add_download_job(download_job.clone()).await;
 
                     Self::spawn_download_tasks(
@@ -261,9 +288,6 @@ impl Downloader {
                     } else if !job.failed_chunks.is_empty() {
                         error!("Not implemented!");
                         // TODO: Handle failed chunks
-                    } else {
-                        job.set_state(JobState::Done(Utc::now()));
-                        // TODO: Goto next download job
                     }
                 }
 
