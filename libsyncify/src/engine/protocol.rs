@@ -117,6 +117,7 @@ impl SyncifyProtocol {
         node_id: NodeId,
     ) -> Result<SyncifyStream, SyncifyProtocolError> {
         let mut existing_conn: Option<&Connection> = None;
+        
         let connections = self.connections.read().await;
         for connection in &*connections {
             if connection.remote_node_id().unwrap() == node_id {
@@ -357,8 +358,8 @@ async fn accept_connection(
     store: Arc<RwLock<StoreManager>>,
     downloader: DownloaderHandle,
 ) -> anyhow::Result<()> {
-    connections.write().await.push(connection.clone());
     debug!("Opening connection with {}", connection.remote_node_id()?);
+    connections.write().await.push(connection.clone());
     
     while let Ok((tx, mut rx)) = connection.accept_bi().await {
         let mut header_buffer = [0u8; HEADER_SIZE];
