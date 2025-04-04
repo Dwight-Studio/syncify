@@ -251,7 +251,7 @@ impl FileSystemManager {
 
         if let Some(parent) = file.parent() {
             if !parent.exists() {
-                tokio::fs::create_dir_all(&downloads_dir).await.unwrap();
+                tokio::fs::create_dir_all(&parent).await.unwrap();
             }
 
             if let Err(e) = tokio::fs::rename(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {

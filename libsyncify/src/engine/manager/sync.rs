@@ -34,7 +34,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
-pub const FSM_TIMEOUT: Duration = Duration::from_secs(5);
+pub const FSM_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SyncManager {
     dir: SharedDirectory,

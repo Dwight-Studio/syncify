@@ -23,6 +23,7 @@
 use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
+use crate::engine::state::Mutation;
 use crate::store::StoreManager;
 use crate::{SharedDirectory, get_app_cache_dir};
 use blake3::Hash;
@@ -37,7 +38,6 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-use crate::engine::state::Mutation;
 
 /// Size of the event buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
@@ -129,11 +129,11 @@ impl Downloader {
                 DownloaderEvent::Accept(download_job) => {
                     // Event sent when a new download job is requested from the filesystem watcher
                     // If download tasks are available it will start downloading chunks.
-                    
+
                     // Verifying that the file from the job is not already downloaded
                     let job = download_job.read().await;
                     let dir_opt = store.read().await.get_shared_dir(job.dir_uuid());
-                    
+
                     if let Some(dir) = dir_opt {
                         let final_path = dir.path.join(match job.mutation() {
                             Mutation::Modify { file_path, .. } => file_path,
@@ -141,7 +141,7 @@ impl Downloader {
                                 unreachable!();
                             }
                         });
-                        
+
                         if let Some(hash_tree) = dir.local_tree.read().await.get(final_path.to_str().unwrap()) {
                             if hash_tree.hash() == *job.hash() {
                                 debug!("File '{}' from {} has already been downloaded", *job.hash(), dir.uuid);
@@ -418,9 +418,7 @@ impl Downloader {
 
         if matches!(*job.state(), JobState::Pending) {
             match File::create(download_dir.join(job.hash().to_string())) {
-                Ok(file) => {
-                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
-                }
+                Ok(file) => job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file)),
                 Err(e) => {
                     error!("Cannot create cache file ({e})");
                 }
@@ -431,10 +429,9 @@ impl Downloader {
                 .create(true)
                 .write(true)
                 .truncate(false)
-                .open(download_dir.join(job.hash().to_string())) {
-                Ok(file) => {
-                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
-                }
+                .open(download_dir.join(job.hash().to_string()))
+            {
+                Ok(file) => job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file)),
                 Err(e) => {
                     error!("Cannot create cache file ({e})");
                 }
