@@ -150,7 +150,7 @@ impl SyncifyProtocol {
                         downloader.clone(),
                     ));
                 }
-                Ok(SyncifyStream::new(dir.clone(), tx, rx,))
+                Ok(SyncifyStream::new(dir.clone(), tx, rx))
             }
         }
     }
@@ -161,7 +161,7 @@ pub struct SyncifyStream {
     dir: SharedDirectory,
     send_stream: SendStream,
     recv_stream: RecvStream,
-    cipher: XChaCha20Poly1305
+    cipher: XChaCha20Poly1305,
 }
 
 impl SyncifyStream {
@@ -171,10 +171,10 @@ impl SyncifyStream {
             dir,
             send_stream,
             recv_stream,
-            cipher
+            cipher,
         }
     }
-    
+
     /// Generate non null nonce.
     fn generate_nonce() -> XNonce {
         loop {
@@ -189,35 +189,54 @@ impl SyncifyStream {
     pub async fn send(&mut self, packet: &SyncifyPacket) -> Result<(), SyncifyProtocolError> {
         let nonce = Self::generate_nonce();
 
-        let packet_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(packet).unwrap();
-        let cipher_bytes = self.cipher.encrypt(&nonce, &*packet_bytes).unwrap();
+        let packet_bytes =
+            rkyv::to_bytes::<rkyv::rancor::Error>(packet).map_err(SyncifyProtocolError::Serialization)?;
+        let cipher_bytes = self
+            .cipher
+            .encrypt(&nonce, &*packet_bytes)
+            .map_err(SyncifyProtocolError::Encryption)?;
 
         let header = HeaderPacket {
             packet_size: cipher_bytes.len() as u64,
             nonce: <[u8; 24]>::from(nonce),
             uuid: self.dir.uuid,
         };
-        let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
+        let header_bytes =
+            rkyv::to_bytes::<rkyv::rancor::Error>(&header).map_err(SyncifyProtocolError::Serialization)?;
 
-        self.send_stream.write_all(header_bytes.as_slice()).await.unwrap();
-        self.send_stream.write_all(cipher_bytes.as_slice()).await.unwrap();
+        self.send_stream
+            .write_all(header_bytes.as_slice())
+            .await
+            .map_err(SyncifyProtocolError::WriteError)?;
+        self.send_stream
+            .write_all(cipher_bytes.as_slice())
+            .await
+            .map_err(SyncifyProtocolError::WriteError)?;
 
         Ok(())
     }
 
     /// Send a plain packet.
     pub async fn send_plain(&mut self, packet: &SyncifyPacket) -> Result<(), SyncifyProtocolError> {
-        let packet_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(packet).unwrap();
+        let packet_bytes =
+            rkyv::to_bytes::<rkyv::rancor::Error>(packet).map_err(SyncifyProtocolError::Serialization)?;
 
         let header = HeaderPacket {
             packet_size: packet_bytes.len() as u64,
             nonce: [0u8; 24],
             uuid: self.dir.uuid,
         };
-        let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
+        let header_bytes =
+            rkyv::to_bytes::<rkyv::rancor::Error>(&header).map_err(SyncifyProtocolError::Serialization)?;
 
-        self.send_stream.write_all(header_bytes.as_slice()).await.unwrap();
-        self.send_stream.write_all(packet_bytes.as_slice()).await.unwrap();
+        self.send_stream
+            .write_all(header_bytes.as_slice())
+            .await
+            .map_err(SyncifyProtocolError::WriteError)?;
+        self.send_stream
+            .write_all(packet_bytes.as_slice())
+            .await
+            .map_err(SyncifyProtocolError::WriteError)?;
 
         Ok(())
     }
@@ -243,8 +262,8 @@ impl SyncifyStream {
             .await
             .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("header")))?;
 
-        let res = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_data)
-            .map_err(SyncifyProtocolError::DeserializeError)?;
+        let res =
+            rkyv::from_bytes::<HeaderPacket, RancorError>(&header_data).map_err(SyncifyProtocolError::Deserialize)?;
 
         if self.dir.uuid != res.uuid {
             return Err(SyncifyProtocolError::WrongRecipient(res.uuid));
@@ -262,11 +281,12 @@ impl SyncifyStream {
             .await
             .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
 
-        let decrypted_bytes = self.cipher
+        let decrypted_bytes = self
+            .cipher
             .decrypt(&XNonce::from(header_packet.nonce), packet_buffer.as_ref())
-            .map_err(SyncifyProtocolError::DecryptionError)?;
+            .map_err(SyncifyProtocolError::Decryption)?;
 
-        rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes).map_err(SyncifyProtocolError::DeserializeError)
+        rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes).map_err(SyncifyProtocolError::Deserialize)
     }
 
     //noinspection RsTraitObligations
@@ -278,7 +298,7 @@ impl SyncifyStream {
             .await
             .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
 
-        rkyv::from_bytes::<SyncifyPacket, RancorError>(&packet_buffer).map_err(SyncifyProtocolError::DeserializeError)
+        rkyv::from_bytes::<SyncifyPacket, RancorError>(&packet_buffer).map_err(SyncifyProtocolError::Deserialize)
     }
 
     /// Close the stream.
@@ -346,8 +366,8 @@ async fn accept_connection(
         let mut header_buffer = [0u8; HEADER_SIZE];
         rx.read_exact(&mut header_buffer).await?;
 
-        let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer)
-            .map_err(SyncifyProtocolError::DeserializeError)?;
+        let header =
+            rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer).map_err(SyncifyProtocolError::Deserialize)?;
 
         let dir = {
             match store.read().await.get_shared_dir(&header.uuid) {
@@ -370,16 +390,16 @@ async fn accept_connection(
         let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
         let decrypted_bytes = cipher
             .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
-            .map_err(SyncifyProtocolError::DecryptionError)?;
+            .map_err(SyncifyProtocolError::Decryption)?;
 
         let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
-            .map_err(SyncifyProtocolError::DeserializeError)?;
+            .map_err(SyncifyProtocolError::Deserialize)?;
 
         let stream = SyncifyStream {
             dir: dir.clone(),
             send_stream: tx,
             recv_stream: rx,
-            cipher: XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()))
+            cipher: XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes())),
         };
 
         match packet {
@@ -431,16 +451,19 @@ pub enum SyncifyProtocolError {
     StoppedStream(StoppedError),
 
     #[error("Unable to deserialize received data: {0}")]
-    DeserializeError(RancorError),
+    Serialization(RancorError),
 
-    #[error("Missing header packet. Received {0}")]
-    HeaderMissing(String),
+    #[error("Unable to deserialize received data: {0}")]
+    Deserialize(RancorError),
 
     #[error("Uuid does not exists")]
     UuidDoesNotExists,
 
     #[error("Cannot decrypt the packet: {0}")]
-    DecryptionError(Error),
+    Encryption(Error),
+
+    #[error("Cannot decrypt the packet: {0}")]
+    Decryption(Error),
 
     #[error("Wrong recipient: {0}")]
     WrongRecipient(Uuid),
