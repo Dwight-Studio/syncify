@@ -319,7 +319,6 @@ impl Downloader {
 
                 DownloaderEvent::TaskSuccess(download_job, chunk_index, decoded_data) => {
                     // TODO: What should we do when the cache file cannot be opened, seeked, written to ? It shouldn't happen...
-                    debug!("{}", chunk_index);
                     Self::flush_download_tasks(&mut download_tasks);
                     let download_job_tmp = download_job.clone();
                     let mut job = download_job.write().await;
@@ -495,10 +494,8 @@ impl Downloader {
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let file_hash = *download_job.read().await.hash();
-            debug!("ACQUIRING PROTO");
             if let Ok(mut connection) = proto.open_stream(&dir, node_id).await {
                 drop(proto);
-                debug!("RELEASING PROTO");
                 let packet = SyncifyPacket::Blobs(BlobsPacket::BlobRequest {
                     file_hash: *file_hash.as_bytes(),
                     chunk_index,
@@ -542,7 +539,6 @@ impl Downloader {
                     }
                 }
             }
-            debug!("RELEASING PROTO");
         })
     }
 

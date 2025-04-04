@@ -247,10 +247,7 @@ impl FileSystemManager {
         info!("Download finished for {}: '{}'", self.dir.uuid, job.path());
         let downloads_dir = get_app_cache_dir().join("downloads");
 
-        let file = downloads_dir.join(job.hash().to_string());
-
-        if let Some(parent) = file.parent() {
-            info!("{}", parent.display());
+        if let Some(parent) = final_path.parent() {
             match parent.try_exists() {
                 Ok(exists) => {
                     if !exists {

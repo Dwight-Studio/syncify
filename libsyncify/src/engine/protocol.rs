@@ -116,15 +116,16 @@ impl SyncifyProtocol {
         dir: &SharedDirectory,
         node_id: NodeId,
     ) -> Result<SyncifyStream, SyncifyProtocolError> {
-        let mut existing_conn: Option<&Connection> = None;
+        let mut existing_conn: Option<Connection> = None;
         
         let connections = self.connections.read().await;
-        for connection in &*connections {
+        for connection in connections.clone() {
             if connection.remote_node_id().unwrap() == node_id {
                 existing_conn = Some(connection);
                 break;
             }
         }
+        drop(connections);
 
         match existing_conn {
             Some(conn) => {

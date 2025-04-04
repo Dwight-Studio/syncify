@@ -70,7 +70,6 @@ impl FiniteStateMachine for OutgoingSync {
                     self.connection = Some(conn);
                     Ok(OutgoingState::SendingRequest)
                 } else {
-                    debug!("RELEASING PROTO");
                     Err(ProtocolError::ConnectionFailed)
                 }
             }
