@@ -68,13 +68,16 @@ impl FiniteStateMachine for OutgoingSync {
         match &self.state {
             OutgoingState::Connecting => {
                 info!("Outgoing: Requesting sync to {}", self.node_id);
+                debug!("ACQUIRING PROTO");
                 let mut proto = self.proto.write().await;
                 if let Ok(conn) = proto.open_stream(&self.dir, self.node_id).await {
                     self.connection = Some(conn);
                     drop(proto);
+                    debug!("RELEASING PROTO");
                     Ok(OutgoingState::SendingRequest)
                 } else {
                     drop(proto);
+                    debug!("RELEASING PROTO");
                     Err(ProtocolError::ConnectionFailed)
                 }
             }

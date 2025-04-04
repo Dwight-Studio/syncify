@@ -87,6 +87,7 @@ pub enum BlobsPacket {
     Blob { chunk: Vec<u8> } = 4,
 }
 
+// TODO: Use a mutex instead
 /// The [`SyncifyProtocol`] struct, used to store the active connections.
 pub struct SyncifyProtocol {
     pub(crate) connections: Vec<Connection>,
