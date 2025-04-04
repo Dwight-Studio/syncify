@@ -34,6 +34,8 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// A sync job.
@@ -108,6 +110,13 @@ impl DownloadJob {
 
     pub fn mutation(&self) -> &Mutation {
         &self.mutation
+    }
+    
+    pub fn is_active(&self) -> bool {
+        match self.state {
+            JobState::Pending | JobState::Ongoing => true,
+            _ => false
+        }
     }
 }
 

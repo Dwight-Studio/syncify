@@ -115,6 +115,7 @@ impl Downloader {
                     // Event sent when a new download job is requested from the filesystem watcher
                     // If download tasks are available it will start downloading chunks.
 
+                    // TODO: Verify if the file has already been downloaded
                     store.write().await.add_download_job(download_job.clone()).await;
 
                     Self::spawn_download_tasks(
@@ -341,7 +342,19 @@ impl Downloader {
                         }
 
                         drop(job);
-                        // TODO: Goto next download job
+                        store.write().await.flush_download_jobs().await;
+                        
+                        let jobs = store.read().await.get_download_jobs();
+                        for job in jobs {
+                            Self::spawn_download_tasks(
+                                store.clone(),
+                                downloads_dir.clone(),
+                                job,
+                                downloader.clone(),
+                                &mut download_tasks,
+                                proto.clone()
+                            ).await;
+                        }
                     }
                 }
 
