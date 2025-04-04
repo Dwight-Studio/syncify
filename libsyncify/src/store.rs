@@ -45,7 +45,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::SyncifyError::InvalidPath;
 
 pub mod keyring;
 pub mod link;

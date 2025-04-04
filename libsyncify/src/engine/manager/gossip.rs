@@ -136,7 +136,6 @@ impl GossipManager {
                     }
                 }
                 GossipEvent::Received(message) => {
-                    debug!("Message received from the swarm of {}", self.dir.uuid);
                     if let Ok(msg) =
                         rkyv::from_bytes::<Message, rkyv::rancor::Error>(message.content.to_vec().as_slice())
                     {
@@ -203,9 +202,10 @@ impl GossipManager {
             Payload::Update { node_id, new_head } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
                     debug!("Received update notification from {node_id} for {}", self.dir.uuid);
-
+                    
                     // Synchronize if the head is different
                     if self.dir.state.read().await.hash() != new_head {
+                        debug!("Current state is out of date");
                         let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
                         self.handle
                             .send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing))))
