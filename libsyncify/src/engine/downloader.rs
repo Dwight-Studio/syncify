@@ -56,12 +56,15 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new(store: Arc<RwLock<StoreManager>>, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+    pub fn new(store: Arc<RwLock<StoreManager>>, mut proto: SyncifyProtocol) -> Self {
         info!("Initializing downloader");
 
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = DownloaderHandle { tx };
+
+        // Add handle to protocol
+        proto.set_downloader(handle.clone());
 
         // Spawn new thread
         let join_handle = Some(tokio::spawn(Self::handle_event(rx, store, handle.clone(), proto)));
@@ -80,7 +83,7 @@ impl Downloader {
         mut rx: mpsc::Receiver<DownloaderEvent>,
         store: Arc<RwLock<StoreManager>>,
         downloader: DownloaderHandle,
-        proto: Arc<RwLock<SyncifyProtocol>>,
+        proto: SyncifyProtocol,
     ) {
         // Creating the provision directory
         let provisions_dir = get_app_cache_dir().join("provisions");
@@ -426,7 +429,7 @@ impl Downloader {
         download_job: Arc<RwLock<DownloadJob>>,
         download_handle: DownloaderHandle,
         download_tasks: &mut [DownloadTask],
-        proto: Arc<RwLock<SyncifyProtocol>>,
+        proto: SyncifyProtocol,
     ) {
         let mut job = download_job.write().await;
 
@@ -488,12 +491,11 @@ impl Downloader {
         chunk_index: u64,
         dir: SharedDirectory,
         download_handle: DownloaderHandle,
-        proto: Arc<RwLock<SyncifyProtocol>>,
+        mut proto: SyncifyProtocol,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let file_hash = *download_job.read().await.hash();
             debug!("ACQUIRING PROTO");
-            let mut proto = proto.write().await;
             if let Ok(mut connection) = proto.open_stream(&dir, node_id).await {
                 drop(proto);
                 debug!("RELEASING PROTO");

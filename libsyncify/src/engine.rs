@@ -56,7 +56,7 @@ pub struct Engine {
     ep: Endpoint,
     downloader: Downloader,
     managers: HashMap<Uuid, Manager>,
-    proto: Arc<RwLock<SyncifyProtocol>>,
+    proto: SyncifyProtocol,
 }
 
 /// Synchronization engine.
@@ -82,13 +82,12 @@ impl Engine {
             .await
             .map_err(EngineError::Gossip)?;
 
-        let protocol = Arc::new(RwLock::new(SyncifyProtocol::new(
-            builder.endpoint().clone(),
-            store.clone(),
-        )));
-        let downloader = Downloader::new(store.clone(), protocol.clone());
-        protocol.write().await.set_downloader(downloader.clone());
-        let protocol_handler = SyncifyProtocolHandler::new(protocol.clone(), store.clone(), downloader.clone());
+        let mut proto = SyncifyProtocol::new(builder.endpoint().clone(), store.clone());
+
+        let downloader = Downloader::new(store.clone(), proto.clone());
+        proto.set_downloader(downloader.clone());
+
+        let protocol_handler = SyncifyProtocolHandler::new(proto.clone(), store.clone(), downloader.clone());
 
         let mut engine = Self {
             _store: store.clone(),
@@ -102,7 +101,7 @@ impl Engine {
             gossip,
             downloader,
             managers: HashMap::new(),
-            proto: protocol,
+            proto,
         };
 
         for dir in &store.read().await.get_all_dirs() {

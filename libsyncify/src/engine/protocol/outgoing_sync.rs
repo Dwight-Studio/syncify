@@ -28,8 +28,6 @@ use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
 use blake3::Hash;
 use iroh::NodeId;
 use log::{debug, error, info, warn};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 // TODO: Add provision database sync
 
 #[derive(PartialEq, Debug)]
@@ -45,12 +43,12 @@ pub struct OutgoingSync {
     state: OutgoingState,
     dir: SharedDirectory,
     node_id: NodeId,
-    proto: Arc<RwLock<SyncifyProtocol>>,
+    proto: SyncifyProtocol,
     connection: Option<SyncifyStream>,
 }
 
 impl OutgoingSync {
-    pub fn new(dir: SharedDirectory, node_id: NodeId, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+    pub fn new(dir: SharedDirectory, node_id: NodeId, proto: SyncifyProtocol) -> Self {
         Self {
             state: OutgoingState::Connecting,
             dir,
@@ -68,15 +66,10 @@ impl FiniteStateMachine for OutgoingSync {
         match &self.state {
             OutgoingState::Connecting => {
                 info!("Outgoing: Requesting sync to {}", self.node_id);
-                debug!("ACQUIRING PROTO");
-                let mut proto = self.proto.write().await;
-                if let Ok(conn) = proto.open_stream(&self.dir, self.node_id).await {
+                if let Ok(conn) = self.proto.open_stream(&self.dir, self.node_id).await {
                     self.connection = Some(conn);
-                    drop(proto);
-                    debug!("RELEASING PROTO");
                     Ok(OutgoingState::SendingRequest)
                 } else {
-                    drop(proto);
                     debug!("RELEASING PROTO");
                     Err(ProtocolError::ConnectionFailed)
                 }

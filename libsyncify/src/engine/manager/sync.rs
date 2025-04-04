@@ -29,9 +29,7 @@ use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use iroh::Endpoint;
 use log::{info, warn};
 use std::ops::Deref;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio::time::sleep;
 
 pub const FSM_TIMEOUT: Duration = Duration::from_secs(30);
@@ -39,11 +37,11 @@ pub const FSM_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct SyncManager {
     dir: SharedDirectory,
     ep: Endpoint,
-    proto: Arc<RwLock<SyncifyProtocol>>,
+    proto: SyncifyProtocol,
 }
 
 impl SyncManager {
-    pub async fn new(dir: SharedDirectory, ep: Endpoint, proto: Arc<RwLock<SyncifyProtocol>>) -> Self {
+    pub async fn new(dir: SharedDirectory, ep: Endpoint, proto: SyncifyProtocol) -> Self {
         Self { dir, ep, proto }
     }
 

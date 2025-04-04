@@ -96,9 +96,7 @@ impl StoreManager {
                     std::fs::create_dir_all(get_app_config_dir()).map_err(StoreError::IO)?;
                 }
             }
-            Err(e) => {
-                return Err(StoreError::IO(e))
-            }
+            Err(e) => return Err(StoreError::IO(e)),
         }
 
         // Initialize everything

@@ -64,7 +64,7 @@ impl Manager {
         topic: GossipTopic,
         ep: Endpoint,
         downloader: DownloaderHandle,
-        proto: Arc<RwLock<SyncifyProtocol>>,
+        proto: SyncifyProtocol,
     ) -> Self {
         info!("Initializing directory manager for {}", dir.uuid());
 
@@ -130,7 +130,7 @@ impl Manager {
         ep: Endpoint,
         downloader: DownloaderHandle,
         handle: ManagerHandle,
-        proto: Arc<RwLock<SyncifyProtocol>>,
+        proto: SyncifyProtocol,
     ) {
         let mut fs_manager = FileSystemManager::new(dir.clone(), handle.clone(), downloader.clone()).await;
         let mut gossip_manager = GossipManager::new(

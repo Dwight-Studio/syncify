@@ -36,9 +36,7 @@ use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{debug, error, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::ops::Add;
-use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
@@ -79,7 +77,7 @@ pub struct GossipManager {
     topic: GossipSender,
     dir: SharedDirectory,
     ep: Endpoint,
-    proto: Arc<RwLock<SyncifyProtocol>>,
+    proto: SyncifyProtocol,
     handle: ManagerHandle,
     downloader: DownloaderHandle,
 }
@@ -89,7 +87,7 @@ impl GossipManager {
         dir: SharedDirectory,
         topic: GossipSender,
         ep: Endpoint,
-        proto: Arc<RwLock<SyncifyProtocol>>,
+        proto: SyncifyProtocol,
         handle: ManagerHandle,
         downloader: DownloaderHandle,
     ) -> Self {
@@ -202,7 +200,7 @@ impl GossipManager {
             Payload::Update { node_id, new_head } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
                     debug!("Received update notification from {node_id} for {}", self.dir.uuid);
-                    
+
                     // Synchronize if the head is different
                     if self.dir.state.read().await.hash() != new_head {
                         debug!("Current state is out of date");

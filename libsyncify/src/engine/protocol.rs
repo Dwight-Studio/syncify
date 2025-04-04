@@ -87,10 +87,10 @@ pub enum BlobsPacket {
     Blob { chunk: Vec<u8> } = 4,
 }
 
-// TODO: Use a mutex instead
+#[derive(Clone)]
 /// The [`SyncifyProtocol`] struct, used to store the active connections.
 pub struct SyncifyProtocol {
-    pub(crate) connections: Vec<Connection>,
+    pub(crate) connections: Arc<RwLock<Vec<Connection>>>,
     pub(crate) ep: Endpoint,
     pub(crate) downloader: Option<DownloaderHandle>,
     pub(crate) store: Arc<RwLock<StoreManager>>,
@@ -99,7 +99,7 @@ pub struct SyncifyProtocol {
 impl SyncifyProtocol {
     pub fn new(ep: Endpoint, store: Arc<RwLock<StoreManager>>) -> Self {
         Self {
-            connections: Vec::new(),
+            connections: Arc::new(RwLock::new(Vec::new())),
             ep,
             downloader: None,
             store,
@@ -117,7 +117,8 @@ impl SyncifyProtocol {
         node_id: NodeId,
     ) -> Result<SyncifyStream, SyncifyProtocolError> {
         let mut existing_conn: Option<&Connection> = None;
-        for connection in &self.connections {
+        let connections = self.connections.read().await;
+        for connection in &*connections {
             if connection.remote_node_id().unwrap() == node_id {
                 existing_conn = Some(connection);
                 break;
@@ -138,7 +139,7 @@ impl SyncifyProtocol {
                     .connect(NodeAddr::new(node_id), SYNCIFY_ALPN)
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
-                self.connections.push(conn.clone());
+                self.connections.write().await.push(conn.clone());
                 let (tx, rx) = conn
                     .open_bi()
                     .await
@@ -150,6 +151,8 @@ impl SyncifyProtocol {
                         self.store.clone(),
                         downloader.clone(),
                     ));
+                } else {
+                    error!("Downloader is not available")
                 }
                 Ok(SyncifyStream::new(dir.clone(), tx, rx))
             }
@@ -316,19 +319,15 @@ impl SyncifyStream {
 #[derive(Clone)]
 /// The [`SyncifyProtocolHandler`] struct, used to handle connections using this protocol.
 pub struct SyncifyProtocolHandler {
-    protocol: Arc<RwLock<SyncifyProtocol>>,
+    proto: SyncifyProtocol,
     store: Arc<RwLock<StoreManager>>,
     downloader: DownloaderHandle,
 }
 
 impl SyncifyProtocolHandler {
-    pub fn new(
-        protocol: Arc<RwLock<SyncifyProtocol>>,
-        store: Arc<RwLock<StoreManager>>,
-        downloader: DownloaderHandle,
-    ) -> Self {
+    pub fn new(proto: SyncifyProtocol, store: Arc<RwLock<StoreManager>>, downloader: DownloaderHandle) -> Self {
         Self {
-            protocol,
+            proto,
             store,
             downloader,
         }
@@ -344,24 +343,21 @@ impl Debug for SyncifyProtocolHandler {
 impl ProtocolHandler for SyncifyProtocolHandler {
     /// Manages incoming SyncifyProtocol connections
     fn accept(&self, connection: Connection) -> Boxed<anyhow::Result<()>> {
-        let protocol = self.protocol.clone();
+        let proto = self.proto.clone();
         let store = self.store.clone();
         let downloader = self.downloader.clone();
-        Box::pin(async move {
-            let protocol = protocol.write().await;
-            accept_connection(connection, protocol.connections.clone(), store, downloader).await
-        })
+        Box::pin(async move { accept_connection(connection, proto.connections.clone(), store, downloader).await })
     }
 }
 
 //noinspection RsTraitObligations
 async fn accept_connection(
     connection: Connection,
-    mut connections: Vec<Connection>,
+    connections: Arc<RwLock<Vec<Connection>>>,
     store: Arc<RwLock<StoreManager>>,
     downloader: DownloaderHandle,
 ) -> anyhow::Result<()> {
-    connections.push(connection.clone());
+    connections.write().await.push(connection.clone());
 
     while let Ok((tx, mut rx)) = connection.accept_bi().await {
         let mut header_buffer = [0u8; HEADER_SIZE];
@@ -429,7 +425,7 @@ async fn accept_connection(
 
     debug!("Dropping connection with {}", connection.remote_node_id()?);
 
-    connections.retain(|c| c.close_reason().is_none());
+    connections.write().await.retain(|c| c.close_reason().is_none());
 
     Ok(())
 }
