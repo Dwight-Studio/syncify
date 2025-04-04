@@ -20,7 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
+use crate::engine::job::{DownloadJob, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::store::lock::StoreLock;

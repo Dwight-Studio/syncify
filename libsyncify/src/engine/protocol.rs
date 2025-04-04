@@ -129,11 +129,7 @@ impl SyncifyProtocol {
                     .open_bi()
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
-                Ok(SyncifyStream {
-                    dir: dir.clone(),
-                    send_stream: tx,
-                    recv_stream: rx,
-                })
+                Ok(SyncifyStream::new(dir.clone(), tx, rx))
             }
             None => {
                 let conn = self
@@ -154,11 +150,7 @@ impl SyncifyProtocol {
                         downloader.clone(),
                     ));
                 }
-                Ok(SyncifyStream {
-                    dir: dir.clone(),
-                    send_stream: tx,
-                    recv_stream: rx,
-                })
+                Ok(SyncifyStream::new(dir.clone(), tx, rx,))
             }
         }
     }
@@ -169,20 +161,40 @@ pub struct SyncifyStream {
     dir: SharedDirectory,
     send_stream: SendStream,
     recv_stream: RecvStream,
+    cipher: XChaCha20Poly1305
 }
 
 impl SyncifyStream {
-    /// Send a packet.
+    pub fn new(dir: SharedDirectory, send_stream: SendStream, recv_stream: RecvStream) -> Self {
+        let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
+        Self {
+            dir,
+            send_stream,
+            recv_stream,
+            cipher
+        }
+    }
+    
+    /// Generate non null nonce.
+    fn generate_nonce() -> XNonce {
+        loop {
+            let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+            if <[u8; 24]>::from(nonce) != [0u8; 24] {
+                return nonce;
+            }
+        }
+    }
+
+    /// Send an encrypted packet.
     pub async fn send(&mut self, packet: &SyncifyPacket) -> Result<(), SyncifyProtocolError> {
-        let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.read_key.to_bytes()));
-        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let nonce = Self::generate_nonce();
 
         let packet_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(packet).unwrap();
-        let cipher_bytes = cipher.encrypt(&nonce, &*packet_bytes).unwrap();
+        let cipher_bytes = self.cipher.encrypt(&nonce, &*packet_bytes).unwrap();
 
         let header = HeaderPacket {
             packet_size: cipher_bytes.len() as u64,
-            nonce: <[u8; 24]>::try_from(nonce.as_slice()).unwrap(),
+            nonce: <[u8; 24]>::from(nonce),
             uuid: self.dir.uuid,
         };
         let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
@@ -193,10 +205,31 @@ impl SyncifyStream {
         Ok(())
     }
 
+    /// Send a plain packet.
+    pub async fn send_plain(&mut self, packet: &SyncifyPacket) -> Result<(), SyncifyProtocolError> {
+        let packet_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(packet).unwrap();
+
+        let header = HeaderPacket {
+            packet_size: packet_bytes.len() as u64,
+            nonce: [0u8; 24],
+            uuid: self.dir.uuid,
+        };
+        let header_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&header).unwrap();
+
+        self.send_stream.write_all(header_bytes.as_slice()).await.unwrap();
+        self.send_stream.write_all(packet_bytes.as_slice()).await.unwrap();
+
+        Ok(())
+    }
+
     /// Send a packet.
     pub async fn recv(&mut self) -> Result<SyncifyPacket, SyncifyProtocolError> {
         let header = self.recv_header().await?;
-        let packet = self.recv_packet(&header).await?;
+        let packet = if header.nonce == [0u8; 24] {
+            self.recv_plain_packet(&header).await?
+        } else {
+            self.recv_packet(&header).await?
+        };
 
         Ok(packet)
     }
@@ -229,12 +262,23 @@ impl SyncifyStream {
             .await
             .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
 
-        let cipher = XChaCha20Poly1305::new(&Key::from(self.dir.read_key.to_bytes()));
-        let decrypted_bytes = cipher
+        let decrypted_bytes = self.cipher
             .decrypt(&XNonce::from(header_packet.nonce), packet_buffer.as_ref())
             .map_err(SyncifyProtocolError::DecryptionError)?;
 
         rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes).map_err(SyncifyProtocolError::DeserializeError)
+    }
+
+    //noinspection RsTraitObligations
+    /// Receive a [`SyncifyPacket`].
+    async fn recv_plain_packet(&mut self, header_packet: &HeaderPacket) -> Result<SyncifyPacket, SyncifyProtocolError> {
+        let mut packet_buffer = vec![0u8; header_packet.packet_size as usize];
+        self.recv_stream
+            .read_exact(&mut packet_buffer)
+            .await
+            .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
+
+        rkyv::from_bytes::<SyncifyPacket, RancorError>(&packet_buffer).map_err(SyncifyProtocolError::DeserializeError)
     }
 
     /// Close the stream.
@@ -335,6 +379,7 @@ async fn accept_connection(
             dir: dir.clone(),
             send_stream: tx,
             recv_stream: rx,
+            cipher: XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()))
         };
 
         match packet {

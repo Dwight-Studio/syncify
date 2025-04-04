@@ -33,7 +33,7 @@ use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::ops::Add;
 use std::sync::Arc;

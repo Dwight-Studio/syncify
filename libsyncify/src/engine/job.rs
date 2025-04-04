@@ -34,8 +34,6 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// A sync job.
