@@ -245,7 +245,7 @@ impl Downloader {
                                         if let Err(e) = dir.local_provisions.write().insert(provision.clone()).await {
                                             error!("Unable to insert provision: {e}");
                                         } else {
-                                            debug!("Finished cutting the file");
+                                            debug!("Finished encoding the file");
                                             dir.handle()
                                                 .await
                                                 .send(ManagerEvent::ConfirmLocalProvision(provision.clone()))
@@ -342,7 +342,7 @@ impl Downloader {
                     // Handling the job update
                     job.chunk_done += 1;
                     job.progress = job.chunk_done as f32 / *job.size() as f32;
-                    info!("Downloading... {:.1}%", job.progress * 100.0);
+                    debug!("Downloading... {:.1}%", job.progress * 100.0);
 
                     // Launch new download tasks
                     if job.chunk_done < *job.size() {
@@ -434,12 +434,15 @@ impl Downloader {
 
         if matches!(*job.state(), JobState::Pending) {
             match File::create(download_dir.join(job.hash().to_string())) {
-                Ok(file) => job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file)),
+                Ok(file) => job.file = {
+                    info!("Starting download of '{}'", job.hash());
+                    job.set_state(JobState::Ongoing);
+                    Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
+                },
                 Err(e) => {
                     error!("Cannot create cache file ({e})");
                 }
             }
-            job.set_state(JobState::Ongoing)
         } else if matches!(*job.state(), JobState::Ongoing) {
             match File::options()
                 .create(true)
@@ -447,7 +450,10 @@ impl Downloader {
                 .truncate(false)
                 .open(download_dir.join(job.hash().to_string()))
             {
-                Ok(file) => job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file)),
+                Ok(file) => job.file = {
+                    info!("Resuming download of '{}'", job.hash());
+                    Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
+                },
                 Err(e) => {
                     error!("Cannot create cache file ({e})");
                 }

@@ -33,7 +33,7 @@ use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use iroh::{Endpoint, NodeId};
 use iroh_gossip::net::{GossipEvent, GossipSender};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::ops::Add;
 use thiserror::Error;
@@ -180,7 +180,7 @@ impl GossipManager {
                         ))
                         .await;
                 } else {
-                    warn!("File '{}' not found in the local tree of {}", hash, self.dir.uuid)
+                    debug!("File '{}' not found in the local tree of {}", hash, self.dir.uuid)
                 }
             }
             Payload::Provision { hash, node_id, expire } => {
@@ -203,7 +203,7 @@ impl GossipManager {
 
                     // Synchronize if the head is different
                     if self.dir.state.read().await.hash() != new_head {
-                        debug!("Current state is out of date");
+                        info!("Current state is out of date");
                         let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
                         self.handle
                             .send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing))))
@@ -215,7 +215,7 @@ impl GossipManager {
     }
 
     pub async fn request_provision(&self, hash: Hash) {
-        debug!("Requesting provision of '{hash}' for {}", self.dir.uuid);
+        info!("Requesting provision of '{hash}' for {}", self.dir.uuid);
         if let Ok(msg) = self.create_message(Payload::ProvisionRequest { hash }) {
             if self.topic.broadcast(msg).await.is_err() {
                 warn!("Cannot broadcast ProvisionRequest message!");
@@ -226,7 +226,7 @@ impl GossipManager {
     }
 
     pub async fn confirm_local_provision(&self, provision: LocalProvision) {
-        debug!("Sending Provision notification for '{}'", provision.hash());
+        info!("Providing '{}'", provision.hash());
         if let Ok(resp_msg) = self.create_message(Payload::Provision {
             hash: provision.hash(),
             node_id: *self.ep.node_id().as_bytes(),
