@@ -115,12 +115,12 @@ impl Store for State {
 }
 
 impl StoreGuard<State> {
-    /// Save the [`State`] after creation.
-    pub async fn save_new(&self) -> Result<(), StateError> {
+    /// Completely flush the [`State`]. This should be avoided (use one of the mutation methods instead).
+    pub async fn flush(&self) -> Result<(), StateError> {
         let state = self.inner.write().await;
 
         self.save_head(&state).await?;
-        self.save_deltas(&vec![state.head().clone()]).await?;
+        self.save_deltas(&state.iter().collect()).await?;
 
         Ok(())
     }
@@ -236,8 +236,8 @@ impl Store for HashTree {
 }
 
 impl StoreGuard<HashTree> {
-    /// Save the [`HashTree`] after creation.
-    pub async fn save_new(&self) -> Result<(), StateError> {
+    /// Completely flush the [`HashTree`]. This should be avoided (use one of the mutation methods instead).
+    pub async fn flush(&self) -> Result<(), StateError> {
         let tree = self.inner.write().await;
 
         let transaction = self
@@ -270,7 +270,7 @@ impl StoreGuard<HashTree> {
 
         drop(tree);
 
-        self.save_new().await
+        self.flush().await
     }
 }
 
@@ -287,8 +287,8 @@ impl Store for NeighborsMap {
 }
 
 impl StoreGuard<NeighborsMap> {
-    /// Save the [`NeighborsMap`] after creation.
-    pub async fn save_new(&self) -> Result<(), StoreError> {
+    /// Completely flush the [`NeighborsMap`]. This should be avoided (use one of the mutation methods instead).
+    pub async fn flush(&self) -> Result<(), StoreError> {
         let map = self.inner.read().await;
 
         let transaction = self.store.write().await.get_write_transaction()?;
@@ -311,7 +311,7 @@ impl StoreGuard<NeighborsMap> {
         map.insert(*node_id, up);
 
         drop(map);
-        self.save_new().await
+        self.flush().await
     }
 
     /// Remove a neighbor.
@@ -320,7 +320,7 @@ impl StoreGuard<NeighborsMap> {
         map.remove(node_id.as_bytes());
 
         drop(map);
-        self.save_new().await
+        self.flush().await
     }
 }
 

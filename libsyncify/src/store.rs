@@ -24,7 +24,7 @@ use crate::engine::job::{DownloadJob, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::store::lock::StoreLock;
-use crate::{LocalProvisionsMap, RemoteProvisionsMap, SharedDirectory, get_app_config_dir};
+use crate::{LocalProvisionsMap, RemoteProvisionsMap, SharedDirectory, get_app_config_dir, DownloadJobsMap, ActiveDownloadJobs};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
@@ -81,8 +81,8 @@ pub struct StoreManager {
     db: Database,
     cache: HashMap<Uuid, SharedDirectory>,
     // TODO: Add Store lock for the jobs/active_jobs
-    jobs: HashMap<Hash, Arc<RwLock<DownloadJob>>>,
-    active_jobs: Vec<Arc<RwLock<DownloadJob>>>,
+    jobs: DownloadJobsMap,
+    active_jobs: ActiveDownloadJobs,
     secret_key: SecretKey,
     keyring: Keyring,
 }
@@ -307,7 +307,7 @@ impl StoreManager {
     fn load_jobs(
         db: &Database,
         since: DateTime<Utc>,
-    ) -> Result<(HashMap<Hash, Arc<RwLock<DownloadJob>>>, Vec<Arc<RwLock<DownloadJob>>>), StoreError> {
+    ) -> Result<(DownloadJobsMap, ActiveDownloadJobs), StoreError> {
         let mut jobs = HashMap::new();
         let mut active_jobs = Vec::new();
 
@@ -336,7 +336,7 @@ impl StoreManager {
 
     /// Save the [`DownloadJob`]s.
     async fn flush_jobs(
-        jobs: &mut HashMap<Hash, Arc<RwLock<DownloadJob>>>,
+        jobs: &mut DownloadJobsMap,
         jobs_table: &mut Table<'_, [u8; 32], DownloadJob>,
     ) {
         for (hash, job_ref) in jobs.iter() {
@@ -376,12 +376,12 @@ impl StoreManager {
         None
     }
 
-    pub fn get_download_jobs(&self) -> Vec<Arc<RwLock<DownloadJob>>> {
+    pub fn get_download_jobs(&self) -> ActiveDownloadJobs {
         self.active_jobs.clone()
     }
 
     pub async fn flush_download_jobs(&mut self) {
-        let mut new_active_jobs: Vec<Arc<RwLock<DownloadJob>>> = Vec::new();
+        let mut new_active_jobs: ActiveDownloadJobs = Vec::new();
 
         for job in self.active_jobs.clone() {
             if job.read().await.is_active() {

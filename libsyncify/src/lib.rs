@@ -24,7 +24,7 @@
 use crate::SyncifyError::{
     AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, PathEncoding, ReadOnly,
 };
-use crate::engine::job::{LocalProvision, RemoteProvision};
+use crate::engine::job::{DownloadJob, LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerHandle;
 use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
@@ -301,15 +301,15 @@ impl Syncify {
             .await
             .map_err(SyncifyError::Store)?;
 
-        if let Err(e) = dir.state.write().save_new().await {
+        if let Err(e) = dir.state.write().flush().await {
             warn!("Unable to save new state: {}", e);
         };
 
-        if let Err(e) = dir.local_tree.write().save_new().await {
+        if let Err(e) = dir.local_tree.write().flush().await {
             warn!("Unable to save new tree: {}", e);
         };
 
-        if let Err(e) = dir.neighbors.write().save_new().await {
+        if let Err(e) = dir.neighbors.write().flush().await {
             warn!("Unable to save new neighbors: {}", e);
         };
 
@@ -327,9 +327,11 @@ impl Syncify {
     }
 }
 
-type NeighborsMap = HashMap<NodeId, bool>;
-type LocalProvisionsMap = HashMap<Hash, LocalProvision>;
-type RemoteProvisionsMap = HashMap<Hash, HashMap<NodeId, RemoteProvision>>;
+pub type NeighborsMap = HashMap<NodeId, bool>;
+pub type LocalProvisionsMap = HashMap<Hash, LocalProvision>;
+pub type RemoteProvisionsMap = HashMap<Hash, HashMap<NodeId, RemoteProvision>>;
+pub type DownloadJobsMap = HashMap<Hash, Arc<RwLock<DownloadJob>>>;
+pub type ActiveDownloadJobs = Vec<Arc<RwLock<DownloadJob>>>;
 
 #[derive(Clone)]
 pub struct SharedDirectory {

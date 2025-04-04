@@ -558,7 +558,10 @@ impl Downloader {
         }
     }
 
-    fn _garbage_collect() {}
+    fn _garbage_collect() {
+        // TODO: Delete expired provisions
+        // TODO: Delete provision for deleted files
+    }
 }
 
 impl Deref for Downloader {
