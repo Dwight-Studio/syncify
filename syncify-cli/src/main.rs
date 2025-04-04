@@ -25,7 +25,7 @@ use crate::parser::Commands;
 
 mod parser;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     Commands::run().await;
 }

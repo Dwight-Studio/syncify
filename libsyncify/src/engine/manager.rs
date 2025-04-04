@@ -118,8 +118,8 @@ impl Manager {
             join_handle.abort();
             let _ = join_handle.await;
         }
-        self.tx.send(ManagerEvent::Shutdown).await.unwrap();
-        self.join_handle.take().unwrap().await.unwrap();
+        let _ = self.tx.send(ManagerEvent::Shutdown).await;
+        let _ = self.join_handle.take().unwrap().await;
     }
 
     /// Main method of the [`Manager`].

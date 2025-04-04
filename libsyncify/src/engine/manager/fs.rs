@@ -125,26 +125,18 @@ impl FileSystemManager {
             None => return,
         };
 
+        let prev_head = self.dir.state.read().await.hash();
         for mutation in &mutations {
-            let prev_head = self.dir.state.read().await.hash();
             match self.dir.state.write().mutate(mutation.clone(), write_key).await {
-                Ok(_) => {
-                    if let Some(state) = self.dir.state.read().await.clone_after(prev_head, MAX_LOADED_DELTAS) {
-                        self.handle.send(ManagerEvent::BroadcastChange(state)).await;
-                    } else {
-                        error!("State is now invalid (unable to find previous head)");
+                Ok(_) => match self.dir.local_tree.write().apply(mutation).await {
+                    Ok(_) => {
+                        debug!("Applied in {}: {mutation}", self.dir.uuid());
                     }
-
-                    match self.dir.local_tree.write().apply(mutation).await {
-                        Ok(_) => {
-                            debug!("Applied in {}: {mutation}", self.dir.uuid());
-                        }
-                        Err(e) => {
-                            error!(
-                                "Cannot apply mutation to current tree in {}: {mutation} ({e})",
-                                self.dir.uuid()
-                            );
-                        }
+                    Err(e) => {
+                        error!(
+                            "Cannot apply mutation to current tree in {}: {mutation} ({e})",
+                            self.dir.uuid()
+                        );
                     }
                 }
                 Err(e) => {
@@ -154,6 +146,12 @@ impl FileSystemManager {
                     );
                 }
             }
+        }
+        
+        if let Some(state) = self.dir.state.read().await.clone_after(prev_head, MAX_LOADED_DELTAS) {
+            self.handle.send(ManagerEvent::BroadcastChange(state)).await;
+        } else {
+            error!("State is now invalid (unable to find previous head)");
         }
 
         //debug!("New state: \n{}", inner.state);

@@ -1021,7 +1021,7 @@ impl HashTree {
                                 current_files.retain(|e| e != relative_path_str);
 
                                 // Check if the file is in the hash tree
-                                if let Some(File { timestamp, .. }) = self.get(relative_path_str) {
+                                if let Some(File { hash, timestamp, .. }) = self.get(relative_path_str) {
                                     // If so, check the timestamp
                                     if let Ok(modified) = metadata.modified() {
                                         let new_timestamp: DateTime<Utc> = DateTime::from(modified);
@@ -1032,11 +1032,23 @@ impl HashTree {
                                             continue;
                                         }
                                     }
-                                }
 
-                                // If we can't verify the file, re-hash it
-                                if let Err(e) = hasher.update_mmap(file.path()) {
-                                    warn!("Unable to hash: '{}' ({})", file.path().display(), e);
+                                    // If the timestamp is recent, hash it
+                                    if let Err(e) = hasher.update_mmap(file.path()) {
+                                        warn!("Unable to hash: '{}' ({})", file.path().display(), e);
+                                        continue;
+                                    }
+                                    
+                                    // Ignore the file if it already exists
+                                    if *hash == hasher.finalize() {
+                                        continue;
+                                    }
+                                } else {
+                                    // If we can't verify the file, just hash it
+                                    if let Err(e) = hasher.update_mmap(file.path()) {
+                                        warn!("Unable to hash: '{}' ({})", file.path().display(), e);
+                                        continue;
+                                    }
                                 }
 
                                 // Push the mutation

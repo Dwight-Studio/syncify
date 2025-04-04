@@ -92,7 +92,7 @@ impl Downloader {
         }
 
         // Creating the downloads directory
-        let downloads_dir = get_app_cache_dir().join("provisions");
+        let downloads_dir = get_app_cache_dir().join("downloads");
 
         if !downloads_dir.exists() {
             if let Err(err) = tokio::fs::create_dir_all(&downloads_dir).await {
@@ -218,6 +218,7 @@ impl Downloader {
                 } => {
                     let dir = provisions_dir.clone();
                     tokio::spawn(async move {
+                        info!("WTF");
                         if let Ok(file) = File::open(dir.join(file_hash.to_string())) {
                             let mut extractor = bao::encode::SliceExtractor::new(
                                 file,
