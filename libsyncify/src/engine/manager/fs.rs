@@ -175,7 +175,7 @@ impl FileSystemManager {
                     if let Some(parent) = from.parent() {
                         match tokio::fs::rename(&from, &to).await {
                             Ok(_) => {
-                                if parent.read_dir().iter().nth(1).is_none() {
+                                if parent != self.dir.path() && parent.read_dir().iter().nth(1).is_none() {
                                     if let Err(e) = tokio::fs::remove_dir(parent).await {
                                         error!("Cannot remove directory '{}' ({e})", parent.display());
                                     }
@@ -196,7 +196,7 @@ impl FileSystemManager {
                     if let Some(parent) = path.parent() {
                         match fs::remove_file(&path).await {
                             Ok(_) => {
-                                if parent.read_dir().iter().nth(1).is_none() {
+                                if parent != self.dir.path() && parent.read_dir().iter().nth(1).is_none() {
                                     if let Err(e) = tokio::fs::remove_dir(parent).await {
                                         error!("Cannot remove directory '{}' ({e})", parent.display());
                                     }

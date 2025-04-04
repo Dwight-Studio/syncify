@@ -108,7 +108,7 @@ impl Downloader {
             download_tasks.push(DownloadTask { handle: None });
         }
 
-        // Resume unfinished downloads
+        /*// Resume unfinished downloads
         let jobs = store.read().await.get_download_jobs();
         for job in jobs {
             Self::spawn_download_tasks(
@@ -120,7 +120,7 @@ impl Downloader {
                 proto.clone(),
             )
             .await;
-        }
+        }*/
 
         // Process events
         while let Some(event) = rx.recv().await {
