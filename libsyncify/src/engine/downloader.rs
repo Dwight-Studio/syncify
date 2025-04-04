@@ -71,8 +71,8 @@ impl Downloader {
 
     /// Gracefully shutdown.
     pub async fn shutdown(&mut self) {
-        self.tx.send(DownloaderEvent::Shutdown).await.unwrap();
-        self.join_handle.take().unwrap().await.unwrap();
+        let _ = self.tx.send(DownloaderEvent::Shutdown).await;
+        let _ = self.join_handle.take().unwrap().await;
     }
 
     /// Main method of the [`Downloader`].
@@ -201,7 +201,7 @@ impl Downloader {
                                 Ok(encode_file) => bao::encode::Encoder::new(encode_file),
                                 Err(err) => {
                                     error!("Cannot create cache file: {err}");
-                                    return;
+                                    continue
                                 }
                             }
                         };
@@ -210,7 +210,7 @@ impl Downloader {
                             let mut reader = BufReader::new(file);
                             if let Err(e) = std::io::copy(&mut reader, &mut encoder) {
                                 error!("Cannot write cache file: {e}");
-                                return;
+                                continue
                             }
 
                             match encoder.finalize() {
@@ -302,16 +302,16 @@ impl Downloader {
                         buf
                     } else {
                         error!("Cache file cannot be found!");
-                        return;
+                        continue
                     };
 
                     if let Err(err) = file.seek(SeekFrom::Start(chunk_index * CHUNK_SIZE as u64)) {
                         error!("Cannot seek into the cache file: {err}");
-                        return;
+                        continue
                     }
                     if let Err(err) = file.write_all(&decoded_data) {
                         error!("Cannot write to the cache file: {err}");
-                        return;
+                        continue
                     }
 
                     // Handling the job update
@@ -343,7 +343,7 @@ impl Downloader {
                             buf
                         } else {
                             error!("Cache file cannot be found!");
-                            return;
+                            continue;
                         };
 
                         if let Err(e) = file.flush() {
