@@ -494,6 +494,7 @@ impl Downloader {
             let file_hash = *download_job.read().await.hash();
             let mut proto = proto.write().await;
             if let Ok(mut connection) = proto.open_stream(&dir, node_id).await {
+                drop(proto);
                 let packet = SyncifyPacket::Blobs(BlobsPacket::BlobRequest {
                     file_hash: *file_hash.as_bytes(),
                     chunk_index,
@@ -537,7 +538,6 @@ impl Downloader {
                     }
                 }
             }
-            drop(proto);
         })
     }
 
