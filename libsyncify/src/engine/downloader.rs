@@ -234,7 +234,7 @@ impl Downloader {
 
                             let packet = SyncifyPacket::Blobs(BlobsPacket::Blob { chunk });
 
-                            if let Err(err) = conn.send(&packet).await {
+                            if let Err(err) = conn.send_plain(&packet).await {
                                 error!("Unable to send blob: {err}");
                             }
                         }
