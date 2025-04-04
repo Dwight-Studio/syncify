@@ -169,7 +169,7 @@ impl GossipManager {
         match payload {
             Payload::ProvisionRequest { hash } => {
                 let local_tree = self.dir.local_tree.read().await.map();
-                info!("Received provision request for file '{hash}' for {}", self.dir.uuid);
+                debug!("Received provision request for file '{hash}' for {}", self.dir.uuid);
 
                 if let Some(file_path) = local_tree.get(&hash) {
                     self.downloader
@@ -188,7 +188,7 @@ impl GossipManager {
             }
             Payload::Provision { hash, node_id, expire } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                    info!("Received provision update for file '{hash}' for {}", self.dir.uuid);
+                    debug!("Received provision update for file '{hash}' for {}", self.dir.uuid);
 
                     self.downloader
                         .send(DownloaderEvent::RemoteProvisionUpdate(
@@ -202,7 +202,7 @@ impl GossipManager {
             }
             Payload::Update { node_id, new_head } => {
                 if let Ok(node_id) = NodeId::from_bytes(&node_id) {
-                    info!("Received update notification from {node_id} for {}", self.dir.uuid);
+                    debug!("Received update notification from {node_id} for {}", self.dir.uuid);
 
                     // Synchronize if the head is different
                     if self.dir.state.read().await.hash() != new_head {
