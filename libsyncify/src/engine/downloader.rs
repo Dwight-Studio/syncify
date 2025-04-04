@@ -37,7 +37,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-//use crate::engine::state::Mutation;
+use crate::engine::state::Mutation;
 
 /// Size of the event buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
@@ -129,7 +129,8 @@ impl Downloader {
                     // Event sent when a new download job is requested from the filesystem watcher
                     // If download tasks are available it will start downloading chunks.
                     
-                    /*let job = download_job.read().await;
+                    // Verifying that the file from the job is not already downloaded
+                    let job = download_job.read().await;
                     let dir_opt = store.read().await.get_shared_dir(job.dir_uuid());
                     
                     if let Some(dir) = dir_opt {
@@ -140,9 +141,16 @@ impl Downloader {
                             }
                         });
                         
-                        
-                    }*/
+                        if let Some(hash_tree) = dir.local_tree.read().await.get(final_path.to_str().unwrap()) {
+                            if hash_tree.hash() == *job.hash() {
+                                debug!("File '{}' from {} has already been downloaded", *job.hash(), dir.uuid);
+                                continue;
+                            }
+                        }
+                    }
+                    drop(job);
                     
+                    // Adding the job and starting downloading it
                     store.write().await.add_download_job(download_job.clone()).await;
 
                     Self::spawn_download_tasks(

@@ -254,7 +254,7 @@ impl FileSystemManager {
                 tokio::fs::create_dir_all(&downloads_dir).await.unwrap();
             }
 
-            if let Err(e) = tokio::fs::copy(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {
+            if let Err(e) = tokio::fs::rename(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {
                 error!(
                 "Cannot copy cache file to '{}' for {} ({e})",
                 final_path.display(),
