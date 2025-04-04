@@ -250,8 +250,16 @@ impl FileSystemManager {
         let file = downloads_dir.join(job.hash().to_string());
 
         if let Some(parent) = file.parent() {
-            if !parent.exists() {
-                tokio::fs::create_dir_all(&parent).await.unwrap();
+            info!("{}", parent.display());
+            match parent.try_exists() {
+                Ok(exists) => {
+                    if !exists {
+                        tokio::fs::create_dir_all(&parent).await.unwrap();
+                    }
+                }
+                Err(e) => {
+                    error!("Cannot check if parent exists {e}")
+                }
             }
 
             if let Err(e) = tokio::fs::rename(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {

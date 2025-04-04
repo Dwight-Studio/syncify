@@ -244,47 +244,52 @@ impl Syncify {
         abs_path.push("");
 
         // Check if the dir exists
-        if abs_path.exists() {
-            // Check if abs_path is a directory
-            if !abs_path.is_dir() {
-                return Err(NotADirectory);
-            }
-            // Check if the directory is empty
-            if abs_path.read_dir().iter().nth(1).is_some() {
-                return Err(DirectoryNotEmpty);
-            }
-            // Check if the user has write access in the directory
-            let md = abs_path.metadata().map_err(InvalidPath)?;
-            if md.permissions().readonly() {
-                return Err(ReadOnly);
-            }
-        } else {
-            // Create the dir and its parent
-            tokio::fs::create_dir_all(&get_app_config_dir())
-                .await
-                .map_err(|e| match e.kind() {
-                    ErrorKind::PermissionDenied => ReadOnly,
-                    _ => InvalidPath(e),
-                })?
-        }
+        match abs_path.try_exists() {
+            Ok(exists) => {
+                if !exists {
+                    // Check if abs_path is a directory
+                    if !abs_path.is_dir() {
+                        return Err(NotADirectory);
+                    }
+                    // Check if the directory is empty
+                    if abs_path.read_dir().iter().nth(1).is_some() {
+                        return Err(DirectoryNotEmpty);
+                    }
+                    // Check if the user has write access in the directory
+                    let md = abs_path.metadata().map_err(InvalidPath)?;
+                    if md.permissions().readonly() {
+                        return Err(ReadOnly);
+                    }
+                } else {
+                    // Create the dir and its parent
+                    tokio::fs::create_dir_all(&get_app_config_dir())
+                        .await
+                        .map_err(|e| match e.kind() {
+                            ErrorKind::PermissionDenied => ReadOnly,
+                            _ => InvalidPath(e),
+                        })?
+                }
 
-        if abs_path.to_str().is_none() {
-            return Err(PathEncoding(abs_path));
-        }
+                if abs_path.to_str().is_none() {
+                    return Err(PathEncoding(abs_path));
+                }
 
-        // Verify if it already exists
-        if self
-            .store
-            .read()
-            .await
-            .get_all_dirs()
-            .iter()
-            .any(|d| d.path == abs_path)
-        {
-            return Err(AlreadyShared);
-        }
+                // Verify if it already exists
+                if self
+                    .store
+                    .read()
+                    .await
+                    .get_all_dirs()
+                    .iter()
+                    .any(|d| d.path == abs_path)
+                {
+                    return Err(AlreadyShared);
+                }
 
-        return Ok(abs_path);
+                Ok(abs_path)
+            }
+            Err(e) => Err(InvalidPath(e)),
+        }
     }
 
     /// Add the [`SharedDirectory`] to the store and create the database entries.

@@ -85,20 +85,34 @@ impl Downloader {
         // Creating the provision directory
         let provisions_dir = get_app_cache_dir().join("provisions");
 
-        if !provisions_dir.exists() {
-            if let Err(err) = tokio::fs::create_dir_all(&provisions_dir).await {
-                error!("Cannot create provisions directory: {err}");
-                return;
+        match provisions_dir.try_exists() {
+            Ok(exists) => {
+                if !exists {
+                    if let Err(err) = tokio::fs::create_dir_all(&provisions_dir).await {
+                        error!("Cannot create provisions directory ({err})");
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Cannot check if provisions directory exists ({e})")
             }
         }
 
         // Creating the downloads directory
         let downloads_dir = get_app_cache_dir().join("downloads");
 
-        if !downloads_dir.exists() {
-            if let Err(err) = tokio::fs::create_dir_all(&downloads_dir).await {
-                error!("Cannot create downloads directory: {err}");
-                return;
+        match downloads_dir.try_exists() {
+            Ok(exists) => {
+                if !exists {
+                    if let Err(err) = tokio::fs::create_dir_all(&downloads_dir).await {
+                        error!("Cannot create downloads directory: {err}");
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Cannot check if downloads directory exists ({e})")
             }
         }
 

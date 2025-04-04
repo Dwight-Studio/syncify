@@ -45,6 +45,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use crate::SyncifyError::InvalidPath;
 
 pub mod keyring;
 pub mod link;
@@ -90,8 +91,15 @@ pub struct StoreManager {
 impl StoreManager {
     pub async fn new() -> Result<Arc<RwLock<Self>>, StoreError> {
         // Create app dir (and parents)
-        if !get_app_config_dir().exists() {
-            std::fs::create_dir_all(get_app_config_dir()).map_err(StoreError::IO)?;
+        match get_app_config_dir().try_exists() {
+            Ok(exists) => {
+                if !exists {
+                    std::fs::create_dir_all(get_app_config_dir()).map_err(StoreError::IO)?;
+                }
+            }
+            Err(e) => {
+                return Err(StoreError::IO(e))
+            }
         }
 
         // Initialize everything

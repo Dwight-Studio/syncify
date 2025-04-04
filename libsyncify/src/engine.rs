@@ -21,17 +21,17 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::SharedDirectory;
 use crate::engine::EngineError::AlreadyWatched;
 use crate::engine::downloader::Downloader;
 use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol, SyncifyProtocolHandler};
 use crate::store::StoreManager;
-use crate::{SharedDirectory, get_app_config_dir};
 use iroh::Endpoint;
 use iroh::protocol::Router;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use log::{info, warn};
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -46,8 +46,6 @@ pub mod manager;
 pub mod protocol;
 pub mod state;
 
-/// Download cache directory name.
-pub const DOWNLOAD_DIRNAME: &str = "download";
 /// Auto flush period.
 pub const AUTO_FLUSH_PERIOD: Duration = Duration::from_secs(30 * 60);
 
@@ -77,15 +75,6 @@ impl Engine {
 
         // Router
         let builder = Router::builder(endpoint);
-
-        // Blobs protocol
-        let download_dir = get_app_config_dir().join(DOWNLOAD_DIRNAME);
-
-        if !download_dir.exists() {
-            tokio::fs::create_dir_all(&download_dir)
-                .await
-                .map_err(EngineError::IO)?
-        }
 
         // Gossip protocol
         let gossip = Gossip::builder()
@@ -141,11 +130,17 @@ impl Engine {
         dir: &SharedDirectory,
     ) -> Result<(), EngineError> {
         if !self.managers.contains_key(&dir.uuid()) {
-            if !&dir.path.exists() {
-                warn!("Directory for {} don't exist", dir.uuid);
+            match dir.path.try_exists() {
+                Ok(exists) => {
+                    if !exists {
+                        warn!("Directory for {} don't exist", dir.uuid);
 
-                // Create the dir and its parent
-                tokio::fs::create_dir_all(&dir.path).await.map_err(EngineError::IO)?
+                        // Create the dir and its parent
+                        tokio::fs::create_dir_all(&dir.path).await.map_err(EngineError::IO)?
+                    }
+                }
+
+                Err(e) => return Err(EngineError::IO(e)),
             }
 
             let topic = self
