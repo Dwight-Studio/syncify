@@ -40,11 +40,11 @@ use iroh::endpoint::{
 use iroh::protocol::ProtocolHandler;
 use iroh::{Endpoint, NodeId};
 use iroh_base::NodeAddr;
+use log::{debug, error};
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use log::{debug, error};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;

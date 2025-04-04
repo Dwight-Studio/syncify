@@ -20,6 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use crate::engine::state::Mutation;
 use blake3::Hash;
 use chrono::{DateTime, Utc};
 use iroh_base::NodeId;
@@ -34,7 +35,6 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
 use uuid::Uuid;
-use crate::engine::state::Mutation;
 
 /// A sync job.
 #[derive(Archive, Serialize, Deserialize, Debug)]
@@ -49,7 +49,7 @@ pub struct DownloadJob {
     pub(crate) chunk_done: u64,
     pub(crate) failed_chunks: Vec<u64>,
     #[rkyv(with = Skip)]
-    pub(crate) file: Option<BufWriter<File>>
+    pub(crate) file: Option<BufWriter<File>>,
 }
 
 impl DownloadJob {
@@ -63,7 +63,7 @@ impl DownloadJob {
             last_chunk: 0,
             chunk_done: 0,
             failed_chunks: Vec::new(),
-            file: None
+            file: None,
         }
     }
 
@@ -105,7 +105,7 @@ impl DownloadJob {
     pub fn set_state(&mut self, state: JobState) {
         self.state = state;
     }
-    
+
     pub fn mutation(&self) -> &Mutation {
         &self.mutation
     }

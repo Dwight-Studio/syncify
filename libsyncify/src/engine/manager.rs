@@ -22,6 +22,7 @@
  */
 use crate::SharedDirectory;
 use crate::engine::downloader::DownloaderHandle;
+use crate::engine::job::{DownloadJob, LocalProvision};
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
@@ -40,7 +41,6 @@ use std::time::Duration;
 use sync::SyncManager;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
-use crate::engine::job::{DownloadJob, LocalProvision};
 
 pub mod fs;
 pub mod gossip;
@@ -133,7 +133,14 @@ impl Manager {
         proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
         let mut fs_manager = FileSystemManager::new(dir.clone(), handle.clone(), downloader.clone()).await;
-        let mut gossip_manager = GossipManager::new(dir.clone(), topic.clone(), ep.clone(), handle.clone(), downloader.clone()).await;
+        let mut gossip_manager = GossipManager::new(
+            dir.clone(),
+            topic.clone(),
+            ep.clone(),
+            handle.clone(),
+            downloader.clone(),
+        )
+        .await;
         let mut sync_manager = SyncManager::new(dir.clone(), ep.clone(), proto.clone()).await;
 
         // Process the event
@@ -145,9 +152,7 @@ impl Manager {
                 ManagerEvent::DownloadFinished(job) => fs_manager.download_finished(job).await,
 
                 // Gossip
-                ManagerEvent::Gossip(gossip_event) => {
-                    gossip_manager.handle_events(gossip_event).await
-                }
+                ManagerEvent::Gossip(gossip_event) => gossip_manager.handle_events(gossip_event).await,
                 ManagerEvent::RequestProvision(hash) => gossip_manager.request_provision(hash).await,
                 ManagerEvent::ConfirmLocalProvision(provision) => {
                     gossip_manager.confirm_local_provision(provision).await

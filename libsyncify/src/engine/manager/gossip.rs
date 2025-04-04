@@ -24,7 +24,7 @@ use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
-use crate::engine::state::{Delta, State};
+use crate::engine::state::State;
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
@@ -204,14 +204,15 @@ impl GossipManager {
                         .state
                         .write()
                         .verify_accept_all(state, &self.dir.read_key)
-                        .await {
+                        .await
+                    {
                         Ok(m) => m,
                         Err(e) => {
                             error!("Cannot process changes for {e}");
-                            return
+                            return;
                         }
                     };
-                    
+
                     self.handle.send(ManagerEvent::ApplyRemoteMutations(mutations)).await;
                 }
             }
@@ -269,12 +270,12 @@ impl GossipManager {
             Err(GossipError::Encrypt)
         }
     }
-    
+
     pub async fn broadcast_changes(&self, state: State) {
         debug!("Broadcasting changes for {}", self.dir.uuid());
-        
+
         let node_id = *self.ep.node_id().as_bytes();
-        
+
         if let Ok(msg) = self.create_message(Payload::Changes { node_id, state }) {
             if self.topic.broadcast(msg).await.is_err() {
                 warn!("Cannot broadcast Changes message!");

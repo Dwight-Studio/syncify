@@ -27,7 +27,6 @@ use crate::engine::state::{HashTree, MAX_LOADED_DELTAS, Mutation};
 use crate::{SharedDirectory, get_app_cache_dir};
 use chrono::Utc;
 use log::{debug, error};
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
@@ -228,13 +227,13 @@ impl FileSystemManager {
         self.update_local_tree(job.mutation().clone()).await;
 
         debug!("Download finished, copying cache file into directory...");
-        let provision_dir = get_app_cache_dir().join("provisions");
+        let downloads_dir = get_app_cache_dir().join("downloads");
 
-        if let Err(e) = tokio::fs::copy(provision_dir.join(job.hash().to_string()), final_path.clone()).await {
+        if let Err(e) = tokio::fs::copy(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {
             error!(
                 "Cannot copy cache file to '{}' for {} ({e})",
+                final_path.display(),
                 self.dir.uuid,
-                final_path.display()
             );
         }
     }

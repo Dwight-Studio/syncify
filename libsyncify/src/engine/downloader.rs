@@ -32,6 +32,7 @@ use log::{debug, error, info, warn};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
@@ -40,7 +41,7 @@ use uuid::Uuid;
 /// Size of the event buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 /// Size of the chunk of file that are sent per packet.
-pub const CHUNK_SIZE: usize = 1024 * 1024;
+pub const CHUNK_SIZE: usize = 64 * 1024;
 /// Number of concurrent download threads
 pub const MAX_DOWNLOAD_TASKS: usize = 10;
 
@@ -62,12 +63,7 @@ impl Downloader {
         let handle = DownloaderHandle { tx };
 
         // Spawn new thread
-        let join_handle = Some(tokio::spawn(Self::handle_event(
-            rx,
-            store,
-            handle.clone(),
-            proto,
-        )));
+        let join_handle = Some(tokio::spawn(Self::handle_event(rx, store, handle.clone(), proto)));
 
         Downloader { join_handle, handle }
     }
@@ -86,11 +82,21 @@ impl Downloader {
         proto: Arc<RwLock<SyncifyProtocol>>,
     ) {
         // Creating the provision directory
-        let provision_dir = get_app_cache_dir().join("provisions");
+        let provisions_dir = get_app_cache_dir().join("provisions");
 
-        if !provision_dir.exists() {
-            if let Err(err) = tokio::fs::create_dir_all(&provision_dir).await {
-                error!("Cannot create cache directory: {err}");
+        if !provisions_dir.exists() {
+            if let Err(err) = tokio::fs::create_dir_all(&provisions_dir).await {
+                error!("Cannot create provisions directory: {err}");
+                return;
+            }
+        }
+
+        // Creating the downloads directory
+        let downloads_dir = get_app_cache_dir().join("provisions");
+
+        if !downloads_dir.exists() {
+            if let Err(err) = tokio::fs::create_dir_all(&downloads_dir).await {
+                error!("Cannot create downloads directory: {err}");
                 return;
             }
         }
@@ -100,7 +106,7 @@ impl Downloader {
         for _ in 0..MAX_DOWNLOAD_TASKS {
             download_tasks.push(DownloadTask { handle: None });
         }
-        
+
         // Process events
         while let Some(event) = rx.recv().await {
             match event {
@@ -113,6 +119,7 @@ impl Downloader {
 
                     Self::spawn_download_tasks(
                         store.clone(),
+                        downloads_dir.clone(),
                         download_job.clone(),
                         downloader.clone(),
                         &mut download_tasks,
@@ -139,6 +146,7 @@ impl Downloader {
                     if let Some(job) = job_opt {
                         Self::spawn_download_tasks(
                             store.clone(),
+                            downloads_dir.clone(),
                             job,
                             downloader.clone(),
                             &mut download_tasks,
@@ -155,13 +163,12 @@ impl Downloader {
 
                     let dir_opt = store.read().await.get_shared_dir(&dir_uuid);
                     if let Some(dir) = dir_opt {
-
                         let mut encoder = {
                             match File::options()
                                 .read(true)
                                 .write(true)
                                 .create(true)
-                                .open(provision_dir.join(provision.hash().to_string()))
+                                .open(provisions_dir.join(provision.hash().to_string()))
                             {
                                 Ok(encode_file) => bao::encode::Encoder::new(encode_file),
                                 Err(err) => {
@@ -209,23 +216,27 @@ impl Downloader {
                     file_hash,
                     chunk_index,
                 } => {
-                    let provision_dir = get_app_cache_dir().join("provisions");
+                    let dir = provisions_dir.clone();
+                    tokio::spawn(async move {
+                        if let Ok(file) = File::open(dir.join(file_hash.to_string())) {
+                            let mut extractor = bao::encode::SliceExtractor::new(
+                                file,
+                                CHUNK_SIZE as u64 * chunk_index,
+                                CHUNK_SIZE as u64,
+                            );
+                            let mut chunk = Vec::new();
+                            if let Err(err) = extractor.read_to_end(&mut chunk) {
+                                error!("Unable to get file slice: {}", err.to_string());
+                                return;
+                            }
 
-                    if let Ok(file) = File::open(provision_dir.join(file_hash.to_string())) {
-                        let mut extractor =
-                            bao::encode::SliceExtractor::new(file, CHUNK_SIZE as u64 * chunk_index, CHUNK_SIZE as u64);
-                        let mut chunk = Vec::new();
-                        if let Err(err) = extractor.read_to_end(&mut chunk) {
-                            error!("Unable to get file slice: {}", err.to_string());
-                            return;
+                            let packet = SyncifyPacket::Blobs(BlobsPacket::Blob { chunk });
+
+                            if let Err(err) = conn.send(&packet).await {
+                                error!("Unable to send blob: {err}");
+                            }
                         }
-
-                        let packet = SyncifyPacket::Blobs(BlobsPacket::Blob { chunk });
-
-                        if let Err(err) = conn.send(&packet).await {
-                            error!("Unable to send blob: {err}");
-                        }
-                    }
+                    });
                 }
 
                 DownloaderEvent::TaskFailed(download_job, chunk_index) => {
@@ -238,6 +249,7 @@ impl Downloader {
                         drop(job);
                         Self::spawn_download_tasks(
                             store.clone(),
+                            downloads_dir.clone(),
                             download_job.clone(),
                             downloader.clone(),
                             &mut download_tasks,
@@ -259,7 +271,7 @@ impl Downloader {
                     Self::flush_download_tasks(&mut download_tasks);
                     let download_job_tmp = download_job.clone();
                     let mut job = download_job.write().await;
-                    
+
                     let file: &mut BufWriter<File> = if let Some(buf) = &mut job.file {
                         buf
                     } else {
@@ -275,7 +287,7 @@ impl Downloader {
                         error!("Cannot write to the cache file: {err}");
                         return;
                     }
-                    
+
                     // Handling the job update
                     job.chunk_done += 1;
                     job.progress = job.chunk_done as f32 / *job.size() as f32;
@@ -286,6 +298,7 @@ impl Downloader {
                         drop(job);
                         Self::spawn_download_tasks(
                             store.clone(),
+                            downloads_dir.clone(),
                             download_job.clone(),
                             downloader.clone(),
                             &mut download_tasks,
@@ -306,18 +319,24 @@ impl Downloader {
                             error!("Cache file cannot be found!");
                             return;
                         };
-                        
+
                         if let Err(e) = file.flush() {
                             error!("Unable to flush cache file: {e}");
                         }
-                        
+
                         job.file = None;
 
                         let dir_opt = store.read().await.get_shared_dir(&job.dir_uuid());
                         if let Some(dir) = dir_opt {
-                            dir.handle().await.send(ManagerEvent::DownloadFinished(download_job_tmp)).await;
+                            dir.handle()
+                                .await
+                                .send(ManagerEvent::DownloadFinished(download_job_tmp))
+                                .await;
                         } else {
-                            warn!("Received local provision update for unknown directory: {}", job.dir_uuid());
+                            warn!(
+                                "Received local provision update for unknown directory: {}",
+                                job.dir_uuid()
+                            );
                         }
 
                         drop(job);
@@ -341,6 +360,7 @@ impl Downloader {
     /// Returns `true` if at least one task has been launched, otherwise returns `false`
     async fn spawn_download_tasks(
         store: Arc<RwLock<StoreManager>>,
+        download_dir: PathBuf,
         download_job: Arc<RwLock<DownloadJob>>,
         download_handle: DownloaderHandle,
         download_tasks: &mut [DownloadTask],
@@ -349,15 +369,7 @@ impl Downloader {
         let mut job = download_job.write().await;
 
         if matches!(*job.state(), JobState::Pending) {
-            let mut cache_file = get_app_cache_dir().join("downloads");
-            if !cache_file.exists() {
-                if let Err(err) = std::fs::create_dir_all(cache_file.clone()) {
-                    error!("Cannot create download cache directory: {err}");
-                    return;
-                }
-            }
-            cache_file = cache_file.join(job.hash().to_string());
-            if let Ok(file) = File::create(cache_file) {
+            if let Ok(file) = File::create(download_dir.join(job.hash().to_string())) {
                 job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
             } else {
                 error!("Cannot create cache file");
