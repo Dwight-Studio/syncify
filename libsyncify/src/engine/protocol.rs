@@ -358,7 +358,8 @@ async fn accept_connection(
     downloader: DownloaderHandle,
 ) -> anyhow::Result<()> {
     connections.write().await.push(connection.clone());
-
+    debug!("Opening connection with {}", connection.remote_node_id()?);
+    
     while let Ok((tx, mut rx)) = connection.accept_bi().await {
         let mut header_buffer = [0u8; HEADER_SIZE];
         rx.read_exact(&mut header_buffer).await?;
