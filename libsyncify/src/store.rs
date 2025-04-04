@@ -373,16 +373,16 @@ impl StoreManager {
     pub fn get_download_jobs(&self) -> Vec<Arc<RwLock<DownloadJob>>> {
         self.active_jobs.clone()
     }
-    
+
     pub async fn flush_download_jobs(&mut self) {
         let mut new_active_jobs: Vec<Arc<RwLock<DownloadJob>>> = Vec::new();
-        
+
         for job in self.active_jobs.clone() {
             if job.read().await.is_active() {
                 new_active_jobs.push(job);
             }
         }
-        
+
         self.active_jobs = new_active_jobs;
     }
 

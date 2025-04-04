@@ -26,7 +26,7 @@ use crate::engine::manager::{ManagerEvent, ManagerHandle};
 use crate::engine::state::{HashTree, Mutation};
 use crate::{SharedDirectory, get_app_cache_dir};
 use chrono::Utc;
-use log::{debug, error};
+use log::{debug, error, info};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
@@ -181,7 +181,7 @@ impl FileSystemManager {
                                     }
                                 }
                                 self.update_local_tree(mutation).await
-                            },
+                            }
                             Err(e) => {
                                 error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
                             }
@@ -202,7 +202,7 @@ impl FileSystemManager {
                                     }
                                 }
                                 self.update_local_tree(mutation).await
-                            },
+                            }
                             Err(e) => {
                                 error!("Cannot remove file '{}' ({e})", path.display());
                             }
@@ -244,11 +244,11 @@ impl FileSystemManager {
 
         self.update_local_tree(job.mutation().clone()).await;
 
-        debug!("Download finished, copying cache file into directory...");
+        info!("Download finished for {}: '{}'", self.dir.uuid, job.path());
         let downloads_dir = get_app_cache_dir().join("downloads");
 
         let file = downloads_dir.join(job.hash().to_string());
-        
+
         if let Some(parent) = file.parent() {
             if !parent.exists() {
                 tokio::fs::create_dir_all(&downloads_dir).await.unwrap();
@@ -256,12 +256,12 @@ impl FileSystemManager {
 
             if let Err(e) = tokio::fs::rename(downloads_dir.join(job.hash().to_string()), final_path.clone()).await {
                 error!(
-                "Cannot copy cache file to '{}' for {} ({e})",
-                final_path.display(),
-                self.dir.uuid,
-            );
+                    "Cannot copy cache file to '{}' for {} ({e})",
+                    final_path.display(),
+                    self.dir.uuid,
+                );
             }
-        } else { 
+        } else {
             error!("Cannot get file directory")
         }
     }

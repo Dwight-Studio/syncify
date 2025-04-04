@@ -109,11 +109,11 @@ impl DownloadJob {
     pub fn mutation(&self) -> &Mutation {
         &self.mutation
     }
-    
+
     pub fn is_active(&self) -> bool {
         match self.state {
             JobState::Pending | JobState::Ongoing => true,
-            _ => false
+            _ => false,
         }
     }
 }

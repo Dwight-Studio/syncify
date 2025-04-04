@@ -117,8 +117,9 @@ impl Downloader {
                 job,
                 downloader.clone(),
                 &mut download_tasks,
-                proto.clone()
-            ).await;
+                proto.clone(),
+            )
+            .await;
         }
 
         // Process events
@@ -149,7 +150,7 @@ impl Downloader {
                         }
                     }
                     drop(job);
-                    
+
                     // Adding the job and starting downloading it
                     store.write().await.add_download_job(download_job.clone()).await;
 
@@ -208,8 +209,8 @@ impl Downloader {
                             {
                                 Ok(encode_file) => bao::encode::Encoder::new(encode_file),
                                 Err(err) => {
-                                    error!("Cannot create cache file: {err}");
-                                    continue
+                                    error!("Cannot create cache file ({err})");
+                                    continue;
                                 }
                             }
                         };
@@ -218,7 +219,7 @@ impl Downloader {
                             let mut reader = BufReader::new(file);
                             if let Err(e) = std::io::copy(&mut reader, &mut encoder) {
                                 error!("Cannot write cache file: {e}");
-                                continue
+                                continue;
                             }
 
                             match encoder.finalize() {
@@ -310,16 +311,16 @@ impl Downloader {
                         buf
                     } else {
                         error!("Cache file cannot be found!");
-                        continue
+                        continue;
                     };
 
                     if let Err(err) = file.seek(SeekFrom::Start(chunk_index * CHUNK_SIZE as u64)) {
                         error!("Cannot seek into the cache file: {err}");
-                        continue
+                        continue;
                     }
                     if let Err(err) = file.write_all(&decoded_data) {
                         error!("Cannot write to the cache file: {err}");
-                        continue
+                        continue;
                     }
 
                     // Handling the job update
@@ -375,7 +376,7 @@ impl Downloader {
 
                         drop(job);
                         store.write().await.flush_download_jobs().await;
-                        
+
                         let jobs = store.read().await.get_download_jobs();
                         for job in jobs {
                             Self::spawn_download_tasks(
@@ -384,8 +385,9 @@ impl Downloader {
                                 job,
                                 downloader.clone(),
                                 &mut download_tasks,
-                                proto.clone()
-                            ).await;
+                                proto.clone(),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -415,12 +417,27 @@ impl Downloader {
         let mut job = download_job.write().await;
 
         if matches!(*job.state(), JobState::Pending) {
-            if let Ok(file) = File::create(download_dir.join(job.hash().to_string())) {
-                job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
-            } else {
-                error!("Cannot create cache file");
+            match File::create(download_dir.join(job.hash().to_string())) {
+                Ok(file) => {
+                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
+                }
+                Err(e) => {
+                    error!("Cannot create cache file ({e})");
+                }
             }
             job.set_state(JobState::Ongoing)
+        } else if matches!(*job.state(), JobState::Ongoing) {
+            match File::options()
+                .write(true)
+                .truncate(false)
+                .open(download_dir.join(job.hash().to_string())) {
+                Ok(file) => {
+                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file))
+                }
+                Err(e) => {
+                    error!("Cannot create cache file ({e})");
+                }
+            }
         }
 
         let dir_opt = store.read().await.get_shared_dir(job.dir_uuid());
