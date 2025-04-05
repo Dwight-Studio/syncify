@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
@@ -88,7 +88,7 @@ impl Downloader {
     async fn handle_event(
         mut rx: mpsc::Receiver<DownloaderEvent>,
         store: Arc<RwLock<StoreManager>>,
-        jobs: HashMap<Hash, StoreLock<DownloadJob>>,
+        mut jobs: HashMap<Hash, StoreLock<DownloadJob>>,
         downloader: DownloaderHandle,
         proto: SyncifyProtocol,
     ) {
@@ -132,20 +132,6 @@ impl Downloader {
             download_tasks.push(DownloadTask { handle: None });
         }
 
-        /*// Resume unfinished downloads
-        let jobs = store.read().await.get_download_jobs();
-        for job in jobs {
-            Self::spawn_download_tasks(
-                store.clone(),
-                downloads_dir.clone(),
-                job,
-                downloader.clone(),
-                &mut download_tasks,
-                proto.clone(),
-            )
-            .await;
-        }*/
-
         // Process events
         while let Some(event) = rx.recv().await {
             match event {
@@ -174,6 +160,8 @@ impl Downloader {
                             error!("Cannot flush job ({e})");
                         }
 
+                        jobs.insert(file_hash, job.clone());
+
                         // Start downloading it
                         Self::spawn_download_tasks(
                             &downloads_dir,
@@ -186,6 +174,10 @@ impl Downloader {
                         )
                         .await;
                     }
+                }
+
+                DownloaderEvent::Resume => {
+                    Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto).await;
                 }
 
                 // Provision
@@ -202,17 +194,19 @@ impl Downloader {
                         if let Some(job) = jobs.get(provision.hash()) {
                             Self::spawn_download_tasks(
                                 &downloads_dir,
-                                &job,
-                                &provision.hash(),
+                                job,
+                                provision.hash(),
                                 dir,
                                 &downloader,
                                 &mut download_tasks,
                                 &proto,
                             )
                             .await;
+                        } else {
+                            debug!("The provision doesn't match a pending download job")
                         }
                     } else {
-                        warn!("Received remote provision update for unknown UUID: {}", dir_uuid);
+                        warn!("Received remote provision update for unknown directory {}", dir_uuid);
                     }
                 }
 
@@ -333,16 +327,16 @@ impl Downloader {
                     // TODO: What should we do when the cache file cannot be opened, seeked, written to ? It shouldn't happen...
                     Self::flush_download_tasks(&mut download_tasks);
 
+                    if !job.write().finish_download_chunk(chunk_index, decoded_data).await {
+                        continue;
+                    }
+
                     // Atomically load all variables
                     let (file_hash, is_done, empty_failed_chunks) = {
                         let j = job.read().await;
 
                         (*j.hash(), j.is_done(), j.failed_chunks.is_empty())
                     };
-
-                    if !job.write().finish_download_chunk(chunk_index, decoded_data).await {
-                        continue;
-                    }
 
                     debug!("Downloading... {:.1}%", job.read().await.progress() * 100.0);
 
@@ -373,26 +367,8 @@ impl Downloader {
                             .send(ManagerEvent::DownloadFinished(job.clone()))
                             .await;
 
-                        for (hash, job) in &jobs {
-                            let uuid = job.read().await.dir_uuid;
-                            let dir = match store.read().await.get_shared_dir(&uuid) {
-                                Some(dir) => dir,
-                                None => {
-                                    error!("Unknown directory {uuid}");
-                                    continue;
-                                }
-                            };
-                            Self::spawn_download_tasks(
-                                &downloads_dir,
-                                &job,
-                                hash,
-                                dir,
-                                &downloader,
-                                &mut download_tasks,
-                                &proto,
-                            )
+                        Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
                             .await;
-                        }
                     }
                 }
 
@@ -407,11 +383,39 @@ impl Downloader {
         info!("Finished event processing for the downloader");
     }
 
-    /// Spawns as many download tasks as available in `download_tasks`
+    /// Spawns as many download tasks as available in `download_tasks` for all pending [`DownloadJob`].
+    async fn download_next(
+        store: &Arc<RwLock<StoreManager>>,
+        downloads_dir: &Path,
+        jobs: &HashMap<Hash, StoreLock<DownloadJob>>,
+        download_handle: &DownloaderHandle,
+        download_tasks: &mut [DownloadTask],
+        proto: &SyncifyProtocol,
+    ) {
+        for (hash, job) in jobs {
+            let uuid = job.read().await.dir_uuid;
+            let dir_opt = store.read().await.get_shared_dir(&uuid);
+            let dir = match dir_opt {
+                Some(dir) => dir,
+                None => {
+                    error!("Unknown directory {uuid}");
+                    if let Err(e) = job.write().delete().await {
+                        error!("Cannot delete job for unknown directory {uuid} ({e})")
+                    }
+                    continue;
+                }
+            };
+            Self::spawn_download_tasks(downloads_dir, job, hash, dir, download_handle, download_tasks, proto).await;
+        }
+    }
+
+    /// Spawns as many download tasks as available in `download_tasks`.
     ///
-    /// Returns `true` if at least one task has been launched, otherwise returns `false`
+    /// # Return
+    ///
+    /// Returns `true` if at least one task has been launched, otherwise returns `false`.
     async fn spawn_download_tasks(
-        download_dir: &PathBuf,
+        downloads_dir: &Path,
         job: &StoreLock<DownloadJob>,
         file_hash: &Hash,
         dir: SharedDirectory,
@@ -419,7 +423,7 @@ impl Downloader {
         download_tasks: &mut [DownloadTask],
         proto: &SyncifyProtocol,
     ) {
-        if !job.write().start_download(&download_dir).await {
+        if !job.write().start_download(downloads_dir).await {
             return;
         }
 
@@ -427,13 +431,18 @@ impl Downloader {
         if let Some(node_list) = node_list_opt.get(file_hash) {
             for task in download_tasks.iter_mut() {
                 // Atomically load all variables
-                let (all_chunks_downloading, last_chunk) = {
+                let last_chunk = {
                     let j = job.read().await;
 
-                    (j.all_chunks_downloading(), j.last_chunk)
+                    // Stop the loop if all chunks are downloading
+                    if j.all_chunks_downloading() {
+                        break;
+                    }
+
+                    j.last_chunk
                 };
 
-                if !all_chunks_downloading && task.handle.is_none() {
+                if task.handle.is_none() {
                     let nodes: Vec<(&NodeId, &RemoteProvision)> = node_list.iter().collect();
                     let node = nodes.get(last_chunk as usize % nodes.len()).unwrap();
                     if !node.1.is_expired() {
@@ -452,11 +461,12 @@ impl Downloader {
         } else {
             dir.handle()
                 .await
-                .send(ManagerEvent::RequestProvision(file_hash.clone()))
+                .send(ManagerEvent::RequestProvision(*file_hash))
                 .await;
         }
     }
 
+    /// Spawn a download task.
     fn spawn_download_task(
         node_id: NodeId,
         download_job: StoreLock<DownloadJob>,
@@ -473,7 +483,7 @@ impl Downloader {
                     file_hash: *file_hash.as_bytes(),
                     chunk_index,
                 });
-                if (connection.send(&packet).await).is_err() {
+                if connection.send(&packet).await.is_err() {
                     download_handle
                         .send(DownloaderEvent::TaskFailed(download_job.clone(), chunk_index, dir))
                         .await;
@@ -563,6 +573,7 @@ impl DownloaderHandle {
 pub enum DownloaderEvent {
     // Jobs
     Accept(DownloadJob),
+    Resume,
 
     // Provision
     Supply {

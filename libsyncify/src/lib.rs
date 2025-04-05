@@ -151,6 +151,8 @@ impl Syncify {
     ///
     /// No files are actually deleted, but the directory will no longer be synchronized.
     pub async fn remove_shared_directory(&mut self, dir: SharedDirectory) -> Result<(), SyncifyError> {
+        // TODO: Delete Jobs & Provisions of the directory
+
         if self.store.read().await.get_shared_dir(&dir.uuid).is_some() {
             self.store
                 .write()

@@ -23,7 +23,7 @@
 
 use crate::SharedDirectory;
 use crate::engine::EngineError::AlreadyWatched;
-use crate::engine::downloader::Downloader;
+use crate::engine::downloader::{Downloader, DownloaderEvent};
 use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol, SyncifyProtocolHandler};
 use crate::store::StoreManager;
@@ -107,6 +107,9 @@ impl Engine {
         for dir in &store.read().await.get_all_dirs() {
             engine.add_watched_directory(store.clone(), dir).await?
         }
+
+        // Resume download
+        engine.downloader.send(DownloaderEvent::Resume).await;
 
         Ok(engine)
     }

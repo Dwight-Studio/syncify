@@ -111,10 +111,7 @@ impl DownloadJob {
     }
 
     pub fn is_active(&self) -> bool {
-        match self.state {
-            JobState::Pending | JobState::Ongoing => true,
-            _ => false,
-        }
+        matches!(self.state, JobState::Pending | JobState::Ongoing)
     }
 
     pub fn progress(&self) -> f32 {

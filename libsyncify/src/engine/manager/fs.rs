@@ -171,43 +171,49 @@ impl FileSystemManager {
                     let from = self.dir.path.join(from);
                     let to = self.dir.path.join(to);
 
-                    if let Some(parent) = from.parent() {
-                        match tokio::fs::rename(&from, &to).await {
-                            Ok(_) => {
-                                // Remove parent (will fail if not empty)
+                    match tokio::fs::rename(&from, &to).await {
+                        Ok(_) => {
+                            // Remove parent (will fail if not empty)
+                            let mut parent_opt = from.parent();
+                            while let Some(parent) = parent_opt {
                                 if parent != self.dir.path() {
                                     let _ = tokio::fs::remove_dir(parent).await;
+                                } else {
+                                    break;
                                 }
 
-                                self.update_local_tree(mutation).await
+                                parent_opt = parent.parent();
                             }
-                            Err(e) => {
-                                error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
-                            }
+
+                            self.update_local_tree(mutation).await
                         }
-                    } else {
-                        error!("Cannot get file directory")
+                        Err(e) => {
+                            error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
+                        }
                     }
                 }
                 Mutation::Remove { file_path, .. } => {
                     let path = self.dir.path.join(PathBuf::from(file_path));
 
-                    if let Some(parent) = path.parent() {
-                        match fs::remove_file(&path).await {
-                            Ok(_) => {
-                                // Remove parent (will fail if not empty)
+                    match fs::remove_file(&path).await {
+                        Ok(_) => {
+                            // Remove parent (will fail if not empty)
+                            let mut parent_opt = path.parent();
+                            while let Some(parent) = parent_opt {
                                 if parent != self.dir.path() {
                                     let _ = tokio::fs::remove_dir(parent).await;
+                                } else {
+                                    break;
                                 }
 
-                                self.update_local_tree(mutation).await
+                                parent_opt = parent.parent();
                             }
-                            Err(e) => {
-                                error!("Cannot remove file '{}' ({e})", path.display());
-                            }
+
+                            self.update_local_tree(mutation).await
                         }
-                    } else {
-                        error!("Cannot get file directory")
+                        Err(e) => {
+                            error!("Cannot remove file '{}' ({e})", path.display());
+                        }
                     }
                 }
                 _ => continue,

@@ -43,9 +43,10 @@ use log::{debug, error};
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
+use std::ops::Deref;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 /// The size in bytes of the SyncifyPacket::Header packet variant
@@ -89,7 +90,7 @@ pub enum BlobsPacket {
 #[derive(Clone)]
 /// The [`SyncifyProtocol`] struct, used to store the active connections.
 pub struct SyncifyProtocol {
-    pub(crate) connections: Arc<RwLock<Vec<Connection>>>,
+    pub(crate) connections: Arc<Mutex<Vec<Connection>>>,
     pub(crate) ep: Endpoint,
     pub(crate) downloader: Option<DownloaderHandle>,
     pub(crate) store: Arc<RwLock<StoreManager>>,
@@ -98,7 +99,7 @@ pub struct SyncifyProtocol {
 impl SyncifyProtocol {
     pub fn new(ep: Endpoint, store: Arc<RwLock<StoreManager>>) -> Self {
         Self {
-            connections: Arc::new(RwLock::new(Vec::new())),
+            connections: Arc::new(Mutex::new(Vec::new())),
             ep,
             downloader: None,
             store,
@@ -117,14 +118,14 @@ impl SyncifyProtocol {
     ) -> Result<SyncifyStream, SyncifyProtocolError> {
         let mut existing_conn: Option<Connection> = None;
 
-        let connections = self.connections.read().await;
-        for connection in connections.clone() {
+        let mut connections = self.connections.lock().await;
+
+        for connection in connections.deref() {
             if connection.remote_node_id().unwrap() == node_id {
-                existing_conn = Some(connection);
+                existing_conn = Some(connection.clone());
                 break;
             }
         }
-        drop(connections);
 
         match existing_conn {
             Some(conn) => {
@@ -140,12 +141,12 @@ impl SyncifyProtocol {
                     .connect(NodeAddr::new(node_id), SYNCIFY_ALPN)
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
-                self.connections.write().await.push(conn.clone());
                 let (tx, rx) = conn
                     .open_bi()
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
                 if let Some(downloader) = &self.downloader {
+                    connections.push(conn.clone());
                     tokio::spawn(accept_connection(
                         conn,
                         self.connections.clone(),
@@ -347,19 +348,21 @@ impl ProtocolHandler for SyncifyProtocolHandler {
         let proto = self.proto.clone();
         let store = self.store.clone();
         let downloader = self.downloader.clone();
-        Box::pin(async move { accept_connection(connection, proto.connections.clone(), store, downloader).await })
+        Box::pin(async move {
+            proto.connections.lock().await.push(connection.clone());
+            accept_connection(connection, proto.connections.clone(), store, downloader).await
+        })
     }
 }
 
 //noinspection RsTraitObligations
 async fn accept_connection(
     connection: Connection,
-    connections: Arc<RwLock<Vec<Connection>>>,
+    connections: Arc<Mutex<Vec<Connection>>>,
     store: Arc<RwLock<StoreManager>>,
     downloader: DownloaderHandle,
 ) -> anyhow::Result<()> {
     debug!("Opening connection with {}", connection.remote_node_id()?);
-    connections.write().await.push(connection.clone());
 
     while let Ok((tx, mut rx)) = connection.accept_bi().await {
         let mut header_buffer = [0u8; HEADER_SIZE];
@@ -427,7 +430,7 @@ async fn accept_connection(
 
     debug!("Dropping connection with {}", connection.remote_node_id()?);
 
-    connections.write().await.retain(|c| c.close_reason().is_none());
+    connections.lock().await.retain(|c| c.close_reason().is_none());
 
     Ok(())
 }

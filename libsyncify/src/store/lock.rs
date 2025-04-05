@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
@@ -468,41 +468,46 @@ impl StoreGuard<DownloadJob> {
     /// # Return
     ///
     /// Returns `false` if there is an error.
-    pub async fn start_download(&self, download_dir: &PathBuf) -> bool {
+    pub async fn start_download(&self, download_dir: &Path) -> bool {
         let mut job = self.inner.write().await;
 
-        if matches!(*job.state(), JobState::Pending) {
-            match File::create(download_dir.join(job.hash().to_string())) {
-                Ok(file) => {
-                    info!("Starting download of '{}'", job.hash());
-                    job.state = JobState::Ongoing;
-                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
-                    true
+        // Check if the file is already open
+        if job.file.is_none() {
+            if matches!(*job.state(), JobState::Pending) {
+                match File::create(download_dir.join(job.hash().to_string())) {
+                    Ok(file) => {
+                        info!("Starting download of '{}'", job.hash());
+                        job.state = JobState::Ongoing;
+                        job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
+                        true
+                    }
+                    Err(e) => {
+                        error!("Cannot create cache file ({e})");
+                        false
+                    }
                 }
-                Err(e) => {
-                    error!("Cannot create cache file ({e})");
-                    false
+            } else if matches!(*job.state(), JobState::Ongoing) {
+                match File::options()
+                    .create(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(download_dir.join(job.hash().to_string()))
+                {
+                    Ok(file) => {
+                        info!("Resuming download of '{}'", job.hash());
+                        job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
+                        true
+                    }
+                    Err(e) => {
+                        error!("Cannot create cache file ({e})");
+                        false
+                    }
                 }
-            }
-        } else if matches!(*job.state(), JobState::Ongoing) {
-            match File::options()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(download_dir.join(job.hash().to_string()))
-            {
-                Ok(file) => {
-                    info!("Resuming download of '{}'", job.hash());
-                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
-                    true
-                }
-                Err(e) => {
-                    error!("Cannot create cache file ({e})");
-                    false
-                }
+            } else {
+                false
             }
         } else {
-            false
+            true
         }
     }
 
