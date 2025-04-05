@@ -40,6 +40,8 @@ use thiserror::Error;
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
+/// Maximum size of the provision cache (in chunks).
+pub const PROVISION_CACHE_MAX_SIZE: u64 = 1;
 
 #[derive(Archive, Serialize, Deserialize)]
 pub struct GossipHeader {

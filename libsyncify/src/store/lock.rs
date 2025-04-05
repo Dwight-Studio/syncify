@@ -40,6 +40,7 @@ use std::path::Path;
 use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
+use crate::engine::job::JobState::Cancelled;
 
 /// A reader-writer lock used to synchronise persistent data with the store.
 pub struct StoreLock<T: Store> {
@@ -457,6 +458,18 @@ impl StoreGuard<DownloadJob> {
 
         transaction.commit().map_err(StoreError::Commit)
     }
+    
+    /// Cancel a [`DownloadJob`].
+    pub async fn cancel(&self) {
+        let mut job = self.inner.write().await;
+        
+        job.state = Cancelled;
+        
+        drop(job);
+        if let Err(e) = self.delete().await {
+            error!("Cannot delete job ({e})");
+        }
+    }
 
     /// Add a chunk to the failed chunk list.
     pub async fn add_failed_chunk(&self, index: u64) {
@@ -573,8 +586,8 @@ impl StoreGuard<DownloadJob> {
         job.state = JobState::Done(Utc::now());
 
         drop(job);
-        if let Err(e) = self.flush().await {
-            error!("Cannot flush job ({e})");
+        if let Err(e) = self.delete().await {
+            error!("Cannot delete job ({e})");
         }
 
         true

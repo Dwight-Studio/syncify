@@ -168,7 +168,7 @@ impl Value for DownloadJob {
         rkyv::to_bytes(value)
             .unwrap_or_else(|e: Error| {
                 error!("Failed to serialize download job: {e}");
-                return AlignedVec::new();
+                AlignedVec::new()
             })
             .to_vec()
             .leak()
@@ -184,6 +184,7 @@ pub enum JobState {
     Pending,
     Ongoing,
     Done(#[rkyv(with = crate::util::DateTimeDef)] DateTime<Utc>),
+    Cancelled,
     Error(String),
 }
 

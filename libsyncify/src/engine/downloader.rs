@@ -20,7 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::job::{DownloadJob, LocalProvision, RemoteProvision};
+use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
 use crate::store::StoreManager;
@@ -175,6 +175,13 @@ impl Downloader {
                         .await;
                     }
                 }
+                
+                DownloaderEvent::Cancel(hash) => {
+                    if let Some(job) = jobs.remove(&hash) {
+                        info!("Cancelling download of '{hash}'");
+                        job.write().cancel().await;
+                    }
+                }
 
                 DownloaderEvent::Resume => {
                     Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto).await;
@@ -297,29 +304,34 @@ impl Downloader {
                 DownloaderEvent::TaskFailed(job, chunk_index, dir) => {
                     Self::flush_download_tasks(&mut download_tasks);
 
-                    // Atomically load all variables
-                    let (file_hash, is_done, empty_failed_chunks) = {
-                        let j = job.read().await;
+                    if !matches!(job.read().await.state(), JobState::Cancelled) {
+                        // Atomically load all variables
+                        let (file_hash, is_done, empty_failed_chunks) = {
+                            let j = job.read().await;
 
-                        (*j.hash(), j.is_done(), j.failed_chunks.is_empty())
-                    };
+                            (*j.hash(), j.is_done(), j.failed_chunks.is_empty())
+                        };
 
-                    job.write().add_failed_chunk(chunk_index).await;
+                        job.write().add_failed_chunk(chunk_index).await;
 
-                    if !is_done {
-                        Self::spawn_download_tasks(
-                            &downloads_dir,
-                            &job,
-                            &file_hash,
-                            dir,
-                            &downloader,
-                            &mut download_tasks,
-                            &proto,
-                        )
-                        .await;
-                    } else if !empty_failed_chunks {
-                        error!("Not implemented!");
-                        // TODO: Handle failed chunks
+                        if !is_done {
+                            Self::spawn_download_tasks(
+                                &downloads_dir,
+                                &job,
+                                &file_hash,
+                                dir,
+                                &downloader,
+                                &mut download_tasks,
+                                &proto,
+                            )
+                                .await;
+                        } else if !empty_failed_chunks {
+                            error!("Not implemented!");
+                            // TODO: Handle failed chunks
+                        }
+                    } else {
+                        Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
+                            .await;
                     }
                 }
 
@@ -327,46 +339,54 @@ impl Downloader {
                     // TODO: What should we do when the cache file cannot be opened, seeked, written to ? It shouldn't happen...
                     Self::flush_download_tasks(&mut download_tasks);
 
-                    if !job.write().finish_download_chunk(chunk_index, decoded_data).await {
-                        continue;
-                    }
-
-                    // Atomically load all variables
-                    let (file_hash, is_done, empty_failed_chunks) = {
-                        let j = job.read().await;
-
-                        (*j.hash(), j.is_done(), j.failed_chunks.is_empty())
-                    };
-
-                    debug!("Downloading... {:.1}%", job.read().await.progress() * 100.0);
-
-                    // Launch new download tasks
-                    if !is_done {
-                        Self::spawn_download_tasks(
-                            &downloads_dir,
-                            &job,
-                            &file_hash,
-                            dir,
-                            &downloader,
-                            &mut download_tasks,
-                            &proto,
-                        )
-                        .await;
-                    } else if !empty_failed_chunks {
-                        error!("Not implemented!");
-                        // TODO: Handle failed chunks
-                    } else {
-                        info!("Received file {}", file_hash);
-
-                        if !job.write().finish_download().await {
+                    if !matches!(job.read().await.state(), JobState::Cancelled) {
+                        if !job.write().finish_download_chunk(chunk_index, decoded_data).await {
                             continue;
                         }
 
-                        dir.handle()
-                            .await
-                            .send(ManagerEvent::DownloadFinished(job.clone()))
-                            .await;
+                        // Atomically load all variables
+                        let (file_hash, is_done, empty_failed_chunks) = {
+                            let j = job.read().await;
 
+                            (*j.hash(), j.is_done(), j.failed_chunks.is_empty())
+                        };
+
+                        debug!("Downloading... {:.1}%", job.read().await.progress() * 100.0);
+
+                        // Launch new download tasks
+                        if !is_done {
+                            Self::spawn_download_tasks(
+                                &downloads_dir,
+                                &job,
+                                &file_hash,
+                                dir,
+                                &downloader,
+                                &mut download_tasks,
+                                &proto,
+                            )
+                                .await;
+                        } else if !empty_failed_chunks {
+                            error!("Not implemented!");
+                            // TODO: Handle failed chunks
+                        } else {
+                            info!("Received file {}", file_hash);
+
+                            if !job.write().finish_download().await {
+                                continue;
+                            }
+
+                            dir.handle()
+                                .await
+                                .send(ManagerEvent::DownloadFinished(job.clone()))
+                                .await;
+                            
+                            // Remove job from list
+                            jobs.remove(&file_hash);
+
+                            Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
+                                .await;
+                        }
+                    } else {
                         Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
                             .await;
                     }
@@ -573,6 +593,7 @@ impl DownloaderHandle {
 pub enum DownloaderEvent {
     // Jobs
     Accept(DownloadJob),
+    Cancel(Hash),
     Resume,
 
     // Provision

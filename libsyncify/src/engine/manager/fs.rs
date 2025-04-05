@@ -208,7 +208,7 @@ impl FileSystemManager {
 
                                 parent_opt = parent.parent();
                             }
-
+                            
                             self.update_local_tree(mutation).await
                         }
                         Err(e) => {
@@ -276,7 +276,30 @@ impl FileSystemManager {
         }
     }
 
+    /// Update the local hash tree.
     pub(crate) async fn update_local_tree(&self, mutation: Mutation) {
+        
+        // Cancel the download of every delete/overwritten file
+        let mut files_to_cancel = Vec::new();
+        match &mutation {
+            Mutation::Modify { file_path: path, .. } | Mutation::Remove { file_path: path, .. } => {
+                files_to_cancel.push(path);
+            }
+            Mutation::Move { from, to, .. } => {
+                files_to_cancel.push(from);
+                files_to_cancel.push(to);
+            }
+            _ => ()
+        }
+        
+        let tree = self.dir.local_tree.read().await;
+        for file in files_to_cancel {
+            if let Some(file) = tree.get(file) {
+                self.downloader.send(DownloaderEvent::Cancel(file.hash())).await
+            }
+        }
+        drop(tree);
+        
         match self.dir.local_tree.write().apply(&mutation).await {
             Ok(_) => {
                 debug!("Applied in {}: {mutation}", self.dir.uuid());
