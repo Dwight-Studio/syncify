@@ -28,6 +28,7 @@ use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
 use crate::engine::state::Mutation;
+use crate::store::lock::StoreLock;
 use blake3::Hash;
 use futures::{Sink, StreamExt};
 use iroh::Endpoint;
@@ -35,18 +36,17 @@ use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info};
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use sync::SyncManager;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 pub mod fs;
 pub mod gossip;
 pub mod sync;
 
-/// Size of the event buffer for [`Manager`].
+/// Size of the [`ManagerEvent`] buffer for [`Manager`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 /// Interval between each filesystem polling.
 pub const WATCHER_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -161,7 +161,8 @@ impl Manager {
                 ManagerEvent::BroadcastUpdate => gossip_manager.notify_changes().await,
 
                 // Protocol
-                ManagerEvent::Sync(sync_event) => sync_manager.handle_events(sync_event).await,
+                ManagerEvent::RequestSync(conn, hash) => sync_manager.request_sync(conn, hash).await,
+                ManagerEvent::TriggerSync(outgoing_opt) => sync_manager.trigger_sync(outgoing_opt).await,
 
                 // Actor
                 ManagerEvent::Shutdown => {
@@ -235,7 +236,7 @@ pub enum ManagerEvent {
     // FileSystem
     Poll,
     ApplyRemoteMutations(Vec<Mutation>),
-    DownloadFinished(Arc<RwLock<DownloadJob>>),
+    DownloadFinished(StoreLock<DownloadJob>),
 
     // Gossip
     Gossip(iroh_gossip::net::Event),
@@ -244,13 +245,9 @@ pub enum ManagerEvent {
     BroadcastUpdate,
 
     // Protocol
-    Sync(SyncEvent),
+    RequestSync(SyncifyStream, Hash),
+    TriggerSync(Option<OutgoingSync>),
 
     // Actor
     Shutdown,
-}
-
-pub enum SyncEvent {
-    RequestSync(SyncifyStream, Hash),
-    TriggerSync(Option<OutgoingSync>),
 }

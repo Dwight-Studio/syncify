@@ -24,13 +24,12 @@ use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::manager::{ManagerEvent, ManagerHandle};
 use crate::engine::state::{HashTree, Mutation};
+use crate::store::lock::StoreLock;
 use crate::{SharedDirectory, get_app_cache_dir};
 use chrono::Utc;
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::RwLock;
 
 pub struct FileSystemManager {
     dir: SharedDirectory,
@@ -158,15 +157,15 @@ impl FileSystemManager {
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify { .. } => {
-                    // Creating DownloadJob
-                    let job_ref = Arc::new(RwLock::new(DownloadJob::new(
-                        self.dir.uuid,
-                        mutation,
-                        Utc::now(),
-                        JobState::Pending,
-                    )));
-
-                    self.downloader.send(DownloaderEvent::Accept(job_ref)).await;
+                    // Creating a new job
+                    self.downloader
+                        .send(DownloaderEvent::Accept(DownloadJob::new(
+                            self.dir.uuid,
+                            mutation,
+                            Utc::now(),
+                            JobState::Pending,
+                        )))
+                        .await;
                 }
                 Mutation::Move { from, to, .. } => {
                     let from = self.dir.path.join(from);
@@ -200,7 +199,7 @@ impl FileSystemManager {
                                 if parent != self.dir.path() {
                                     let _ = tokio::fs::remove_dir(parent).await;
                                 }
-                                
+
                                 self.update_local_tree(mutation).await
                             }
                             Err(e) => {
@@ -232,7 +231,7 @@ impl FileSystemManager {
         }
     }
 
-    pub(crate) async fn download_finished(&self, download_job: Arc<RwLock<DownloadJob>>) {
+    pub(crate) async fn download_finished(&self, download_job: StoreLock<DownloadJob>) {
         let job = download_job.read().await;
 
         let final_path = self.dir.path.join(match job.mutation() {

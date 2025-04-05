@@ -24,7 +24,7 @@
 use crate::SyncifyError::{
     AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, PathEncoding, ReadOnly,
 };
-use crate::engine::job::{DownloadJob, LocalProvision, RemoteProvision};
+use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerHandle;
 use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
@@ -47,6 +47,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod engine;
+pub mod event;
 pub mod store;
 pub mod util;
 
@@ -106,9 +107,6 @@ impl Syncify {
         if let Some(engine) = old_engine {
             engine.write().await.shutdown().await;
         }
-
-        // Flushing store
-        self.store.write().await.flush().await.map_err(SyncifyError::Store)?;
 
         Ok(self)
     }
@@ -224,7 +222,7 @@ impl Syncify {
             read_key: if let Some(key) = sign_key {
                 key.verifying_key()
             } else {
-                VerifyingKey::from_bytes(&link.key).unwrap()
+                ReadKey::from_bytes(&link.key).unwrap()
             },
         };
 
@@ -302,15 +300,15 @@ impl Syncify {
             .map_err(SyncifyError::Store)?;
 
         if let Err(e) = dir.state.write().flush().await {
-            warn!("Unable to save new state: {}", e);
+            warn!("Cannot save new state: {}", e);
         };
 
         if let Err(e) = dir.local_tree.write().flush().await {
-            warn!("Unable to save new tree: {}", e);
+            warn!("Cannot save new tree: {}", e);
         };
 
         if let Err(e) = dir.neighbors.write().flush().await {
-            warn!("Unable to save new neighbors: {}", e);
+            warn!("Cannot save new neighbors: {}", e);
         };
 
         // If the engine is available, add the directory to watched directory
@@ -327,11 +325,15 @@ impl Syncify {
     }
 }
 
+/// [`SharedDirectory`] write key.
+pub type WriteKey = SigningKey;
+
+/// [`SharedDirectory`] read key.
+pub type ReadKey = VerifyingKey;
+
 pub type NeighborsMap = HashMap<NodeId, bool>;
 pub type LocalProvisionsMap = HashMap<Hash, LocalProvision>;
 pub type RemoteProvisionsMap = HashMap<Hash, HashMap<NodeId, RemoteProvision>>;
-pub type DownloadJobsMap = HashMap<Hash, Arc<RwLock<DownloadJob>>>;
-pub type ActiveDownloadJobs = Vec<Arc<RwLock<DownloadJob>>>;
 
 #[derive(Clone)]
 pub struct SharedDirectory {
@@ -344,8 +346,8 @@ pub struct SharedDirectory {
     remote_provisions: StoreLock<RemoteProvisionsMap>,
     handle: Arc<RwLock<Option<ManagerHandle>>>,
     initial_sync: Arc<RwLock<bool>>,
-    write_key: Option<SigningKey>,
-    read_key: VerifyingKey,
+    write_key: Option<WriteKey>,
+    read_key: ReadKey,
 }
 
 impl SharedDirectory {

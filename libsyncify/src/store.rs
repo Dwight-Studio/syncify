@@ -24,22 +24,19 @@ use crate::engine::job::{DownloadJob, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, State};
 use crate::store::keyring::{Keyring, Keys};
 use crate::store::lock::StoreLock;
-use crate::{LocalProvisionsMap, RemoteProvisionsMap, SharedDirectory, get_app_config_dir, DownloadJobsMap, ActiveDownloadJobs};
+use crate::{LocalProvisionsMap, ReadKey, RemoteProvisionsMap, SharedDirectory, WriteKey, get_app_config_dir};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use blake3::Hash;
 use chacha20poly1305::aead::OsRng;
-use chrono::{DateTime, TimeDelta, Utc};
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::SecretKey;
 use iroh_base::{NodeId, PublicKey};
 use log::{error, info, warn};
 use redb::{
     CommitError, Database, DatabaseError, MultimapTableDefinition, MultimapValue, ReadableMultimapTable, ReadableTable,
-    StorageError, Table, TableDefinition, TableError, TableHandle, TransactionError, WriteTransaction,
+    StorageError, TableDefinition, TableError, TableHandle, TransactionError, WriteTransaction,
 };
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -52,8 +49,6 @@ pub mod lock;
 
 /// Store file name.
 pub const STORE_FILENAME: &str = "store.db";
-/// Time after which a job is no longer automatically loaded into memory.
-pub const JOBS_EXPIRATION: TimeDelta = TimeDelta::days(7);
 
 // Database tables
 
@@ -76,13 +71,8 @@ pub const JOBS_TABLE: TableDefinition<[u8; 32], DownloadJob> = TableDefinition::
 
 /// Store manager.
 pub struct StoreManager {
-    /// The timestamp is dated from last time the store was flushed.
-    timestamp: DateTime<Utc>,
     db: Database,
     cache: HashMap<Uuid, SharedDirectory>,
-    // TODO: Add Store lock for the jobs/active_jobs
-    jobs: DownloadJobsMap,
-    active_jobs: ActiveDownloadJobs,
     secret_key: SecretKey,
     keyring: Keyring,
 }
@@ -105,26 +95,22 @@ impl StoreManager {
 
         let keyring = Keyring::new();
         let secret_key = Self::load_secret_key(&keyring);
-        let (jobs, active_jobs) = Self::load_jobs(&db, Utc::now() - JOBS_EXPIRATION)?;
 
         let store = Arc::new(RwLock::new(StoreManager {
-            timestamp: Utc::now(),
             db,
             cache: HashMap::new(),
-            jobs,
-            active_jobs,
             secret_key,
             keyring,
         }));
 
-        let cache = Self::build_cache(&store, &store.read().await.keyring, &store.read().await.db)?;
+        let cache = Self::build_cache(&store).await?;
         store.write().await.cache = cache;
 
         Ok(store)
     }
 
     /// Load secret key (for initialization).
-    fn load_secret_key(keyring: &Keyring) -> SecretKey {
+    pub fn load_secret_key(keyring: &Keyring) -> SecretKey {
         if !keyring.key_exists(Keys::SecretKey, None) {
             info!("Generating new secret key...");
             let key = SecretKey::generate(&mut OsRng);
@@ -141,7 +127,7 @@ impl StoreManager {
     }
 
     /// Get shared folder keys.
-    fn get_keys(keyring: &Keyring, uuid: Uuid) -> Option<(Option<SigningKey>, VerifyingKey)> {
+    pub fn get_keys(keyring: &Keyring, uuid: Uuid) -> Option<(Option<WriteKey>, ReadKey)> {
         if let Ok(key) = keyring.get_key(Keys::SharedDirKey, Some(uuid.to_string().as_str())) {
             let mut split_key = key.split(" ");
 
@@ -152,7 +138,7 @@ impl StoreManager {
                         None
                     } else {
                         match BASE64_STANDARD.decode(raw) {
-                            Ok(unencoded) => match SigningKey::try_from(unencoded.as_slice()) {
+                            Ok(unencoded) => match WriteKey::try_from(unencoded.as_slice()) {
                                 Ok(key) => Some(key),
                                 Err(e) => {
                                     error!("Malformed SharedDirKey for {}: {} (sign key)", e, uuid);
@@ -175,7 +161,7 @@ impl StoreManager {
             let verif_key = {
                 if let Some(raw) = split_key.next() {
                     match BASE64_STANDARD.decode(raw) {
-                        Ok(unencoded) => match VerifyingKey::try_from(unencoded.as_slice()) {
+                        Ok(unencoded) => match ReadKey::try_from(unencoded.as_slice()) {
                             Ok(key) => key,
                             Err(e) => {
                                 error!("Malformed SharedDirKey for {}: {} (verif key)", e, uuid);
@@ -195,21 +181,18 @@ impl StoreManager {
 
             Some((sign_key, verif_key))
         } else {
-            error!("Unable to load SharedDirKey for {}", uuid);
+            error!("Cannot load SharedDirKey for {}", uuid);
             None
         }
     }
 
     /// Build [`SharedDirectory`] cache (for initialization).
-    fn build_cache(
-        store: &Arc<RwLock<StoreManager>>,
-        keyring: &Keyring,
-        db: &Database,
-    ) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
+    pub async fn build_cache(store: &Arc<RwLock<StoreManager>>) -> Result<HashMap<Uuid, SharedDirectory>, StoreError> {
         info!("Building store cache...");
         let mut cache = HashMap::new();
 
-        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
+        let transaction = store.write().await.get_write_transaction()?;
+        let keyring = &store.read().await.keyring;
 
         {
             let base_table = transaction.open_table(BASE_TABLE).map_err(StoreError::Table)?;
@@ -286,12 +269,12 @@ impl StoreManager {
                                 warn!("Failed!");
                             }
                         } else {
-                            error!("Unable to load state for {}: Table not found", uuid);
+                            error!("Cannot load state for {}: Table not found", uuid);
                         }
                     }
                 } else {
                     error!(
-                        "Unable to load state for {}: Head, Neighbors or Local Tree are missing",
+                        "Cannot load state for {}: Head, Neighbors or Local Tree are missing",
                         uuid
                     );
                 }
@@ -304,92 +287,23 @@ impl StoreManager {
     }
 
     /// Load the [`DownloadJob`]s (for initialization).
-    fn load_jobs(
-        db: &Database,
-        since: DateTime<Utc>,
-    ) -> Result<(DownloadJobsMap, ActiveDownloadJobs), StoreError> {
+    pub async fn load_jobs(
+        store: &Arc<RwLock<StoreManager>>,
+    ) -> Result<HashMap<Hash, StoreLock<DownloadJob>>, StoreError> {
         let mut jobs = HashMap::new();
-        let mut active_jobs = Vec::new();
 
-        let transaction = db.begin_write().map_err(StoreError::Transaction)?;
+        let transaction = store.write().await.get_write_transaction()?;
 
         {
             let jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
 
-            for (hash_access, job_access) in (jobs_table.iter().map_err(StoreError::Storage)?).flatten() {
-                let hash = Hash::from_bytes(hash_access.value());
+            for (_, job_access) in jobs_table.iter().map_err(StoreError::Storage)?.flatten() {
                 let job = job_access.value();
-
-                // If it is still active, add in the active vec
-                if job.is_active() {
-                    let job_ref = Arc::new(RwLock::new(job));
-                    active_jobs.push(job_ref.clone());
-                    jobs.insert(hash, job_ref);
-                } else if *job.issued() > since {
-                    jobs.insert(hash, Arc::new(RwLock::new(job)));
-                }
+                jobs.insert(*job.hash(), StoreLock::new(store, job, ()));
             }
         }
 
-        Ok((jobs, active_jobs))
-    }
-
-    /// Save the [`DownloadJob`]s.
-    async fn flush_jobs(
-        jobs: &mut DownloadJobsMap,
-        jobs_table: &mut Table<'_, [u8; 32], DownloadJob>,
-    ) {
-        for (hash, job_ref) in jobs.iter() {
-            if jobs_table
-                .insert(hash.as_bytes(), job_ref.read().await.deref())
-                .is_err()
-            {
-                error!("Unable to flush job {}", hash);
-            }
-        }
-
-        let since: DateTime<Utc> = Utc::now() - JOBS_EXPIRATION;
-
-        // Drop all old jobs
-        jobs.retain(|_, j| {
-            if let Ok(job) = j.try_read() {
-                job.issued() > &since
-            } else {
-                true
-            }
-        })
-    }
-
-    pub async fn add_download_job(&mut self, download_job: Arc<RwLock<DownloadJob>>) {
-        self.jobs
-            .insert(*download_job.read().await.hash(), download_job.clone());
-        self.active_jobs.push(download_job);
-    }
-
-    pub async fn get_download_job(&self, file_hash: Hash) -> Option<Arc<RwLock<DownloadJob>>> {
-        for job in self.active_jobs.clone() {
-            if *job.read().await.hash() == file_hash {
-                return Some(job);
-            }
-        }
-
-        None
-    }
-
-    pub fn get_download_jobs(&self) -> ActiveDownloadJobs {
-        self.active_jobs.clone()
-    }
-
-    pub async fn flush_download_jobs(&mut self) {
-        let mut new_active_jobs: ActiveDownloadJobs = Vec::new();
-
-        for job in self.active_jobs.clone() {
-            if job.read().await.is_active() {
-                new_active_jobs.push(job);
-            }
-        }
-
-        self.active_jobs = new_active_jobs;
+        Ok(jobs)
     }
 
     /// Load the local and remote [`Provision`]s of a [`SharedDirectory`] (for initialization).
@@ -409,7 +323,7 @@ impl StoreManager {
             let provision = provision_access.value();
             if let Some(node_id) = provision.node_id() {
                 remote
-                    .entry(provision.hash())
+                    .entry(*provision.hash())
                     .or_insert(HashMap::new())
                     .insert(node_id, provision);
             }
@@ -448,9 +362,6 @@ impl StoreManager {
         }
 
         transaction.commit().map_err(StoreError::Commit)?;
-
-        // Flushing store
-        self.flush().await?;
 
         Ok(())
     }
@@ -497,9 +408,6 @@ impl StoreManager {
 
         transaction.commit().map_err(StoreError::Commit)?;
 
-        // Flushing store
-        self.flush().await?;
-
         Ok(())
     }
 
@@ -516,28 +424,6 @@ impl StoreManager {
     /// Get a write transaction for the database.
     pub fn get_write_transaction(&self) -> Result<WriteTransaction, StoreError> {
         self.db.begin_write().map_err(StoreError::Transaction)
-    }
-
-    //noinspection RsTraitObligations
-    /// Flush cache to database.
-    pub async fn flush(&mut self) -> Result<(), StoreError> {
-        info!("Saving store...");
-
-        let transaction = self.db.begin_write().map_err(StoreError::Transaction)?;
-
-        {
-            let mut jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
-
-            Self::flush_jobs(&mut self.jobs, &mut jobs_table).await;
-        }
-
-        transaction.commit().map_err(StoreError::Commit)?;
-
-        self.timestamp = Utc::now();
-
-        info!("Save complete");
-
-        Ok(())
     }
 
     pub fn secret_key(&self) -> SecretKey {

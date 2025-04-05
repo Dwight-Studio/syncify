@@ -84,7 +84,7 @@ impl Engine {
 
         let mut proto = SyncifyProtocol::new(builder.endpoint().clone(), store.clone());
 
-        let downloader = Downloader::new(store.clone(), proto.clone());
+        let downloader = Downloader::new(store.clone(), proto.clone()).await;
         proto.set_downloader(downloader.clone());
 
         let protocol_handler = SyncifyProtocolHandler::new(proto.clone(), store.clone(), downloader.clone());

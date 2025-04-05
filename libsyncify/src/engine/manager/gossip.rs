@@ -23,7 +23,7 @@
 use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{LocalProvision, RemoteProvision};
-use crate::engine::manager::{ManagerEvent, ManagerHandle, SyncEvent};
+use crate::engine::manager::{ManagerEvent, ManagerHandle};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use blake3::Hash;
@@ -115,7 +115,7 @@ impl GossipManager {
                         }
                     }
 
-                    self.handle.send(ManagerEvent::Sync(SyncEvent::TriggerSync(None))).await;
+                    self.handle.send(ManagerEvent::TriggerSync(None)).await;
                 }
                 GossipEvent::NeighborUp(node_id) => {
                     let neighbors = &mut self.dir.neighbors.write();
@@ -205,9 +205,7 @@ impl GossipManager {
                     if self.dir.state.read().await.hash() != new_head {
                         info!("Current state is out of date");
                         let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
-                        self.handle
-                            .send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing))))
-                            .await;
+                        self.handle.send(ManagerEvent::TriggerSync(Some(outgoing))).await;
                     }
                 }
             }
@@ -287,6 +285,6 @@ pub enum GossipError {
     #[error("Cannot serialize")]
     Serialize,
 
-    #[error("Unable to encrypt")]
+    #[error("Cannot encrypt")]
     Encrypt,
 }

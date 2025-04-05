@@ -20,19 +20,23 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::job::{LocalProvision, RemoteProvision};
+use crate::engine::downloader::CHUNK_SIZE;
+use crate::engine::job::{DownloadJob, FLUSH_JOB_FREQUENCY, JobState, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, Mutation, State, StateError};
 use crate::store::{
-    HEAD_TABLE, LOCAL_PROVISIONS_TABLE, LOCAL_TREE_TABLE, NEIGHBORS_TABLE, REMOTE_PROVISIONS_TABLE, StoreError,
-    StoreManager,
+    HEAD_TABLE, JOBS_TABLE, LOCAL_PROVISIONS_TABLE, LOCAL_TREE_TABLE, NEIGHBORS_TABLE, REMOTE_PROVISIONS_TABLE,
+    StoreError, StoreManager,
 };
-use crate::{LocalProvisionsMap, NeighborsMap, RemoteProvisionsMap};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use crate::{LocalProvisionsMap, NeighborsMap, ReadKey, RemoteProvisionsMap, WriteKey};
+use chrono::Utc;
 use iroh_base::NodeId;
-use log::debug;
+use log::{debug, error, info};
 use redb::TableDefinition;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
@@ -109,7 +113,7 @@ pub trait Store: Sized {
 impl Store for State {
     type Id = Uuid;
 
-    fn get_guard(inner: Arc<RwLock<State>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
+    fn get_guard(inner: Arc<RwLock<Self>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
         StoreGuard { inner, store, id }
     }
 }
@@ -117,7 +121,7 @@ impl Store for State {
 impl StoreGuard<State> {
     /// Completely flush the [`State`]. This should be avoided (use one of the mutation methods instead).
     pub async fn flush(&self) -> Result<(), StateError> {
-        let state = self.inner.write().await;
+        let state = self.inner.read().await;
 
         self.save_head(&state).await?;
         self.save_deltas(&state.iter().collect()).await?;
@@ -126,7 +130,7 @@ impl StoreGuard<State> {
     }
 
     /// Apply a mutation on the [`State`].
-    pub async fn mutate(&self, mutation: Mutation, write_key: &SigningKey) -> Result<(), StateError> {
+    pub async fn mutate(&self, mutation: Mutation, write_key: &WriteKey) -> Result<(), StateError> {
         let mut state = self.inner.write().await;
         state.mutate(mutation, write_key)?;
 
@@ -145,7 +149,7 @@ impl StoreGuard<State> {
     pub async fn verify_accept_all(
         &mut self,
         other_state: State,
-        read_key: &VerifyingKey,
+        read_key: &ReadKey,
     ) -> Result<Vec<Mutation>, StateError> {
         let mut state = self.inner.write().await;
         let deltas = state.verify_accept_all(other_state, read_key)?;
@@ -230,7 +234,7 @@ impl StoreGuard<State> {
 impl Store for HashTree {
     type Id = Uuid;
 
-    fn get_guard(inner: Arc<RwLock<HashTree>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<HashTree> {
+    fn get_guard(inner: Arc<RwLock<Self>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
         StoreGuard { inner, store, id }
     }
 }
@@ -238,7 +242,7 @@ impl Store for HashTree {
 impl StoreGuard<HashTree> {
     /// Completely flush the [`HashTree`]. This should be avoided (use one of the mutation methods instead).
     pub async fn flush(&self) -> Result<(), StateError> {
-        let tree = self.inner.write().await;
+        let tree = self.inner.read().await;
 
         let transaction = self
             .store
@@ -277,11 +281,7 @@ impl StoreGuard<HashTree> {
 impl Store for NeighborsMap {
     type Id = Uuid;
 
-    fn get_guard(
-        inner: Arc<RwLock<NeighborsMap>>,
-        store: Arc<RwLock<StoreManager>>,
-        id: Self::Id,
-    ) -> StoreGuard<NeighborsMap> {
+    fn get_guard(inner: Arc<RwLock<Self>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
         StoreGuard { inner, store, id }
     }
 }
@@ -327,11 +327,7 @@ impl StoreGuard<NeighborsMap> {
 impl Store for LocalProvisionsMap {
     type Id = Uuid;
 
-    fn get_guard(
-        inner: Arc<RwLock<LocalProvisionsMap>>,
-        store: Arc<RwLock<StoreManager>>,
-        id: Self::Id,
-    ) -> StoreGuard<LocalProvisionsMap> {
+    fn get_guard(inner: Arc<RwLock<Self>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
         StoreGuard { inner, store, id }
     }
 }
@@ -379,11 +375,7 @@ impl StoreGuard<LocalProvisionsMap> {
 impl Store for RemoteProvisionsMap {
     type Id = Uuid;
 
-    fn get_guard(
-        inner: Arc<RwLock<RemoteProvisionsMap>>,
-        store: Arc<RwLock<StoreManager>>,
-        id: Self::Id,
-    ) -> StoreGuard<RemoteProvisionsMap> {
+    fn get_guard(inner: Arc<RwLock<Self>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
         StoreGuard { inner, store, id }
     }
 }
@@ -393,7 +385,7 @@ impl StoreGuard<RemoteProvisionsMap> {
     pub async fn insert(&self, provision: RemoteProvision) -> Result<(), StoreError> {
         if let Some(node_id) = provision.node_id() {
             let mut map = self.inner.write().await;
-            let file_map = map.entry(provision.hash()).or_insert(HashMap::new());
+            let file_map = map.entry(*provision.hash()).or_insert(HashMap::new());
             file_map.insert(node_id, provision.clone());
 
             let transaction = self.store.write().await.get_write_transaction()?;
@@ -417,7 +409,7 @@ impl StoreGuard<RemoteProvisionsMap> {
     pub async fn remove(&self, provision: RemoteProvision) -> Result<(), StoreError> {
         if let Some(node_id) = provision.node_id() {
             let mut map = self.inner.write().await;
-            let file_map = map.entry(provision.hash()).or_insert(HashMap::new());
+            let file_map = map.entry(*provision.hash()).or_insert(HashMap::new());
             file_map.remove(&node_id);
 
             if file_map.is_empty() {
@@ -439,5 +431,160 @@ impl StoreGuard<RemoteProvisionsMap> {
         }
 
         Ok(())
+    }
+}
+
+impl Store for DownloadJob {
+    type Id = ();
+
+    fn get_guard(inner: Arc<RwLock<Self>>, store: Arc<RwLock<StoreManager>>, id: Self::Id) -> StoreGuard<Self> {
+        StoreGuard { inner, store, id }
+    }
+}
+
+impl StoreGuard<DownloadJob> {
+    /// Completely flush the [`DownloadJob`]. This should be avoided (use one of the mutation methods instead).
+    pub async fn flush(&self) -> Result<(), StoreError> {
+        let job = self.inner.read().await;
+
+        let transaction = self.store.write().await.get_write_transaction()?;
+        {
+            let mut jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
+            jobs_table
+                .insert(job.hash().as_bytes(), job.deref())
+                .map_err(StoreError::Storage)?;
+        }
+
+        transaction.commit().map_err(StoreError::Commit)
+    }
+
+    /// Add a chunk to the failed chunk list.
+    pub async fn add_failed_chunk(&self, index: u64) {
+        self.inner.write().await.failed_chunks.push(index);
+    }
+
+    /// Prepare the file buffer for downloading.
+    ///
+    /// # Return
+    ///
+    /// Returns `false` if there is an error.
+    pub async fn start_download(&self, download_dir: &PathBuf) -> bool {
+        let mut job = self.inner.write().await;
+
+        if matches!(*job.state(), JobState::Pending) {
+            match File::create(download_dir.join(job.hash().to_string())) {
+                Ok(file) => {
+                    info!("Starting download of '{}'", job.hash());
+                    job.state = JobState::Ongoing;
+                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
+                    true
+                }
+                Err(e) => {
+                    error!("Cannot create cache file ({e})");
+                    false
+                }
+            }
+        } else if matches!(*job.state(), JobState::Ongoing) {
+            match File::options()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(download_dir.join(job.hash().to_string()))
+            {
+                Ok(file) => {
+                    info!("Resuming download of '{}'", job.hash());
+                    job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
+                    true
+                }
+                Err(e) => {
+                    error!("Cannot create cache file ({e})");
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Add one to the last chunk counter.
+    pub async fn start_download_chunk(&self) {
+        self.inner.write().await.last_chunk += 1;
+    }
+
+    /// Write data into the file and flush [`DownloadJob`] in the database.
+    ///
+    /// # Return
+    ///
+    /// Returns `false` if there is an error.
+    pub async fn finish_download_chunk(&self, chunk_index: u64, data: Vec<u8>) -> bool {
+        let mut job = self.inner.write().await;
+
+        let file: &mut BufWriter<File> = if let Some(buf) = &mut job.file {
+            buf
+        } else {
+            error!("Cache file cannot be found!");
+            return false;
+        };
+
+        if let Err(err) = file.seek(SeekFrom::Start(chunk_index * CHUNK_SIZE as u64)) {
+            error!("Cannot seek into the cache file: {err}");
+            return false;
+        }
+        if let Err(err) = file.write_all(&data) {
+            error!("Cannot write to the cache file: {err}");
+            return false;
+        }
+
+        // Handling the job update
+        job.chunk_done();
+
+        if job.chunk_done % FLUSH_JOB_FREQUENCY == 0 {
+            drop(job);
+            if let Err(e) = self.flush().await {
+                error!("Cannot flush job ({e})");
+            }
+        }
+
+        true
+    }
+
+    /// Flush the file buffer, and update the [`DownloadJob`] in the database.
+    pub async fn finish_download(&self) -> bool {
+        let mut job = self.inner.write().await;
+
+        let file: &mut BufWriter<File> = if let Some(buf) = &mut job.file {
+            buf
+        } else {
+            error!("Cache file cannot be found!");
+            return false;
+        };
+
+        if let Err(e) = file.flush() {
+            error!("Cannot flush cache file: {e}");
+            return false;
+        }
+
+        job.file = None;
+        job.state = JobState::Done(Utc::now());
+
+        drop(job);
+        if let Err(e) = self.flush().await {
+            error!("Cannot flush job ({e})");
+        }
+
+        true
+    }
+
+    /// Delete the [`DownloadJob`] from the database.
+    pub async fn delete(&self) -> Result<(), StoreError> {
+        let job = self.inner.read().await;
+
+        let transaction = self.store.write().await.get_write_transaction()?;
+        {
+            let mut jobs_table = transaction.open_table(JOBS_TABLE).map_err(StoreError::Table)?;
+            jobs_table.remove(job.hash().as_bytes()).map_err(StoreError::Storage)?;
+        }
+
+        transaction.commit().map_err(StoreError::Commit)
     }
 }

@@ -26,8 +26,7 @@ pub mod outgoing_sync;
 
 use crate::SharedDirectory;
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
-use crate::engine::manager::ManagerEvent::Sync;
-use crate::engine::manager::SyncEvent;
+use crate::engine::manager::ManagerEvent;
 use crate::engine::state::State;
 use crate::store::StoreManager;
 use blake3::Hash;
@@ -117,7 +116,7 @@ impl SyncifyProtocol {
         node_id: NodeId,
     ) -> Result<SyncifyStream, SyncifyProtocolError> {
         let mut existing_conn: Option<Connection> = None;
-        
+
         let connections = self.connections.read().await;
         for connection in connections.clone() {
             if connection.remote_node_id().unwrap() == node_id {
@@ -361,7 +360,7 @@ async fn accept_connection(
 ) -> anyhow::Result<()> {
     debug!("Opening connection with {}", connection.remote_node_id()?);
     connections.write().await.push(connection.clone());
-    
+
     while let Ok((tx, mut rx)) = connection.accept_bi().await {
         let mut header_buffer = [0u8; HEADER_SIZE];
         rx.read_exact(&mut header_buffer).await?;
@@ -408,7 +407,7 @@ async fn accept_connection(
                     dir.handle()
                         .await
                         .clone()
-                        .send(Sync(SyncEvent::RequestSync(stream, blake3::Hash::from(head))))
+                        .send(ManagerEvent::RequestSync(stream, blake3::Hash::from(head)))
                         .await;
                 }
             }
@@ -450,10 +449,10 @@ pub enum SyncifyProtocolError {
     #[error("Stopped stream: {0}")]
     StoppedStream(StoppedError),
 
-    #[error("Unable to deserialize received data: {0}")]
+    #[error("Cannot deserialize received data: {0}")]
     Serialization(RancorError),
 
-    #[error("Unable to deserialize received data: {0}")]
+    #[error("Cannot deserialize received data: {0}")]
     Deserialize(RancorError),
 
     #[error("Uuid does not exists")]

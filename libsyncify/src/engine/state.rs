@@ -21,16 +21,16 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::SharedDirectory;
 use crate::engine::downloader::CHUNK_SIZE;
 use crate::engine::manager::fs::FileSystemManager;
 use crate::engine::state::HashTree::{Directory, File, Void};
 use crate::engine::state::StateError::{InvalidSignature, NotADirectory, UnexpectedHash};
 use crate::store::StoreError;
+use crate::{ReadKey, SharedDirectory, WriteKey};
 use blake3::Hash;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::ed25519::SignatureBytes;
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer};
 use log::{error, warn};
 use redb::{ReadableTable, Table, TypeName, Value};
 use rkyv::rancor::Error;
@@ -125,7 +125,7 @@ impl State {
                 None
             }
         } else {
-            error!("Unable to find head {}", Hash::from_bytes(head_hash));
+            error!("Cannot find head {}", Hash::from_bytes(head_hash));
             None
         }
     }
@@ -169,7 +169,7 @@ impl State {
     }
 
     /// Apply a mutation on the [`State`].
-    pub fn mutate(&mut self, mutation: Mutation, write_key: &SigningKey) -> Result<(), StateError> {
+    pub fn mutate(&mut self, mutation: Mutation, write_key: &WriteKey) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
             hash: Hash::from_bytes([0; 32]),
@@ -227,11 +227,7 @@ impl State {
     /// # Return
     ///
     /// Returns a vec of all accepted [`Delta`]s in chronological order.
-    pub fn verify_accept_all(
-        &mut self,
-        other_state: State,
-        read_key: &VerifyingKey,
-    ) -> Result<Vec<Arc<Delta>>, StateError> {
+    pub fn verify_accept_all(&mut self, other_state: State, read_key: &ReadKey) -> Result<Vec<Arc<Delta>>, StateError> {
         let mut stack = Vec::new();
         let mut rtn = Vec::new();
 
@@ -480,7 +476,7 @@ impl Delta {
     /// # Return
     ///
     /// Returns true if the signature is genuine, false otherwise.
-    pub fn verify_signature(&self, read_key: VerifyingKey) -> bool {
+    pub fn verify_signature(&self, read_key: ReadKey) -> bool {
         if let Some(data) = self.get_signature_data() {
             read_key.verify_strict(data.leak(), &self.signature).is_ok()
         } else {
@@ -981,12 +977,12 @@ impl HashTree {
                             rtn = new_rtn;
                         }
                         Err(e) => {
-                            warn!("Unable to add '{}' into hash tree ({e})", file.path().display())
+                            warn!("Cannot add '{}' into hash tree ({e})", file.path().display())
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Unable to scan file: {e}")
+                    warn!("Cannot scan file: {e}")
                 }
             }
         }
@@ -1035,7 +1031,7 @@ impl HashTree {
 
                                     // If the timestamp is recent, hash it
                                     if let Err(e) = hasher.update_mmap(file.path()) {
-                                        warn!("Unable to hash: '{}' ({})", file.path().display(), e);
+                                        warn!("Cannot hash: '{}' ({})", file.path().display(), e);
                                         continue;
                                     }
 
@@ -1046,7 +1042,7 @@ impl HashTree {
                                 } else {
                                     // If we can't verify the file, just hash it
                                     if let Err(e) = hasher.update_mmap(file.path()) {
-                                        warn!("Unable to hash: '{}' ({})", file.path().display(), e);
+                                        warn!("Cannot hash: '{}' ({})", file.path().display(), e);
                                         continue;
                                     }
                                 }
@@ -1068,7 +1064,7 @@ impl HashTree {
                     }
                 }
                 Err(e) => {
-                    warn!("Unable to scan file: {e}")
+                    warn!("Cannot scan file: {e}")
                 }
             }
         }

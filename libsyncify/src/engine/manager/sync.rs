@@ -21,11 +21,12 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::SharedDirectory;
-use crate::engine::manager::{ManagerEvent, SyncEvent};
-use crate::engine::protocol::SyncifyProtocol;
+use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
+use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
+use blake3::Hash;
 use iroh::Endpoint;
 use log::{info, warn};
 use std::ops::Deref;
@@ -45,23 +46,22 @@ impl SyncManager {
         Self { dir, ep, proto }
     }
 
-    pub async fn handle_events(&mut self, sync_event: SyncEvent) {
-        match sync_event {
-            SyncEvent::RequestSync(conn, hash) => {
-                *self.dir.initial_sync.write().await = true;
+    pub async fn request_sync(&self, conn: SyncifyStream, hash: Hash) {
+        *self.dir.initial_sync.write().await = true;
 
-                let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn, hash);
+        let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn, hash);
 
-                if incoming_sync.step_until_finished(FSM_TIMEOUT).await {
-                    incoming_sync.step().await;
-                } else {
-                    warn!("Timeout while processing sync event: RequestSync");
-                }
-            }
-            SyncEvent::TriggerSync(outgoing_opt) => match outgoing_opt {
-                None => self.initial_sync().await,
-                Some(outgoing) => Self::start_sync(outgoing).await,
-            },
+        if incoming_sync.step_until_finished(FSM_TIMEOUT).await {
+            incoming_sync.step().await;
+        } else {
+            warn!("Timeout while processing sync event: RequestSync");
+        }
+    }
+
+    pub async fn trigger_sync(&mut self, outgoing_opt: Option<OutgoingSync>) {
+        match outgoing_opt {
+            None => self.initial_sync().await,
+            Some(outgoing) => Self::start_sync(outgoing).await,
         }
     }
 
@@ -83,10 +83,7 @@ impl SyncManager {
                         if !received_request {
                             info!("Initial sync: No sync request received. Initiating sync myself.");
 
-                            dir.handle()
-                                .await
-                                .send(ManagerEvent::Sync(SyncEvent::TriggerSync(Some(outgoing))))
-                                .await;
+                            dir.handle().await.send(ManagerEvent::TriggerSync(Some(outgoing))).await;
                         } else {
                             info!("Initial sync: Sync request received. No need to start sync.");
                             *dir.initial_sync.write().await = false

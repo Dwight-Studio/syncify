@@ -36,15 +36,18 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Automatically flush the [`DownloadJob`] into the database every [`FLUSH_JOB_FREQUENCY`] chunk downloaded.
+pub const FLUSH_JOB_FREQUENCY: u64 = 128;
+
 /// A sync job.
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub struct DownloadJob {
-    dir_uuid: Uuid,
-    mutation: Mutation,
+    pub(crate) dir_uuid: Uuid,
+    pub(crate) mutation: Mutation,
     #[rkyv(with = crate::util::DateTimeDef)]
-    issued: DateTime<Utc>,
-    state: JobState,
-    pub progress: f32,
+    pub(crate) issued: DateTime<Utc>,
+    pub(crate) state: JobState,
+    pub(crate) progress: f32,
     pub(crate) last_chunk: u64,
     pub(crate) chunk_done: u64,
     pub(crate) failed_chunks: Vec<u64>,
@@ -102,9 +105,6 @@ impl DownloadJob {
     pub fn state(&self) -> &JobState {
         &self.state
     }
-    pub fn set_state(&mut self, state: JobState) {
-        self.state = state;
-    }
 
     pub fn mutation(&self) -> &Mutation {
         &self.mutation
@@ -115,6 +115,23 @@ impl DownloadJob {
             JobState::Pending | JobState::Ongoing => true,
             _ => false,
         }
+    }
+
+    pub fn progress(&self) -> f32 {
+        self.progress
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.chunk_done >= *self.size()
+    }
+
+    pub fn all_chunks_downloading(&self) -> bool {
+        self.last_chunk >= *self.size()
+    }
+
+    pub fn chunk_done(&mut self) {
+        self.chunk_done += 1;
+        self.progress = self.chunk_done as f32 / *self.size() as f32;
     }
 }
 
@@ -269,8 +286,8 @@ impl RemoteProvision {
         }
     }
 
-    pub fn hash(&self) -> Hash {
-        self.hash.clone()
+    pub fn hash(&self) -> &Hash {
+        &self.hash
     }
 }
 
