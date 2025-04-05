@@ -43,6 +43,7 @@ use uuid::Uuid;
 pub const EVENT_BUFFER_SIZE: usize = 1024;
 /// Size of the chunk of file that are sent per packet.
 pub const CHUNK_SIZE: usize = 64 * 1024;
+
 /// Number of concurrent download threads
 pub const MAX_DOWNLOAD_TASKS: usize = 10;
 
@@ -557,7 +558,7 @@ impl Downloader {
 
     fn _garbage_collect() {
         // TODO: Delete expired provisions
-        // TODO: Delete provision for deleted files
+        // TODO: Delete non expired provisions when the PROVISION_CACHE_MAX_SIZE (defined in gossip) is exceeded 
     }
 }
 

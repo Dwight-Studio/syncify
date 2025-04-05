@@ -37,10 +37,12 @@ use log::{debug, error, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::ops::Add;
 use thiserror::Error;
+use crate::engine::state::HashTree;
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
-/// Maximum size of the provision cache (in chunks).
+/// Maximum size of the provision cache (in chunks). When the local cache exceed this threshold, a
+/// more aggressive garbage collection method will method used. (Regardless of the expiration).
 pub const PROVISION_CACHE_MAX_SIZE: u64 = 1;
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -167,15 +169,15 @@ impl GossipManager {
     pub async fn receive_message(&self, payload: Payload) {
         match payload {
             Payload::ProvisionRequest { hash } => {
-                let local_tree = self.dir.local_tree.read().await.map();
                 debug!("Received provision request for file '{hash}' for {}", self.dir.uuid);
 
-                if let Some(file_path) = local_tree.get(&hash) {
+                if let Some((HashTree::File { size, .. }, file_path)) = self.dir.local_tree.read().await.search(&hash) {
                     self.downloader
                         .send(DownloaderEvent::LocalProvisionUpdate(
                             self.dir.uuid(),
                             LocalProvision::new(
                                 hash,
+                                size,
                                 Utc::now().add(PROVISION_EXPIRATION),
                                 self.dir.path.join(file_path),
                             ),

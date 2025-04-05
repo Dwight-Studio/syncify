@@ -293,6 +293,7 @@ impl RemoteProvision {
 pub struct LocalProvision {
     #[rkyv(with = crate::util::HashDef)]
     hash: Hash,
+    size: u64,
     #[rkyv(with = crate::util::DateTimeDef)]
     expire: DateTime<Utc>,
     path: String,
@@ -315,6 +316,7 @@ impl Value for LocalProvision {
             error!("Failed to deserialize download job: {e}");
             LocalProvision {
                 hash: Hash::from_bytes([0u8; 32]),
+                size: 0,
                 expire: Default::default(),
                 path: "".to_string(),
             }
@@ -354,9 +356,10 @@ impl Key for LocalProvision {
 }
 
 impl LocalProvision {
-    pub fn new(hash: Hash, expiration: DateTime<Utc>, path: PathBuf) -> Self {
+    pub fn new(hash: Hash, size: u64, expiration: DateTime<Utc>, path: PathBuf) -> Self {
         Self {
             hash,
+            size,
             expire: expiration,
             path: path.to_string_lossy().to_string(),
         }

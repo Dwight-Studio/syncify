@@ -891,6 +891,48 @@ impl HashTree {
             }
         }
     }
+    
+    /// Search a file in the tree, and return it with its path.
+    pub fn search(&self, search_hash: &Hash) -> Option<(HashTree, String)> {
+        match self {
+            Void | File { .. } => None,
+            Directory { content, .. } => {
+                for tree in content {
+                    let rtn = tree.search_recursive(search_hash, "".to_string());
+                    if rtn.is_some() {
+                        return rtn
+                    }
+                }
+                
+                None
+            }
+        }
+    }
+
+    fn search_recursive(&self, search_hash: &Hash, prefix: String) -> Option<(HashTree, String)> {
+        match self {
+            Void => None,
+            File { name, hash, .. } => {
+                if hash == search_hash {
+                    Some((self.clone(), prefix + name.as_str()))
+                } else {
+                    None
+                }
+            }
+            Directory { name, content, .. } => {
+                let new_prefix = prefix + name.as_str() + "/";
+
+                for tree in content {
+                    let rtn = tree.search_recursive(search_hash, new_prefix.clone());
+                    if rtn.is_some() {
+                        return rtn
+                    }
+                }
+                
+                None
+            }
+        }
+    }
 
     /// Generate a map of all the files in the tree, tied to their hash.
     pub fn map(&self) -> HashMap<Hash, String> {
