@@ -385,6 +385,7 @@ async fn accept_connection(
     downloader: DownloaderHandle,
 ) -> anyhow::Result<()> {
     if let Ok(node_id) = connection.remote_node_id() {
+        // FIXME: Connection is sometime doubled
         debug!("Opening connection with {node_id}");
 
         while let Ok((tx, mut rx)) = connection.accept_bi().await {

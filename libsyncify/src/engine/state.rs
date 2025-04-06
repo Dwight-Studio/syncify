@@ -991,7 +991,6 @@ impl HashTree {
                 Ok(file) => {
                     // Ignore if it is a directory
                     if let Ok(metadata) = file.path().metadata() {
-                        
                         // Skip if it's not a valid file
                         if metadata.is_dir() || metadata.is_symlink() {
                             continue;
@@ -1049,7 +1048,6 @@ impl HashTree {
             match file_result {
                 Ok(file) => {
                     if let Ok(metadata) = file.path().metadata() {
-
                         // Skip if it's not a valid file
                         if metadata.is_dir() || metadata.is_symlink() {
                             continue;
@@ -1069,7 +1067,8 @@ impl HashTree {
                                         let new_timestamp: DateTime<Utc> = DateTime::from(modified);
 
                                         // Check if the saved timestamp is more recent and if the file is not modified too frequently
-                                        if *timestamp >= new_timestamp || (new_timestamp - Utc::now()).num_seconds() < 5 {
+                                        if *timestamp >= new_timestamp || (new_timestamp - Utc::now()).num_seconds() < 5
+                                        {
                                             // If so, continue
                                             continue;
                                         }

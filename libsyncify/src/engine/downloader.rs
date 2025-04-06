@@ -241,6 +241,7 @@ impl Downloader {
                                 .read(true)
                                 .write(true)
                                 .create(true)
+                                .truncate(true)
                                 .open(provisions_dir.join(provision.hash().to_string()))
                             {
                                 Ok(encode_file) => bao::encode::Encoder::new(encode_file),
