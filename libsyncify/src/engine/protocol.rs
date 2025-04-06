@@ -42,7 +42,7 @@ use iroh_base::NodeAddr;
 use log::{debug, error};
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
-use std::fmt::{Debug};
+use std::fmt::Debug;
 use std::ops::Deref;
 use std::sync::Arc;
 use thiserror::Error;
@@ -69,22 +69,33 @@ pub(crate) struct HeaderPacket {
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub enum SyncifyPacket {
     Sync(SyncPacket),
-    Blobs(BlobsPacket),
+    Blob(BlobsPacket),
 }
 
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub enum SyncPacket {
-    Request { head: [u8; 32] } = 0,
-    Success { state: State } = 1,
+    Request {
+        #[rkyv(with = crate::util::HashDef)]
+        head: Hash,
+    } = 0,
+    Success {
+        state: State,
+    } = 1,
     Failed = 2,
 }
 
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize, Debug)]
 pub enum BlobsPacket {
-    BlobRequest { file_hash: [u8; 32], chunk_index: u64 } = 3,
-    Blob { chunk: Vec<u8> } = 4,
+    BlobRequest {
+        #[rkyv(with = crate::util::HashDef)]
+        file_hash: Hash,
+        chunk_index: u64,
+    } = 3,
+    Blob {
+        chunk: Vec<u8>,
+    } = 4,
 }
 
 /// The [`SyncifyProtocol`] struct, used to store the active connections.
@@ -110,6 +121,11 @@ impl SyncifyProtocol {
         self.downloader = Some(downloader);
     }
 
+    /// Get own [`NodeId`].
+    pub fn node_id(&self) -> NodeId {
+        self.ep.node_id()
+    }
+
     /// Use or open a [`Connection`] and open a new bidirectional stream on it.
     pub async fn open_stream(
         &mut self,
@@ -133,7 +149,7 @@ impl SyncifyProtocol {
                     .open_bi()
                     .await
                     .map_err(|e| SyncifyProtocolError::ConnectionError(e.to_string()))?;
-                Ok(SyncifyStream::new(dir.clone(), tx, rx))
+                Ok(SyncifyStream::new(node_id, dir.clone(), tx, rx))
             }
             None => {
                 let conn = self
@@ -156,7 +172,7 @@ impl SyncifyProtocol {
                 } else {
                     error!("Downloader is not available")
                 }
-                Ok(SyncifyStream::new(dir.clone(), tx, rx))
+                Ok(SyncifyStream::new(node_id, dir.clone(), tx, rx))
             }
         }
     }
@@ -164,6 +180,7 @@ impl SyncifyProtocol {
 
 /// The [`SyncifyStream`] struct, used to send and receive data in a stream.
 pub struct SyncifyStream {
+    node_id: NodeId,
     dir: SharedDirectory,
     send_stream: SendStream,
     recv_stream: RecvStream,
@@ -171,14 +188,25 @@ pub struct SyncifyStream {
 }
 
 impl SyncifyStream {
-    pub fn new(dir: SharedDirectory, send_stream: SendStream, recv_stream: RecvStream) -> Self {
+    pub fn new(node_id: NodeId, dir: SharedDirectory, send_stream: SendStream, recv_stream: RecvStream) -> Self {
         let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
         Self {
+            node_id,
             dir,
             send_stream,
             recv_stream,
             cipher,
         }
+    }
+
+    /// Get remote [`NodeId`].
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    /// Get linked [`SharedDirectory`].
+    pub fn dir(&self) -> &SharedDirectory {
+        &self.dir
     }
 
     /// Generate non null nonce.
@@ -356,73 +384,76 @@ async fn accept_connection(
     store: Arc<RwLock<StoreManager>>,
     downloader: DownloaderHandle,
 ) -> anyhow::Result<()> {
-    debug!("Opening connection with {}", connection.remote_node_id()?);
+    if let Ok(node_id) = connection.remote_node_id() {
+        debug!("Opening connection with {node_id}");
 
-    while let Ok((tx, mut rx)) = connection.accept_bi().await {
-        let mut header_buffer = [0u8; HEADER_SIZE];
-        rx.read_exact(&mut header_buffer).await?;
+        while let Ok((tx, mut rx)) = connection.accept_bi().await {
+            let mut header_buffer = [0u8; HEADER_SIZE];
+            rx.read_exact(&mut header_buffer).await?;
 
-        let header =
-            rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer).map_err(SyncifyProtocolError::Deserialize)?;
+            let header = rkyv::from_bytes::<HeaderPacket, RancorError>(&header_buffer)
+                .map_err(SyncifyProtocolError::Deserialize)?;
 
-        let dir = {
-            match store.read().await.get_shared_dir(&header.uuid) {
-                None => {
-                    connection.close(
-                        VarInt::from_u32(1),
-                        SyncifyProtocolError::UuidDoesNotExists.to_string().as_bytes(),
-                    );
-                    return Ok(());
+            let dir = {
+                match store.read().await.get_shared_dir(&header.uuid) {
+                    None => {
+                        connection.close(
+                            VarInt::from_u32(1),
+                            SyncifyProtocolError::UuidDoesNotExists.to_string().as_bytes(),
+                        );
+                        return Ok(());
+                    }
+                    Some(dir) => dir,
                 }
-                Some(dir) => dir,
-            }
-        };
+            };
 
-        let mut packet_buffer = vec![0u8; header.packet_size as usize];
-        rx.read_exact(&mut packet_buffer)
-            .await
-            .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
+            let mut packet_buffer = vec![0u8; header.packet_size as usize];
+            rx.read_exact(&mut packet_buffer)
+                .await
+                .map_err(|e| SyncifyProtocolError::ReadExactError(e, String::from("syncify_packet")))?;
 
-        let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
-        let decrypted_bytes = cipher
-            .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
-            .map_err(SyncifyProtocolError::Decryption)?;
+            let cipher = XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes()));
+            let decrypted_bytes = cipher
+                .decrypt(&XNonce::from(header.nonce), packet_buffer.as_ref())
+                .map_err(SyncifyProtocolError::Decryption)?;
 
-        let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
-            .map_err(SyncifyProtocolError::Deserialize)?;
+            let packet = rkyv::from_bytes::<SyncifyPacket, RancorError>(&decrypted_bytes)
+                .map_err(SyncifyProtocolError::Deserialize)?;
 
-        let stream = SyncifyStream {
-            dir: dir.clone(),
-            send_stream: tx,
-            recv_stream: rx,
-            cipher: XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes())),
-        };
+            let stream = SyncifyStream {
+                node_id,
+                dir: dir.clone(),
+                send_stream: tx,
+                recv_stream: rx,
+                cipher: XChaCha20Poly1305::new(&Key::from(dir.read_key.to_bytes())),
+            };
 
-        match packet {
-            SyncifyPacket::Sync(sync_packet) => {
-                if let SyncPacket::Request { head } = sync_packet {
-                    dir.handle()
-                        .await
-                        .clone()
-                        .send(ManagerEvent::RequestSync(stream, blake3::Hash::from(head)))
-                        .await;
+            match packet {
+                SyncifyPacket::Sync(sync_packet) => {
+                    if let SyncPacket::Request { head } = sync_packet {
+                        dir.handle()
+                            .await
+                            .clone()
+                            .send(ManagerEvent::RequestSync(stream, blake3::Hash::from(head)))
+                            .await;
+                    }
                 }
-            }
-            SyncifyPacket::Blobs(blobs_packet) => {
-                if let BlobsPacket::BlobRequest { file_hash, chunk_index } = blobs_packet {
-                    downloader
-                        .send(DownloaderEvent::Supply {
-                            conn: stream,
-                            file_hash: Hash::from(file_hash),
-                            chunk_index,
-                        })
-                        .await;
+                SyncifyPacket::Blob(blob_packet) => {
+                    if let BlobsPacket::BlobRequest { file_hash, chunk_index } = blob_packet {
+                        downloader
+                            .send(DownloaderEvent::SupplyBlob {
+                                conn: stream,
+                                file_hash,
+                                chunk_index,
+                            })
+                            .await;
+                    }
                 }
             }
         }
-    }
 
-    debug!("Dropping connection with {}", connection.remote_node_id()?);
+        debug!("Dropping connection with {node_id}");
+    }
 
     connections.lock().await.retain(|c| c.close_reason().is_none());
 

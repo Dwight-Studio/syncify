@@ -188,6 +188,7 @@ pub enum JobState {
     Error(String),
 }
 
+/// Struct describing a file being shared by a remote node.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub struct RemoteProvision {
     node: [u8; 32],
@@ -289,6 +290,7 @@ impl RemoteProvision {
     }
 }
 
+/// Struct describing a file being shared by the current node.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub struct LocalProvision {
     #[rkyv(with = crate::util::HashDef)]
@@ -374,14 +376,17 @@ impl LocalProvision {
         self.expire < Utc::now()
     }
 
+    /// Get the expiration date.
     pub fn expiration(&self) -> DateTime<Utc> {
         self.expire.clone()
     }
 
+    /// Get file path in the shared directory.
     pub fn path(&self) -> PathBuf {
         PathBuf::from(&self.path)
     }
 
+    /// Get file hash.
     pub fn hash(&self) -> Hash {
         self.hash.clone()
     }

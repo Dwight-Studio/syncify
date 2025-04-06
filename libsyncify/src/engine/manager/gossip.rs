@@ -27,12 +27,13 @@ use crate::engine::manager::{ManagerEvent, ManagerHandle};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::state::HashTree;
+use crate::event::{EventSender, PeerEvent};
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
-use iroh::{Endpoint, NodeId};
+use iroh::NodeId;
 use iroh_gossip::net::{GossipEvent, GossipSender};
 use log::{debug, error, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
@@ -78,9 +79,9 @@ pub struct Message {
 }
 
 pub struct GossipManager {
+    sender: EventSender,
     topic: GossipSender,
     dir: SharedDirectory,
-    ep: Endpoint,
     proto: SyncifyProtocol,
     handle: ManagerHandle,
     downloader: DownloaderHandle,
@@ -88,17 +89,17 @@ pub struct GossipManager {
 
 impl GossipManager {
     pub async fn new(
+        sender: EventSender,
         dir: SharedDirectory,
         topic: GossipSender,
-        ep: Endpoint,
         proto: SyncifyProtocol,
         handle: ManagerHandle,
         downloader: DownloaderHandle,
     ) -> Self {
         Self {
+            sender,
             topic,
             dir,
-            ep,
             proto,
             handle,
             downloader,
@@ -125,6 +126,7 @@ impl GossipManager {
                     let neighbors = &mut self.dir.neighbors.write();
 
                     debug!("{node_id} joined the swarm of {}", self.dir.uuid);
+                    self.sender.send(PeerEvent::Up(node_id).wrap(self.dir.uuid));
                     if let Err(e) = neighbors.update(&node_id, true).await {
                         warn!("Cannot update neighbors: {e}")
                     }
@@ -133,6 +135,7 @@ impl GossipManager {
                     let neighbors = &mut self.dir.neighbors.write();
 
                     debug!("{node_id} leaved the swarm of {}", self.dir.uuid);
+                    self.sender.send(PeerEvent::Down(node_id).wrap(self.dir.uuid));
                     if let Err(e) = neighbors.update(&node_id, false).await {
                         warn!("Cannot update neighbors: {e}")
                     }
@@ -208,7 +211,8 @@ impl GossipManager {
                     // Synchronize if the head is different
                     if self.dir.state.read().await.hash() != new_head {
                         info!("Current state is out of date");
-                        let outgoing = OutgoingSync::new(self.dir.clone(), node_id, self.proto.clone());
+                        let outgoing =
+                            OutgoingSync::new(self.sender.clone(), self.dir.clone(), node_id, self.proto.clone());
                         self.handle.send(ManagerEvent::TriggerSync(Some(outgoing))).await;
                     }
                 }
@@ -231,7 +235,7 @@ impl GossipManager {
         info!("Providing '{}'", provision.hash());
         if let Ok(resp_msg) = self.create_message(Payload::Provision {
             hash: provision.hash(),
-            node_id: *self.ep.node_id().as_bytes(),
+            node_id: *self.proto.node_id().as_bytes(),
             expire: provision.expiration(),
         }) {
             if self.topic.broadcast(resp_msg).await.is_err() {
@@ -271,7 +275,7 @@ impl GossipManager {
     pub async fn notify_changes(&self) {
         debug!("Broadcasting update notification for {}", self.dir.uuid());
 
-        let node_id = *self.ep.node_id().as_bytes();
+        let node_id = *self.proto.node_id().as_bytes();
         let new_head = self.dir.state.read().await.hash().clone();
 
         if let Ok(msg) = self.create_message(Payload::Update { node_id, new_head }) {

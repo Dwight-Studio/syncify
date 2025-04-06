@@ -28,10 +28,10 @@ use crate::engine::manager::gossip::GossipManager;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
 use crate::engine::state::Mutation;
+use crate::event::{EngineEvent, EventSender};
 use crate::store::lock::StoreLock;
 use blake3::Hash;
 use futures::{Sink, StreamExt};
-use iroh::Endpoint;
 use iroh_gossip::net::{GossipSender, GossipTopic};
 use log::{debug, error, info};
 use std::ops::Deref;
@@ -61,14 +61,12 @@ pub struct Manager {
 
 impl Manager {
     pub async fn new(
+        sender: EventSender,
         dir: SharedDirectory,
         topic: GossipTopic,
-        ep: Endpoint,
         downloader: DownloaderHandle,
         proto: SyncifyProtocol,
     ) -> Self {
-        info!("Initializing directory manager for {}", dir.uuid());
-
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = ManagerHandle { tx };
@@ -98,9 +96,9 @@ impl Manager {
         // Spawn new thread
         let join_handle = Some(tokio::spawn(Self::handle_event(
             rx,
+            sender,
             dir.clone(),
             gossip_tx,
-            ep,
             downloader,
             handle.clone(),
             proto,
@@ -126,24 +124,29 @@ impl Manager {
     /// Main method of the [`Manager`].
     async fn handle_event(
         mut rx: mpsc::Receiver<ManagerEvent>,
+        sender: EventSender,
         dir: SharedDirectory,
         topic: GossipSender,
-        ep: Endpoint,
         downloader: DownloaderHandle,
         handle: ManagerHandle,
         proto: SyncifyProtocol,
     ) {
-        let mut fs_manager = FileSystemManager::new(dir.clone(), handle.clone(), downloader.clone()).await;
+        let mut fs_manager =
+            FileSystemManager::new(sender.clone(), dir.clone(), handle.clone(), downloader.clone()).await;
         let mut gossip_manager = GossipManager::new(
+            sender.clone(),
             dir.clone(),
             topic.clone(),
-            ep.clone(),
             proto.clone(),
             handle.clone(),
             downloader.clone(),
         )
         .await;
-        let mut sync_manager = SyncManager::new(dir.clone(), ep.clone(), proto.clone()).await;
+        let mut sync_manager = SyncManager::new(sender.clone(), dir.clone(), proto.clone()).await;
+
+        // Notify
+        info!("Started directory manager for {}", dir.uuid());
+        sender.send(EngineEvent::ManagerStarted(dir.uuid()).wrap());
 
         // Process the event
         while let Some(event) = rx.recv().await {
@@ -168,11 +171,13 @@ impl Manager {
                 // Actor
                 ManagerEvent::Shutdown => {
                     rx.close();
-                    debug!("Closing manager event channel for {}", dir.uuid())
+                    debug!("Closing manager event channel for {}", dir.uuid());
+                    sender.send(EngineEvent::ManagerStopped(dir.uuid()).wrap());
                 }
             }
         }
         info!("Finished manager event processing for {}", dir.uuid());
+        sender.send(EngineEvent::ManagerFinished(dir.uuid()).wrap());
     }
 }
 

@@ -20,11 +20,11 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::SharedDirectory;
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::protocol::{SyncPacket, SyncifyPacket, SyncifyStream};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
+use crate::event::{EventSender, SyncEvent};
 use log::{debug, error, info, warn};
 
 #[derive(Eq, PartialEq)]
@@ -37,16 +37,17 @@ pub enum IncomingState {
 
 pub struct IncomingSync {
     state: IncomingState,
-    dir: SharedDirectory,
+    sender: EventSender,
     connection: SyncifyStream,
     hash: blake3::Hash,
 }
 
 impl IncomingSync {
-    pub fn new(dir: SharedDirectory, connection: SyncifyStream, hash: blake3::Hash) -> Self {
+    pub fn new(sender: EventSender, connection: SyncifyStream, hash: blake3::Hash) -> Self {
+        sender.send(SyncEvent::Incoming(connection.node_id()).wrap(connection.dir.uuid));
         Self {
             state: IncomingState::ReceivingRequest,
-            dir,
+            sender,
             connection,
             hash,
         }
@@ -61,7 +62,14 @@ impl FiniteStateMachine for IncomingSync {
             IncomingState::ReceivingRequest => {
                 info!("Incoming sync request");
                 let packet = {
-                    match self.dir.state.read().await.clone_after(self.hash, MAX_LOADED_DELTAS) {
+                    match self
+                        .connection
+                        .dir
+                        .state
+                        .read()
+                        .await
+                        .clone_after(self.hash, MAX_LOADED_DELTAS)
+                    {
                         Some(state) => SyncifyPacket::Sync(SyncPacket::Success { state }),
                         None => SyncifyPacket::Sync(SyncPacket::Failed),
                     }
@@ -77,7 +85,7 @@ impl FiniteStateMachine for IncomingSync {
             IncomingState::SendingRequest => {
                 debug!("Incoming: SendingRequest");
                 let packet = SyncPacket::Request {
-                    head: *self.dir.state.read().await.hash().as_bytes(),
+                    head: self.connection.dir.state.read().await.hash(),
                 };
 
                 if let Ok(()) = self.connection.send(&SyncifyPacket::Sync(packet)).await {
@@ -90,18 +98,31 @@ impl FiniteStateMachine for IncomingSync {
                                         debug!("Incoming: Receiving state");
                                         //debug!("Incoming: Receiving state: \n{}", state);
 
-                                        let mutations = self
+                                        let mutations = match self
+                                            .connection
                                             .dir
                                             .state
                                             .write()
-                                            .verify_accept_all(other_state, &self.dir.read_key)
+                                            .verify_accept_all(other_state, &self.connection.dir.read_key)
                                             .await
-                                            .map_err(|e| match e {
-                                                StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                                _ => ProtocolError::Unexpected,
-                                            })?;
+                                        {
+                                            Ok(m) => m,
+                                            Err(e) => {
+                                                return match e {
+                                                    StateError::InvalidSignature => {
+                                                        self.sender.send(
+                                                            SyncEvent::Unverified(self.connection.node_id)
+                                                                .wrap(self.connection.dir.uuid),
+                                                        );
+                                                        Err(ProtocolError::InvalidSignature)
+                                                    }
+                                                    _ => Err(ProtocolError::Unexpected),
+                                                };
+                                            }
+                                        };
 
-                                        self.dir
+                                        self.connection
+                                            .dir
                                             .handle()
                                             .await
                                             .send(ManagerEvent::ApplyRemoteMutations(mutations))

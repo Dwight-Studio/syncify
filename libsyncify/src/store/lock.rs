@@ -24,6 +24,7 @@ use crate::engine::downloader::CHUNK_SIZE;
 use crate::engine::job::JobState::Cancelled;
 use crate::engine::job::{DownloadJob, FLUSH_JOB_FREQUENCY, JobState, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, Mutation, State, StateError};
+use crate::event::{DownloadEvent, EventSender};
 use crate::store::{
     HEAD_TABLE, JOBS_TABLE, LOCAL_PROVISIONS_TABLE, LOCAL_TREE_TABLE, NEIGHBORS_TABLE, REMOTE_PROVISIONS_TABLE,
     StoreError, StoreManager,
@@ -482,7 +483,7 @@ impl StoreGuard<DownloadJob> {
     /// # Return
     ///
     /// Returns `false` if there is an error.
-    pub async fn start_download(&self, download_dir: &Path) -> bool {
+    pub async fn start_download(&self, sender: &EventSender, download_dir: &Path) -> bool {
         let mut job = self.inner.write().await;
 
         // Check if the file is already open
@@ -491,6 +492,13 @@ impl StoreGuard<DownloadJob> {
                 match File::create(download_dir.join(job.hash().to_string())) {
                     Ok(file) => {
                         info!("Starting download of '{}'", job.hash());
+                        sender.send(
+                            DownloadEvent::DownloadStarted {
+                                dir_uuid: job.dir_uuid,
+                                file_hash: *job.hash(),
+                            }
+                            .wrap(),
+                        );
                         job.state = JobState::Ongoing;
                         job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
                         true
@@ -509,6 +517,13 @@ impl StoreGuard<DownloadJob> {
                 {
                     Ok(file) => {
                         info!("Resuming download of '{}'", job.hash());
+                        sender.send(
+                            DownloadEvent::DownloadStarted {
+                                dir_uuid: job.dir_uuid,
+                                file_hash: *job.hash(),
+                            }
+                            .wrap(),
+                        );
                         job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
                         true
                     }

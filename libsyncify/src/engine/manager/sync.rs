@@ -26,8 +26,8 @@ use crate::engine::protocol::fsm::FiniteStateMachine;
 use crate::engine::protocol::incoming_sync::IncomingSync;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
 use crate::engine::protocol::{SyncifyProtocol, SyncifyStream};
+use crate::event::EventSender;
 use blake3::Hash;
-use iroh::Endpoint;
 use log::{info, warn};
 use std::ops::Deref;
 use std::time::Duration;
@@ -36,20 +36,20 @@ use tokio::time::sleep;
 pub const FSM_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SyncManager {
+    sender: EventSender,
     dir: SharedDirectory,
-    ep: Endpoint,
     proto: SyncifyProtocol,
 }
 
 impl SyncManager {
-    pub async fn new(dir: SharedDirectory, ep: Endpoint, proto: SyncifyProtocol) -> Self {
-        Self { dir, ep, proto }
+    pub async fn new(sender: EventSender, dir: SharedDirectory, proto: SyncifyProtocol) -> Self {
+        Self { sender, dir, proto }
     }
 
     pub async fn request_sync(&self, conn: SyncifyStream, hash: Hash) {
         *self.dir.initial_sync.write().await = true;
 
-        let mut incoming_sync = IncomingSync::new(self.dir.clone(), conn, hash);
+        let mut incoming_sync = IncomingSync::new(self.sender.clone(), conn, hash);
 
         if incoming_sync.step_until_finished(FSM_TIMEOUT).await {
             incoming_sync.step().await;
@@ -69,9 +69,9 @@ impl SyncManager {
         let neighbors = self.dir.neighbors.read().await;
         for node in neighbors.deref() {
             if *node.1 {
-                let outgoing = OutgoingSync::new(self.dir.clone(), *node.0, self.proto.clone());
+                let outgoing = OutgoingSync::new(self.sender.clone(), self.dir.clone(), *node.0, self.proto.clone());
 
-                if self.ep.node_id() > *node.0 {
+                if self.proto.node_id() > *node.0 {
                     Self::start_sync(outgoing).await;
                 } else {
                     let dir = self.dir.clone();

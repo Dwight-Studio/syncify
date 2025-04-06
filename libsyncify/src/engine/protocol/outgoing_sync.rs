@@ -25,7 +25,7 @@ use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::fsm::{FiniteStateMachine, ProtocolError};
 use crate::engine::protocol::{SyncPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
 use crate::engine::state::{MAX_LOADED_DELTAS, StateError};
-use blake3::Hash;
+use crate::event::{EventSender, SyncEvent};
 use iroh::NodeId;
 use log::{debug, error, info, warn};
 // TODO: Add provision database sync
@@ -41,6 +41,7 @@ pub enum OutgoingState {
 
 pub struct OutgoingSync {
     state: OutgoingState,
+    sender: EventSender,
     dir: SharedDirectory,
     node_id: NodeId,
     proto: SyncifyProtocol,
@@ -48,9 +49,11 @@ pub struct OutgoingSync {
 }
 
 impl OutgoingSync {
-    pub fn new(dir: SharedDirectory, node_id: NodeId, proto: SyncifyProtocol) -> Self {
+    pub fn new(sender: EventSender, dir: SharedDirectory, node_id: NodeId, proto: SyncifyProtocol) -> Self {
+        sender.send(SyncEvent::Outgoing(node_id).wrap(dir.uuid));
         Self {
             state: OutgoingState::Connecting,
+            sender,
             dir,
             node_id,
             connection: None,
@@ -77,7 +80,7 @@ impl FiniteStateMachine for OutgoingSync {
             OutgoingState::SendingRequest => {
                 debug!("Outgoing: SendingRequest");
                 let packet = SyncPacket::Request {
-                    head: *self.dir.state.read().await.hash().as_bytes(),
+                    head: self.dir.state.read().await.hash(),
                 };
 
                 if let Some(ref mut conn) = self.connection {
@@ -91,16 +94,26 @@ impl FiniteStateMachine for OutgoingSync {
                                             debug!("Outgoing: Receiving state");
                                             //debug!("Outgoing: Receiving state\n{}", state);
 
-                                            let mutations = self
+                                            let mutations = match self
                                                 .dir
                                                 .state
                                                 .write()
                                                 .verify_accept_all(other_state, &self.dir.read_key)
                                                 .await
-                                                .map_err(|e| match e {
-                                                    StateError::InvalidSignature => ProtocolError::InvalidSignature,
-                                                    _ => ProtocolError::Unexpected,
-                                                })?;
+                                            {
+                                                Ok(m) => m,
+                                                Err(e) => {
+                                                    return match e {
+                                                        StateError::InvalidSignature => {
+                                                            self.sender.send(
+                                                                SyncEvent::Unverified(conn.node_id).wrap(self.dir.uuid),
+                                                            );
+                                                            Err(ProtocolError::InvalidSignature)
+                                                        }
+                                                        _ => Err(ProtocolError::Unexpected),
+                                                    };
+                                                }
+                                            };
 
                                             self.dir
                                                 .handle()
@@ -136,7 +149,7 @@ impl FiniteStateMachine for OutgoingSync {
                     let hash = if let Ok(request) = conn.recv().await {
                         if let SyncifyPacket::Sync(sync_packet) = request {
                             if let SyncPacket::Request { head } = sync_packet {
-                                Hash::from_bytes(head)
+                                head
                             } else {
                                 return Err(ProtocolError::Unexpected);
                             }

@@ -23,6 +23,7 @@
 use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
+use crate::event::{DownloadEvent, EngineEvent, EventSender};
 use crate::store::StoreManager;
 use crate::store::lock::StoreLock;
 use crate::{SharedDirectory, get_app_cache_dir};
@@ -58,9 +59,7 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub async fn new(store: Arc<RwLock<StoreManager>>, mut proto: SyncifyProtocol) -> Self {
-        info!("Initializing downloader");
-
+    pub async fn new(store: Arc<RwLock<StoreManager>>, sender: EventSender, mut proto: SyncifyProtocol) -> Self {
         // Initiate channel
         let (tx, rx) = mpsc::channel(EVENT_BUFFER_SIZE);
         let handle = DownloaderHandle { tx };
@@ -75,7 +74,14 @@ impl Downloader {
         });
 
         // Spawn new thread
-        let join_handle = Some(tokio::spawn(Self::handle_event(rx, store, jobs, handle.clone(), proto)));
+        let join_handle = Some(tokio::spawn(Self::handle_event(
+            rx,
+            store,
+            sender,
+            jobs,
+            handle.clone(),
+            proto,
+        )));
 
         Downloader { join_handle, handle }
     }
@@ -90,6 +96,7 @@ impl Downloader {
     async fn handle_event(
         mut rx: mpsc::Receiver<DownloaderEvent>,
         store: Arc<RwLock<StoreManager>>,
+        sender: EventSender,
         mut jobs: HashMap<Hash, StoreLock<DownloadJob>>,
         downloader: DownloaderHandle,
         proto: SyncifyProtocol,
@@ -134,6 +141,10 @@ impl Downloader {
             download_tasks.push(DownloadTask { handle: None });
         }
 
+        // Notify
+        info!("Started downloader");
+        sender.send(EngineEvent::DownloaderStarted.wrap());
+
         // Process events
         while let Some(event) = rx.recv().await {
             match event {
@@ -166,6 +177,7 @@ impl Downloader {
 
                         // Start downloading it
                         Self::spawn_download_tasks(
+                            &sender,
                             &downloads_dir,
                             &job,
                             &file_hash,
@@ -180,13 +192,33 @@ impl Downloader {
 
                 DownloaderEvent::Cancel(hash) => {
                     if let Some(job) = jobs.remove(&hash) {
+                        let j = job.read().await;
+
                         info!("Cancelling download of '{hash}'");
+                        sender.send(
+                            DownloadEvent::DownloadCompleted {
+                                dir_uuid: j.dir_uuid,
+                                file_hash: *j.hash(),
+                            }
+                            .wrap(),
+                        );
+                        drop(j);
+
                         job.write().cancel().await;
                     }
                 }
 
                 DownloaderEvent::Resume => {
-                    Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto).await;
+                    Self::download_next(
+                        &store,
+                        &sender,
+                        &downloads_dir,
+                        &jobs,
+                        &downloader,
+                        &mut download_tasks,
+                        &proto,
+                    )
+                    .await;
                 }
 
                 // Provision
@@ -200,8 +232,11 @@ impl Downloader {
                             warn!("Unable update provision: {e}")
                         }
 
+                        sender.send(DownloadEvent::RemoteProvisionUpdate(provision.clone()).wrap());
+
                         if let Some(job) = jobs.get(provision.hash()) {
                             Self::spawn_download_tasks(
+                                &sender,
                                 &downloads_dir,
                                 job,
                                 provision.hash(),
@@ -255,9 +290,10 @@ impl Downloader {
                                             error!("Cannot insert provision: {e}");
                                         } else {
                                             debug!("Finished encoding the file");
+                                            sender.send(DownloadEvent::LocalProvisionUpdate(provision.clone()).wrap());
                                             dir.handle()
                                                 .await
-                                                .send(ManagerEvent::ConfirmLocalProvision(provision.clone()))
+                                                .send(ManagerEvent::ConfirmLocalProvision(provision))
                                                 .await;
                                         }
                                     } else {
@@ -275,14 +311,14 @@ impl Downloader {
                     }
                 }
 
-                DownloaderEvent::Supply {
+                DownloaderEvent::SupplyBlob {
                     mut conn,
                     file_hash,
                     chunk_index,
                 } => {
-                    let dir = provisions_dir.clone();
+                    let provision_dir = provisions_dir.clone();
                     tokio::spawn(async move {
-                        if let Ok(file) = File::open(dir.join(file_hash.to_string())) {
+                        if let Ok(file) = File::open(provision_dir.join(file_hash.to_string())) {
                             let mut extractor = bao::encode::SliceExtractor::new(
                                 file,
                                 CHUNK_SIZE as u64 * chunk_index,
@@ -290,20 +326,22 @@ impl Downloader {
                             );
                             let mut chunk = Vec::new();
                             if let Err(err) = extractor.read_to_end(&mut chunk) {
-                                error!("Cannot get file slice: {}", err.to_string());
+                                error!("Cannot get slice of '{file_hash}' ({})", err.to_string());
                                 return;
                             }
 
-                            let packet = SyncifyPacket::Blobs(BlobsPacket::Blob { chunk });
+                            let packet = SyncifyPacket::Blob(BlobsPacket::Blob { chunk });
 
                             if let Err(err) = conn.send_plain(&packet).await {
-                                error!("Cannot send blob: {err}");
+                                error!("Cannot supply blob '{file_hash}' ({err})");
                             }
+                        } else {
+                            debug!("Cannot supply blob '{file_hash}' (no provision)");
                         }
                     });
                 }
 
-                DownloaderEvent::TaskFailed(job, chunk_index, dir) => {
+                DownloaderEvent::TaskFailed(job, chunk_index, dir, _node_id) => {
                     Self::flush_download_tasks(&mut download_tasks);
 
                     if !matches!(job.read().await.state(), JobState::Cancelled) {
@@ -318,6 +356,7 @@ impl Downloader {
 
                         if !is_done {
                             Self::spawn_download_tasks(
+                                &sender,
                                 &downloads_dir,
                                 &job,
                                 &file_hash,
@@ -332,12 +371,20 @@ impl Downloader {
                             // TODO: Handle failed chunks
                         }
                     } else {
-                        Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
-                            .await;
+                        Self::download_next(
+                            &store,
+                            &sender,
+                            &downloads_dir,
+                            &jobs,
+                            &downloader,
+                            &mut download_tasks,
+                            &proto,
+                        )
+                        .await;
                     }
                 }
 
-                DownloaderEvent::TaskSuccess(job, chunk_index, decoded_data, dir) => {
+                DownloaderEvent::TaskSuccess(job, chunk_index, decoded_data, dir, node_id) => {
                     // TODO: What should we do when the cache file cannot be opened, seeked, written to ? It shouldn't happen...
                     Self::flush_download_tasks(&mut download_tasks);
 
@@ -347,17 +394,28 @@ impl Downloader {
                         }
 
                         // Atomically load all variables
-                        let (file_hash, is_done, empty_failed_chunks) = {
+                        let (file_hash, is_done, progress, empty_failed_chunks) = {
                             let j = job.read().await;
 
-                            (*j.hash(), j.is_done(), j.failed_chunks.is_empty())
+                            (*j.hash(), j.is_done(), j.progress(), j.failed_chunks.is_empty())
                         };
 
-                        debug!("Downloading... {:.1}%", job.read().await.progress() * 100.0);
+                        debug!("Downloading {file_hash}... {:.1}%", progress * 100.0);
+                        sender.send(
+                            DownloadEvent::DownloadProgressed {
+                                dir_uuid: dir.uuid,
+                                file_hash,
+                                progress,
+                                download_chunk_index: chunk_index,
+                                peer_node_id: node_id,
+                            }
+                            .wrap(),
+                        );
 
                         // Launch new download tasks
                         if !is_done {
                             Self::spawn_download_tasks(
+                                &sender,
                                 &downloads_dir,
                                 &job,
                                 &file_hash,
@@ -372,6 +430,13 @@ impl Downloader {
                             // TODO: Handle failed chunks
                         } else {
                             info!("Received file {}", file_hash);
+                            sender.send(
+                                DownloadEvent::DownloadCompleted {
+                                    dir_uuid: dir.uuid,
+                                    file_hash,
+                                }
+                                .wrap(),
+                            );
 
                             if !job.write().finish_download().await {
                                 continue;
@@ -387,6 +452,7 @@ impl Downloader {
 
                             Self::download_next(
                                 &store,
+                                &sender,
                                 &downloads_dir,
                                 &jobs,
                                 &downloader,
@@ -396,25 +462,36 @@ impl Downloader {
                             .await;
                         }
                     } else {
-                        Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
-                            .await;
+                        Self::download_next(
+                            &store,
+                            &sender,
+                            &downloads_dir,
+                            &jobs,
+                            &downloader,
+                            &mut download_tasks,
+                            &proto,
+                        )
+                        .await;
                     }
                 }
 
                 // Actor
                 DownloaderEvent::Shutdown => {
                     rx.close();
-                    debug!("Closing event for the downloader")
+                    debug!("Closing event for the downloader");
+                    sender.send(EngineEvent::DownloaderStopped.wrap());
                 }
             }
         }
 
         info!("Finished event processing for the downloader");
+        sender.send(EngineEvent::DownloaderFinished.wrap());
     }
 
     /// Spawns as many download tasks as available in `download_tasks` for all pending [`DownloadJob`].
     async fn download_next(
         store: &Arc<RwLock<StoreManager>>,
+        sender: &EventSender,
         downloads_dir: &Path,
         jobs: &HashMap<Hash, StoreLock<DownloadJob>>,
         download_handle: &DownloaderHandle,
@@ -434,7 +511,17 @@ impl Downloader {
                     continue;
                 }
             };
-            Self::spawn_download_tasks(downloads_dir, job, hash, dir, download_handle, download_tasks, proto).await;
+            Self::spawn_download_tasks(
+                &sender,
+                downloads_dir,
+                job,
+                hash,
+                dir,
+                download_handle,
+                download_tasks,
+                proto,
+            )
+            .await;
         }
     }
 
@@ -444,6 +531,7 @@ impl Downloader {
     ///
     /// Returns `true` if at least one task has been launched, otherwise returns `false`.
     async fn spawn_download_tasks(
+        sender: &EventSender,
         downloads_dir: &Path,
         job: &StoreLock<DownloadJob>,
         file_hash: &Hash,
@@ -452,7 +540,7 @@ impl Downloader {
         download_tasks: &mut [DownloadTask],
         proto: &SyncifyProtocol,
     ) {
-        if !job.write().start_download(downloads_dir).await {
+        if !job.write().start_download(sender, downloads_dir).await {
             return;
         }
 
@@ -508,20 +596,22 @@ impl Downloader {
             let file_hash = *download_job.read().await.hash();
             if let Ok(mut connection) = proto.open_stream(&dir, node_id).await {
                 drop(proto);
-                let packet = SyncifyPacket::Blobs(BlobsPacket::BlobRequest {
-                    file_hash: *file_hash.as_bytes(),
-                    chunk_index,
-                });
+                let packet = SyncifyPacket::Blob(BlobsPacket::BlobRequest { file_hash, chunk_index });
                 if connection.send(&packet).await.is_err() {
                     download_handle
-                        .send(DownloaderEvent::TaskFailed(download_job.clone(), chunk_index, dir))
+                        .send(DownloaderEvent::TaskFailed(
+                            download_job.clone(),
+                            chunk_index,
+                            dir,
+                            node_id,
+                        ))
                         .await;
                     return;
                 }
                 match connection.recv().await {
                     Ok(packet) => {
                         match packet {
-                            SyncifyPacket::Blobs(BlobsPacket::Blob { chunk }) => {
+                            SyncifyPacket::Blob(BlobsPacket::Blob { chunk }) => {
                                 let mut decoded = Vec::new();
                                 let mut decoder = bao::decode::SliceDecoder::new(
                                     &*chunk,
@@ -532,21 +622,27 @@ impl Downloader {
 
                                 if decoder.read_to_end(&mut decoded).is_err() {
                                     download_handle
-                                        .send(DownloaderEvent::TaskFailed(download_job, chunk_index, dir))
+                                        .send(DownloaderEvent::TaskFailed(download_job, chunk_index, dir, node_id))
                                         .await;
                                 } else {
                                     download_handle
-                                        .send(DownloaderEvent::TaskSuccess(download_job, chunk_index, decoded, dir))
+                                        .send(DownloaderEvent::TaskSuccess(
+                                            download_job,
+                                            chunk_index,
+                                            decoded,
+                                            dir,
+                                            node_id,
+                                        ))
                                         .await;
                                 }
                             }
-                            _ => {} // Will never happen
+                            _ => unreachable!(), // Will never happen
                         }
                     }
                     Err(err) => {
                         debug!("{err}");
                         download_handle
-                            .send(DownloaderEvent::TaskFailed(download_job, chunk_index, dir))
+                            .send(DownloaderEvent::TaskFailed(download_job, chunk_index, dir, node_id))
                             .await;
                     }
                 }
@@ -606,7 +702,7 @@ pub enum DownloaderEvent {
     Resume,
 
     // Provision
-    Supply {
+    SupplyBlob {
         conn: SyncifyStream,
         file_hash: Hash,
         chunk_index: u64,
@@ -615,8 +711,8 @@ pub enum DownloaderEvent {
     LocalProvisionUpdate(Uuid, LocalProvision),
 
     // Download task related
-    TaskFailed(StoreLock<DownloadJob>, u64, SharedDirectory),
-    TaskSuccess(StoreLock<DownloadJob>, u64, Vec<u8>, SharedDirectory),
+    TaskFailed(StoreLock<DownloadJob>, u64, SharedDirectory, NodeId),
+    TaskSuccess(StoreLock<DownloadJob>, u64, Vec<u8>, SharedDirectory, NodeId),
 
     // Actor
     Shutdown,

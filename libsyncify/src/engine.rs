@@ -26,6 +26,7 @@ use crate::engine::EngineError::AlreadyWatched;
 use crate::engine::downloader::{Downloader, DownloaderEvent};
 use crate::engine::manager::Manager;
 use crate::engine::protocol::{SYNCIFY_ALPN, SyncifyProtocol, SyncifyProtocolHandler};
+use crate::event::EventSender;
 use crate::store::StoreManager;
 use iroh::Endpoint;
 use iroh::protocol::Router;
@@ -51,10 +52,9 @@ pub const AUTO_FLUSH_PERIOD: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug)]
 pub struct Engine {
-    _store: Arc<RwLock<StoreManager>>,
+    sender: EventSender,
     router: Router,
     gossip: Gossip,
-    ep: Endpoint,
     downloader: Downloader,
     managers: HashMap<Uuid, Manager>,
     proto: SyncifyProtocol,
@@ -63,7 +63,7 @@ pub struct Engine {
 /// Synchronization engine.
 impl Engine {
     /// Construct new instance.
-    pub async fn new(store: Arc<RwLock<StoreManager>>) -> Result<Self, EngineError> {
+    pub async fn new(store: Arc<RwLock<StoreManager>>, sender: EventSender) -> Result<Self, EngineError> {
         info!("Initializing engine");
         let endpoint = Endpoint::builder()
             .secret_key(store.read().await.secret_key())
@@ -85,14 +85,13 @@ impl Engine {
 
         let mut proto = SyncifyProtocol::new(builder.endpoint().clone(), store.clone());
 
-        let downloader = Downloader::new(store.clone(), proto.clone()).await;
+        let downloader = Downloader::new(store.clone(), sender.clone(), proto.clone()).await;
         proto.set_downloader(downloader.clone());
 
         let protocol_handler = SyncifyProtocolHandler::new(proto.clone(), store.clone(), downloader.clone());
 
         let mut engine = Self {
-            _store: store.clone(),
-            ep: builder.endpoint().clone(),
+            sender,
             router: builder
                 .accept(SYNCIFY_ALPN, protocol_handler.clone())
                 .accept(iroh_gossip::ALPN, gossip.clone())
@@ -156,9 +155,9 @@ impl Engine {
 
             // Create manager
             let manager = Manager::new(
+                self.sender.clone(),
                 dir.clone(),
                 topic,
-                self.ep.clone(),
                 self.downloader.clone(),
                 self.proto.clone(),
             )

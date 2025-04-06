@@ -25,10 +25,10 @@ use crate::SyncifyError::{
     AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, PathEncoding, ReadOnly,
 };
 use crate::engine::job::{LocalProvision, RemoteProvision};
-use crate::engine::manager::{ManagerEvent, ManagerHandle};
+use crate::engine::manager::ManagerHandle;
 use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
-use crate::event::EventSender;
+use crate::event::{DirectoryEvent, EventReceiver, EventSender};
 use crate::store::StoreManager;
 use crate::store::link::{Link, LinkError};
 use crate::store::lock::StoreLock;
@@ -51,9 +51,6 @@ pub mod engine;
 pub mod event;
 pub mod store;
 pub mod util;
-
-/// Size of the [`SyncifyEvent`] buffer.
-pub const EVENT_BUFFER_SIZE: usize = 1024;
 
 // Set the path where the store file will be/is stored
 fn get_app_config_dir() -> PathBuf {
@@ -94,8 +91,7 @@ impl Syncify {
     /// Construct new instance.
     pub async fn new() -> Result<Self, SyncifyError> {
         let store = StoreManager::new().await.map_err(SyncifyError::Store)?;
-
-        let (sender, _) = tokio::sync::broadcast::channel(EVENT_BUFFER_SIZE);
+        let sender = EventSender::new();
 
         Ok(Self {
             sender,
@@ -104,9 +100,16 @@ impl Syncify {
         })
     }
 
+    /// Create a new [`EventReceiver`] for all [`SyncifyEvent`]s produced by this instance.
+    pub fn subscribe(&self) -> EventReceiver {
+        self.sender.subscribe()
+    }
+
     /// Initialize new engine and start syncing.
     pub async fn start_sync(&mut self) -> Result<(), SyncifyError> {
-        let engine = Engine::new(self.store.clone()).await.map_err(SyncifyError::Engine)?;
+        let engine = Engine::new(self.store.clone(), self.sender.clone())
+            .await
+            .map_err(SyncifyError::Engine)?;
         self.engine = Some(Arc::new(RwLock::new(engine)));
         Ok(())
     }
@@ -147,13 +150,15 @@ impl Syncify {
             read_key: sign_key.verifying_key(),
         };
 
+        self.internal_add_directory(&dir).await?;
+
+        // Notify
         info!(
-            "Creating shared directory {} at \"{}\"",
+            "Created shared directory {} at \"{}\"",
             dir.uuid(),
             dir.path().display()
         );
-
-        self.internal_add_directory(&dir).await?;
+        self.sender.send(DirectoryEvent::Created.wrap(dir.uuid()));
 
         Ok(dir)
     }
@@ -181,6 +186,14 @@ impl Syncify {
                     .await
                     .map_err(SyncifyError::Engine)?;
             }
+
+            // Notify
+            info!(
+                "Removed shared directory {} at \"{}\"",
+                dir.uuid(),
+                dir.path().display()
+            );
+            self.sender.send(DirectoryEvent::Removed.wrap(dir.uuid()));
 
             Ok(())
         } else {
@@ -239,9 +252,11 @@ impl Syncify {
             },
         };
 
-        info!("Added shared directory {} at \"{}\"", dir.uuid(), dir.path().display());
-
         self.internal_add_directory(&dir).await?;
+
+        // Notify
+        info!("Joined shared directory {} at \"{}\"", dir.uuid(), dir.path().display());
+        self.sender.send(DirectoryEvent::Created.wrap(dir.uuid()));
 
         Ok(dir)
     }

@@ -23,7 +23,8 @@
 use crate::engine::downloader::{DownloaderEvent, DownloaderHandle};
 use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::manager::{ManagerEvent, ManagerHandle};
-use crate::engine::state::{HashTree, Mutation};
+use crate::engine::state::{HashTree, MAX_LOADED_DELTAS, Mutation};
+use crate::event::{EventSender, SyncEvent};
 use crate::store::lock::StoreLock;
 use crate::{SharedDirectory, get_app_cache_dir};
 use chrono::Utc;
@@ -32,14 +33,21 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 
 pub struct FileSystemManager {
+    sender: EventSender,
     dir: SharedDirectory,
     handle: ManagerHandle,
     downloader: DownloaderHandle,
 }
 
 impl FileSystemManager {
-    pub async fn new(dir: SharedDirectory, handle: ManagerHandle, downloader: DownloaderHandle) -> Self {
+    pub async fn new(
+        sender: EventSender,
+        dir: SharedDirectory,
+        handle: ManagerHandle,
+        downloader: DownloaderHandle,
+    ) -> Self {
         Self {
+            sender,
             dir,
             handle,
             downloader,
@@ -124,6 +132,8 @@ impl FileSystemManager {
             None => return,
         };
 
+        let old_hash = self.dir.state.read().await.hash();
+
         for mutation in &mutations {
             match self.dir.state.write().mutate(mutation.clone(), write_key).await {
                 Ok(_) => match self.dir.local_tree.write().apply(mutation).await {
@@ -146,6 +156,18 @@ impl FileSystemManager {
             }
         }
 
+        // Notify
+        self.sender.send(
+            SyncEvent::Local(
+                self.dir
+                    .state
+                    .read()
+                    .await
+                    .clone_after(old_hash, MAX_LOADED_DELTAS)
+                    .unwrap(),
+            )
+            .wrap(self.dir.uuid()),
+        );
         self.handle.send(ManagerEvent::BroadcastUpdate).await
 
         //debug!("New state: \n{}", inner.state);
@@ -154,6 +176,8 @@ impl FileSystemManager {
 
     /// Apply remotely generated [`Mutation`]s to a [`SharedDirectory`].
     pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
+        let old_hash = self.dir.state.read().await.hash();
+
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify { .. } => {
@@ -220,6 +244,18 @@ impl FileSystemManager {
             }
         }
 
+        // Notify
+        self.sender.send(
+            SyncEvent::Remote(
+                self.dir
+                    .state
+                    .read()
+                    .await
+                    .clone_after(old_hash, MAX_LOADED_DELTAS)
+                    .unwrap(),
+            )
+            .wrap(self.dir.uuid()),
+        );
         self.handle.send(ManagerEvent::BroadcastUpdate).await
     }
 
