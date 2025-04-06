@@ -36,3 +36,4 @@ redb = "2.4.0"
 chrono = { version = "0.4.40", features = ["default", "rkyv-64", "rkyv-validation"] }
 bytes = "1.10.1"
 bao = "0.13.0"
+async-channel = "2.3.1"

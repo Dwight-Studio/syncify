@@ -111,7 +111,6 @@ pub enum DirectoryEvent {
     Sync(Box<SyncEvent>),
     /// A directory has received peer status update.
     Peer(PeerEvent),
-    
 }
 
 impl DirectoryEvent {

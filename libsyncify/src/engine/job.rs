@@ -28,16 +28,13 @@ use log::error;
 use redb::{Key, TypeName, Value};
 use rkyv::rancor::Error;
 use rkyv::util::AlignedVec;
-use rkyv::with::Skip;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 /// Automatically flush the [`DownloadJob`] into the database every [`FLUSH_JOB_FREQUENCY`] chunk downloaded.
-pub const FLUSH_JOB_FREQUENCY: u64 = 128;
+pub const FLUSH_JOB_FREQUENCY: u8 = 128;
 
 /// A sync job.
 #[derive(Archive, Serialize, Deserialize, Debug)]
@@ -51,8 +48,6 @@ pub struct DownloadJob {
     pub(crate) last_chunk: u64,
     pub(crate) chunk_done: u64,
     pub(crate) failed_chunks: Vec<u64>,
-    #[rkyv(with = Skip)]
-    pub(crate) file: Option<BufWriter<File>>,
 }
 
 impl DownloadJob {
@@ -66,7 +61,6 @@ impl DownloadJob {
             last_chunk: 0,
             chunk_done: 0,
             failed_chunks: Vec::new(),
-            file: None,
         }
     }
 

@@ -20,11 +20,9 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::downloader::CHUNK_SIZE;
 use crate::engine::job::JobState::Cancelled;
 use crate::engine::job::{DownloadJob, FLUSH_JOB_FREQUENCY, JobState, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, Mutation, State, StateError};
-use crate::event::{DownloadEvent, EventSender};
 use crate::store::{
     HEAD_TABLE, JOBS_TABLE, LOCAL_PROVISIONS_TABLE, LOCAL_TREE_TABLE, NEIGHBORS_TABLE, REMOTE_PROVISIONS_TABLE,
     StoreError, StoreManager,
@@ -32,13 +30,10 @@ use crate::store::{
 use crate::{LocalProvisionsMap, NeighborsMap, ReadKey, RemoteProvisionsMap, WriteKey};
 use chrono::Utc;
 use iroh_base::NodeId;
-use log::{debug, error, info};
+use log::{debug, error};
 use redb::TableDefinition;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::ops::Deref;
-use std::path::Path;
 use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
@@ -478,66 +473,11 @@ impl StoreGuard<DownloadJob> {
         self.inner.write().await.failed_chunks.push(index);
     }
 
-    /// Prepare the file buffer for downloading.
-    ///
-    /// # Return
-    ///
-    /// Returns `false` if there is an error.
-    pub async fn start_download(&self, sender: &EventSender, download_dir: &Path) -> bool {
+    /// Set the job state to [`JobState::Ongoing`]
+    pub async fn set_ongoing(&self) {
         let mut job = self.inner.write().await;
 
-        // Check if the file is already open
-        if job.file.is_none() {
-            if matches!(*job.state(), JobState::Pending) {
-                match File::create(download_dir.join(job.hash().to_string())) {
-                    Ok(file) => {
-                        info!("Starting download of '{}'", job.hash());
-                        sender.send(
-                            DownloadEvent::DownloadStarted {
-                                dir_uuid: job.dir_uuid,
-                                file_hash: *job.hash(),
-                            }
-                            .wrap(),
-                        );
-                        job.state = JobState::Ongoing;
-                        job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
-                        true
-                    }
-                    Err(e) => {
-                        error!("Cannot create cache file ({e})");
-                        false
-                    }
-                }
-            } else if matches!(*job.state(), JobState::Ongoing) {
-                match File::options()
-                    .create(true)
-                    .write(true)
-                    .truncate(false)
-                    .open(download_dir.join(job.hash().to_string()))
-                {
-                    Ok(file) => {
-                        info!("Resuming download of '{}'", job.hash());
-                        sender.send(
-                            DownloadEvent::DownloadStarted {
-                                dir_uuid: job.dir_uuid,
-                                file_hash: *job.hash(),
-                            }
-                            .wrap(),
-                        );
-                        job.file = Some(BufWriter::with_capacity(CHUNK_SIZE * 32, file));
-                        true
-                    }
-                    Err(e) => {
-                        error!("Cannot create cache file ({e})");
-                        false
-                    }
-                }
-            } else {
-                false
-            }
-        } else {
-            true
-        }
+        job.state = JobState::Ongoing;
     }
 
     /// Add one to the last chunk counter.
@@ -545,68 +485,39 @@ impl StoreGuard<DownloadJob> {
         self.inner.write().await.last_chunk += 1;
     }
 
-    /// Write data into the file and flush [`DownloadJob`] in the database.
+    /// Flush [`DownloadJob`] in the database.
     ///
     /// # Return
     ///
-    /// Returns `false` if there is an error.
-    pub async fn finish_download_chunk(&self, chunk_index: u64, data: Vec<u8>) -> bool {
+    /// Returns the progress of the [`DownloadJob`]
+    pub async fn finish_download_chunk(&self) -> (f32, bool) {
         let mut job = self.inner.write().await;
-
-        let file: &mut BufWriter<File> = if let Some(buf) = &mut job.file {
-            buf
-        } else {
-            error!("Cache file cannot be found!");
-            return false;
-        };
-
-        if let Err(err) = file.seek(SeekFrom::Start(chunk_index * CHUNK_SIZE as u64)) {
-            error!("Cannot seek into the cache file: {err}");
-            return false;
-        }
-        if let Err(err) = file.write_all(&data) {
-            error!("Cannot write to the cache file: {err}");
-            return false;
-        }
 
         // Handling the job update
         job.chunk_done();
 
-        if job.chunk_done % FLUSH_JOB_FREQUENCY == 0 {
+        let progress = job.progress;
+        let is_done = job.is_done();
+        if job.chunk_done % FLUSH_JOB_FREQUENCY as u64 == 0 {
             drop(job);
             if let Err(e) = self.flush().await {
                 error!("Cannot flush job ({e})");
             }
         }
 
-        true
+        (progress, is_done)
     }
 
     /// Flush the file buffer, and update the [`DownloadJob`] in the database.
-    pub async fn finish_download(&self) -> bool {
+    pub async fn finish_download(&self) {
         let mut job = self.inner.write().await;
 
-        let file: &mut BufWriter<File> = if let Some(buf) = &mut job.file {
-            buf
-        } else {
-            error!("Cache file cannot be found!");
-            return false;
-        };
-
-        if let Err(e) = file.flush() {
-            error!("Cannot flush cache file: {e}");
-            return false;
-        }
-
-        job.file = None;
         job.state = JobState::Done(Utc::now());
 
         drop(job);
         if let Err(e) = self.delete().await {
             error!("Cannot delete job ({e})");
         }
-
-        true
     }
 
     /// Delete the [`DownloadJob`] from the database.
