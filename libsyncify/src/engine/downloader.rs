@@ -366,6 +366,11 @@ impl Downloader {
                     .send(ManagerEvent::RequestProvision(*job_opt.hash()))
                     .await;
             }
+        } else {
+            dir.handle()
+                .await
+                .send(ManagerEvent::RequestProvision(*job_opt.hash()))
+                .await;
         }
     }
 
