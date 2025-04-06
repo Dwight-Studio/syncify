@@ -150,19 +150,19 @@ impl SyncEvent {
 pub enum ConflictEvent {
     /// A conflict has been detected but the changes didn't overlap.
     /// The conflict was automatically resolved.
-    Trivial,
+    Trivial, //TODO
     /// A conflict has been detected and the changes overlap.
     /// The conflict require user intervention to be resolved.
-    RequireIntervention { local: State, remote: State, callback: () },
+    RequireIntervention { local: State, remote: State, callback: () }, //TODO
     /// A conflict has been detected and the changes overlap.
     /// The conflict has been resolved by remote peer.
-    Resolved,
+    Resolved, //TODO
     /// A conflict has been detected and the changes overlap.
     /// The conflict resolution has been cancelled.
-    Cancelled,
+    Cancelled, //TODO
     /// A conflict has been detected and the changes overlap.
     /// None of the peers involved in the synchronization can resolve the conflict (requiring write permission).
-    Stalemate,
+    Stalemate, //TODO
 }
 
 impl ConflictEvent {
@@ -180,9 +180,9 @@ pub enum DownloadEvent {
     /// A [`RemoteProvision`] has been updated (a file is now ready to be downloaded from another peer).
     RemoteProvisionUpdate(RemoteProvision),
     /// A file is now being uploaded to another peer.
-    UploadStarted { file_hash: Hash, peer_node_id: NodeId },
+    UploadStarted { file_hash: Hash, peer_node_id: NodeId }, //TODO
     /// A file is no longer being upload to another peer.
-    UploadStopped { file_hash: Hash, peer_node_id: NodeId },
+    UploadStopped { file_hash: Hash, peer_node_id: NodeId }, //TODO
     /// A file (for a specific directory) is now being downloaded from another peer.
     DownloadStarted { dir_uuid: Uuid, file_hash: Hash },
     /// The download of a file (for a specific directory) has progressed.
