@@ -39,6 +39,7 @@ impl Keys {
 }
 
 /// Secrets manager.
+#[derive(Debug)]
 pub struct Keyring {
     credential_builder: Box<CredentialBuilder>,
 }

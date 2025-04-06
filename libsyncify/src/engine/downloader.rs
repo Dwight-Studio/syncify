@@ -51,6 +51,7 @@ pub struct DownloadTask {
     handle: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug)]
 pub struct Downloader {
     join_handle: Option<JoinHandle<()>>,
     handle: DownloaderHandle,
@@ -176,7 +177,7 @@ impl Downloader {
                         .await;
                     }
                 }
-                
+
                 DownloaderEvent::Cancel(hash) => {
                     if let Some(job) = jobs.remove(&hash) {
                         info!("Cancelling download of '{hash}'");
@@ -325,7 +326,7 @@ impl Downloader {
                                 &mut download_tasks,
                                 &proto,
                             )
-                                .await;
+                            .await;
                         } else if !empty_failed_chunks {
                             error!("Not implemented!");
                             // TODO: Handle failed chunks
@@ -365,7 +366,7 @@ impl Downloader {
                                 &mut download_tasks,
                                 &proto,
                             )
-                                .await;
+                            .await;
                         } else if !empty_failed_chunks {
                             error!("Not implemented!");
                             // TODO: Handle failed chunks
@@ -380,12 +381,19 @@ impl Downloader {
                                 .await
                                 .send(ManagerEvent::DownloadFinished(job.clone()))
                                 .await;
-                            
+
                             // Remove job from list
                             jobs.remove(&file_hash);
 
-                            Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
-                                .await;
+                            Self::download_next(
+                                &store,
+                                &downloads_dir,
+                                &jobs,
+                                &downloader,
+                                &mut download_tasks,
+                                &proto,
+                            )
+                            .await;
                         }
                     } else {
                         Self::download_next(&store, &downloads_dir, &jobs, &downloader, &mut download_tasks, &proto)
@@ -558,7 +566,7 @@ impl Downloader {
 
     fn _garbage_collect() {
         // TODO: Delete expired provisions
-        // TODO: Delete non expired provisions when the PROVISION_CACHE_MAX_SIZE (defined in gossip) is exceeded 
+        // TODO: Delete non expired provisions when the PROVISION_CACHE_MAX_SIZE (defined in gossip) is exceeded
     }
 }
 
@@ -571,7 +579,7 @@ impl Deref for Downloader {
 }
 
 /// Handle to a [`Downloader`].
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct DownloaderHandle {
     tx: mpsc::Sender<DownloaderEvent>,
 }

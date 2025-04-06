@@ -52,6 +52,7 @@ pub const EVENT_BUFFER_SIZE: usize = 1024;
 pub const WATCHER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Actor responsible to handle all sync events for a [`SharedDirectory`].
+#[derive(Debug)]
 pub struct Manager {
     watcher_join_handle: Option<JoinHandle<()>>,
     join_handle: Option<JoinHandle<()>>,
@@ -184,7 +185,7 @@ impl Deref for Manager {
 }
 
 /// Handle to a [`Manager`].
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ManagerHandle {
     tx: mpsc::Sender<ManagerEvent>,
 }

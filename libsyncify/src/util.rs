@@ -27,7 +27,7 @@ use fern::colors::ColoredLevelConfig;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::time::SystemTime;
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 #[rkyv(remote = blake3::Hash)]
 #[rkyv(archived = ArchivedHash)]
 pub struct HashDef(#[rkyv(getter = blake3::Hash::as_bytes)] [u8; 32]);
@@ -38,7 +38,7 @@ impl From<HashDef> for Hash {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 #[rkyv(remote = DateTime::<Utc>)]
 #[rkyv(archived = ArchivedDateTime)]
 pub struct DateTimeDef(#[rkyv(getter = DateTime::timestamp)] i64);
@@ -49,7 +49,7 @@ impl From<DateTimeDef> for DateTime<Utc> {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 #[rkyv(remote = Option::<Hash>)]
 #[rkyv(archived = ArchivedOptionHash)]
 pub enum OptionHashDef {
@@ -66,7 +66,7 @@ impl From<OptionHashDef> for Option<Hash> {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 #[rkyv(remote = ed25519_dalek::Signature)]
 #[rkyv(archived = ArchivedSignature)]
 pub struct SignatureDef(#[rkyv(getter = Signature::to_bytes)] [u8; 64]);

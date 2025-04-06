@@ -26,6 +26,7 @@ use crate::engine::job::{LocalProvision, RemoteProvision};
 use crate::engine::manager::{ManagerEvent, ManagerHandle};
 use crate::engine::protocol::SyncifyProtocol;
 use crate::engine::protocol::outgoing_sync::OutgoingSync;
+use crate::engine::state::HashTree;
 use blake3::Hash;
 use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, OsRng};
@@ -37,7 +38,6 @@ use log::{debug, error, info, warn};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::ops::Add;
 use thiserror::Error;
-use crate::engine::state::HashTree;
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);

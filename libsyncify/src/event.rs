@@ -33,12 +33,14 @@ pub type EventSender = broadcast::Sender<SyncifyEvent>;
 pub type EventReceiver = broadcast::Receiver<SyncifyEvent>;
 
 /// Hierarchical event type providing layered precision.
+#[derive(Debug, Clone)]
 pub enum SyncifyEvent {
     Engine(EngineEvent),
     Directory(DirectoryEvent),
 }
 
 /// [`Engine`] related events.
+#[derive(Debug, Clone)]
 pub enum EngineEvent {
     /// [`SharedDirectory`] manager started (synchronization is now active for that directory).
     ManagerStarted(Uuid),
@@ -55,6 +57,7 @@ pub enum EngineEvent {
 }
 
 /// [`SharedDirectory`] related events.
+#[derive(Debug, Clone)]
 pub enum DirectoryEvent {
     /// A [`SharedDirectory`] has been created.
     Created(SharedDirectory),
@@ -67,6 +70,7 @@ pub enum DirectoryEvent {
 }
 
 /// [`SharedDirectory`] synchronization related events.
+#[derive(Debug, Clone)]
 pub enum SyncEvent {
     /// A request for synchronization has been received.
     Incoming(NodeId),
@@ -83,6 +87,7 @@ pub enum SyncEvent {
 }
 
 /// Synchronization conflicts related events.
+#[derive(Debug, Clone)]
 pub enum ConflictEvent {
     /// A conflict has been detected but the changes didn't overlap.
     /// The conflict was automatically resolved.

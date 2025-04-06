@@ -25,9 +25,10 @@ use crate::SyncifyError::{
     AlreadyShared, DirectoryNotEmpty, InvalidPath, NotADirectory, NotShared, PathEncoding, ReadOnly,
 };
 use crate::engine::job::{LocalProvision, RemoteProvision};
-use crate::engine::manager::ManagerHandle;
+use crate::engine::manager::{ManagerEvent, ManagerHandle};
 use crate::engine::state::{HashTree, State};
 use crate::engine::{Engine, EngineError};
+use crate::event::EventSender;
 use crate::store::StoreManager;
 use crate::store::link::{Link, LinkError};
 use crate::store::lock::StoreLock;
@@ -51,6 +52,9 @@ pub mod event;
 pub mod store;
 pub mod util;
 
+/// Size of the [`SyncifyEvent`] buffer.
+pub const EVENT_BUFFER_SIZE: usize = 1024;
+
 // Set the path where the store file will be/is stored
 fn get_app_config_dir() -> PathBuf {
     if cfg!(debug_assertions) {
@@ -70,7 +74,7 @@ fn get_app_cache_dir() -> PathBuf {
     }
 }
 
-#[derive(PartialEq, Clone, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, PartialEq)]
 pub enum SharedDirPermission {
     ReadOnly,
     Write,
@@ -78,9 +82,10 @@ pub enum SharedDirPermission {
 
 pub const APP_NAME: &str = "Syncify";
 
-#[derive(Clone)]
 /// Entry point of the library.
+#[derive(Debug, Clone)]
 pub struct Syncify {
+    sender: EventSender,
     store: Arc<RwLock<StoreManager>>,
     engine: Option<Arc<RwLock<Engine>>>,
 }
@@ -90,7 +95,13 @@ impl Syncify {
     pub async fn new() -> Result<Self, SyncifyError> {
         let store = StoreManager::new().await.map_err(SyncifyError::Store)?;
 
-        Ok(Self { store, engine: None })
+        let (sender, _) = tokio::sync::broadcast::channel(EVENT_BUFFER_SIZE);
+
+        Ok(Self {
+            sender,
+            store,
+            engine: None,
+        })
     }
 
     /// Initialize new engine and start syncing.
@@ -337,7 +348,7 @@ pub type NeighborsMap = HashMap<NodeId, bool>;
 pub type LocalProvisionsMap = HashMap<Hash, LocalProvision>;
 pub type RemoteProvisionsMap = HashMap<Hash, HashMap<NodeId, RemoteProvision>>;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SharedDirectory {
     uuid: Uuid,
     path: PathBuf,

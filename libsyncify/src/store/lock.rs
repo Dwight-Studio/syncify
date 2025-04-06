@@ -21,6 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::engine::downloader::CHUNK_SIZE;
+use crate::engine::job::JobState::Cancelled;
 use crate::engine::job::{DownloadJob, FLUSH_JOB_FREQUENCY, JobState, LocalProvision, RemoteProvision};
 use crate::engine::state::{Delta, HashTree, Mutation, State, StateError};
 use crate::store::{
@@ -40,9 +41,9 @@ use std::path::Path;
 use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
-use crate::engine::job::JobState::Cancelled;
 
 /// A reader-writer lock used to synchronise persistent data with the store.
+#[derive(Debug)]
 pub struct StoreLock<T: Store> {
     store: Weak<RwLock<StoreManager>>,
     inner: Arc<RwLock<T>>,
@@ -458,13 +459,13 @@ impl StoreGuard<DownloadJob> {
 
         transaction.commit().map_err(StoreError::Commit)
     }
-    
+
     /// Cancel a [`DownloadJob`].
     pub async fn cancel(&self) {
         let mut job = self.inner.write().await;
-        
+
         job.state = Cancelled;
-        
+
         drop(job);
         if let Err(e) = self.delete().await {
             error!("Cannot delete job ({e})");

@@ -49,6 +49,7 @@ pub mod state;
 /// Auto flush period.
 pub const AUTO_FLUSH_PERIOD: Duration = Duration::from_secs(30 * 60);
 
+#[derive(Debug)]
 pub struct Engine {
     _store: Arc<RwLock<StoreManager>>,
     router: Router,

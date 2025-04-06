@@ -49,7 +49,7 @@ pub const MAX_LOADED_DELTAS: u32 = 2048;
 pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
 
 /// Tree containing the synchronisation information for a [`SharedDirectory`].
-#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct State {
     #[rkyv(with = crate::util::HashDef)]
     head: Hash,
@@ -385,7 +385,7 @@ impl Iterator for StateIterator {
 }
 
 /// Node describing a modification of a [`State`].
-#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct Delta {
     #[rkyv(with = crate::util::OptionHashDef)]
     parent: Option<Hash>,
@@ -510,7 +510,7 @@ impl Delta {
 }
 
 /// Mutation action of a [`Delta`].
-#[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Mutation {
     Init {
         /// Timestamp is dated from when the mutation was detected.
@@ -891,7 +891,7 @@ impl HashTree {
             }
         }
     }
-    
+
     /// Search a file in the tree, and return it with its path.
     pub fn search(&self, search_hash: &Hash) -> Option<(HashTree, String)> {
         match self {
@@ -900,10 +900,10 @@ impl HashTree {
                 for tree in content {
                     let rtn = tree.search_recursive(search_hash, "".to_string());
                     if rtn.is_some() {
-                        return rtn
+                        return rtn;
                     }
                 }
-                
+
                 None
             }
         }
@@ -925,10 +925,10 @@ impl HashTree {
                 for tree in content {
                     let rtn = tree.search_recursive(search_hash, new_prefix.clone());
                     if rtn.is_some() {
-                        return rtn
+                        return rtn;
                     }
                 }
-                
+
                 None
             }
         }

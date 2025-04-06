@@ -37,8 +37,8 @@ use uuid::Uuid;
 /// The prefix used for invitation link generation
 pub const LINK_PREFIX: &str = "syncify://";
 
-#[derive(Archive, Serialize, Deserialize)]
 /// The structure representing an invitation Link
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct Link {
     pub(crate) uuid: Uuid,
     pub(crate) permission: SharedDirPermission,

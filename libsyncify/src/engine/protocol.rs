@@ -42,7 +42,7 @@ use iroh_base::NodeAddr;
 use log::{debug, error};
 use rkyv::rancor::Error as RancorError;
 use rkyv::{Archive, Deserialize, Serialize};
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug};
 use std::ops::Deref;
 use std::sync::Arc;
 use thiserror::Error;
@@ -55,18 +55,18 @@ pub const HEADER_SIZE: usize = 48;
 /// The ALPN that is used to open and accept connection on the SyncifyProtocol
 pub const SYNCIFY_ALPN: &[u8] = b"/syncify/1";
 
-#[derive(Archive, Serialize, Deserialize, Debug)]
 /// This structure can be Serialized and Deserialized with rkyv and contains necessary elements
 /// to deserialize the next SyncifyPacket from
+#[derive(Archive, Serialize, Deserialize, Debug)]
 pub(crate) struct HeaderPacket {
     packet_size: u64, // 8 bytes
     nonce: [u8; 24],  // 24 bytes
     uuid: Uuid,       // 16 bytes
 }
 
+/// Enumeration representing the data that can be transferred using SyncifyConnection
 #[repr(u8)]
 #[derive(Archive, Serialize, Deserialize, Debug)]
-/// Enumeration representing the data that can be transferred using SyncifyConnection
 pub enum SyncifyPacket {
     Sync(SyncPacket),
     Blobs(BlobsPacket),
@@ -87,8 +87,8 @@ pub enum BlobsPacket {
     Blob { chunk: Vec<u8> } = 4,
 }
 
-#[derive(Clone)]
 /// The [`SyncifyProtocol`] struct, used to store the active connections.
+#[derive(Debug, Clone)]
 pub struct SyncifyProtocol {
     pub(crate) connections: Arc<Mutex<Vec<Connection>>>,
     pub(crate) ep: Endpoint,
@@ -318,8 +318,8 @@ impl SyncifyStream {
     }
 }
 
-#[derive(Clone)]
 /// The [`SyncifyProtocolHandler`] struct, used to handle connections using this protocol.
+#[derive(Debug, Clone)]
 pub struct SyncifyProtocolHandler {
     proto: SyncifyProtocol,
     store: Arc<RwLock<StoreManager>>,
@@ -333,12 +333,6 @@ impl SyncifyProtocolHandler {
             store,
             downloader,
         }
-    }
-}
-
-impl Debug for SyncifyProtocolHandler {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "COUCOU")
     }
 }
 

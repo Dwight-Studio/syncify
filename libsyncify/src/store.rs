@@ -70,6 +70,7 @@ pub const REMOTE_PROVISIONS_TABLE: MultimapTableDefinition<[u8; 16], RemoteProvi
 pub const JOBS_TABLE: TableDefinition<[u8; 32], DownloadJob> = TableDefinition::new("jobs");
 
 /// Store manager.
+#[derive(Debug)]
 pub struct StoreManager {
     db: Database,
     cache: HashMap<Uuid, SharedDirectory>,
