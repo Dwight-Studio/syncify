@@ -20,40 +20,37 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use chrono::{DateTime, Utc};
+use tr::tr;
 
-fn main() {
-    relm4_icons_build::bundle_icons(
-        // Name of the file that will be generated at `OUT_DIR`
-        "icon_names.rs",
-        // Optional app ID
-        Some("fr.dwightstudio.syncify"),
-        // Optional unique identifier (to prevent theming)
-        Some("syncify-"),
-        // Custom base resource path:
-        // * defaults to `/com/example/myapp` in this case if not specified explicitly
-        // * or `/org/relm4` if app ID was not specified either
-        None::<&str>,
-        // Directory with custom icons (if any)
-        // Some("rsc/icons"),
-        None::<&str>,
-        // List of icons to include
-        [
-            "plus-large",
-            "menu-large",
-            "sentiment-dissatisfied",
-            "right-large",
-            "folder-open",
-            "folder-visiting",
-            "history-undo",
-            "package-x-generic",
-            "people",
-            "settings",
-            "connected-squares-x",
-            "update",
-            "check-round-outline",
-            "cross-large-circle-outline",
-            "clipboard",
-            "paper",
-        ],
-    );
+pub fn human_readable_elapsed(timestamp: &DateTime<Utc>) -> String {
+    let delta = Utc::now() - *timestamp;
+    
+    let weeks = delta.num_weeks();
+    
+    if weeks != 0 {
+        return tr!("a week" | "{} weeks" % weeks);
+    }
+
+    let days = delta.num_days();
+    
+    if days != 0 {
+        return tr!("a day" | "{} days" % days);
+    }
+    
+    let hours = delta.num_hours();
+    
+    if hours != 0 {
+        return tr!("an hour" | "{} hours" % hours);
+    }
+    
+    let minutes = delta.num_minutes();
+    
+    if minutes != 0 {
+        return tr!("a minute" | "{} minutes" % minutes);
+    }
+    
+    let seconds = delta.num_seconds();
+    
+    tr!("a second" | "{} seconds" % seconds)
 }

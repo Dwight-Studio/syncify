@@ -379,20 +379,29 @@ pub struct SharedDirectory {
 }
 
 impl SharedDirectory {
+    /// Get the [`Uuid`] of the directory.
     pub fn uuid(&self) -> Uuid {
         self.uuid
     }
 
+    /// Get the [`PathBuf`] of the directory.
     pub fn path(&self) -> PathBuf {
         self.path.clone()
     }
 
+    /// Get the name of the directory.
     pub fn name(&self) -> String {
         self.path.file_name().unwrap().to_string_lossy().into_owned()
     }
 
+    /// Verify if the directory is in read only (does it lack write permission in the swarm).
     pub fn is_read_only(&self) -> bool {
         self.write_key.is_none()
+    }
+    
+    /// Get a copy of the current [`State`].
+    pub async fn current_state(&self) -> State {
+        self.state.read().await.clone()
     }
 
     /// Get the handle. Panics if not available.

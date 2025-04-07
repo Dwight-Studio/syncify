@@ -19,6 +19,7 @@ relm4-icons = { version = "0.10.0-beta.2"}
 uuid = { version = "1.15.1", features = ["v4"] }
 log = "0.4.26"
 tr = "0.1.10"
+chrono = "0.4.40"
 
 [build-dependencies]
 #relm4-icons-build = "0.10.0-beta.2"

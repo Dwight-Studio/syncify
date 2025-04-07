@@ -177,16 +177,16 @@ impl FileSystemManager {
     /// Apply remotely generated [`Mutation`]s to a [`SharedDirectory`].
     pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
         let old_hash = self.dir.state.read().await.hash();
-        
+
         // Files to cancel
         let mut files_to_cancel = Vec::new();
         let tree = self.dir.local_tree.read().await.clone();
-        
+
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify { file_path, .. } => {
                     files_to_cancel.push(file_path.clone());
-                    
+
                     // Creating a new job
                     self.downloader
                         .send(DownloaderEvent::Accept(DownloadJob::new(
@@ -214,7 +214,7 @@ impl FileSystemManager {
 
                                 parent_opt = parent.parent();
                             }
-                            
+
                             files_to_cancel.push(from.clone());
                             files_to_cancel.push(to.clone());
 

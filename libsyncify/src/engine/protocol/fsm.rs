@@ -58,6 +58,7 @@ pub trait FiniteStateMachine {
                     self.step().await;
 
                     if self.finished() {
+                        self.step().await;
                         break;
                     }
                 }

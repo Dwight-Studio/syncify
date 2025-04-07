@@ -22,14 +22,16 @@
  */
 use crate::app::App;
 use crate::error::Error;
-use libsyncify::util::setup_logger;
 use libsyncify::Syncify;
+use libsyncify::util::setup_logger;
 use relm4::RelmApp;
 use tr::tr_init;
 
 mod app;
+mod css;
 mod error;
 mod event_handler;
+mod util;
 mod widget;
 
 mod icon_names {
@@ -39,18 +41,17 @@ mod icon_names {
 fn main() {
     setup_logger().unwrap();
 
-    // Initialize
-    let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let mut syncify = Syncify::new().await?;
-        syncify.start_sync().await?;
-
-        Ok(syncify)
-    });
-
-    relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
-
     // Initialize tr
     tr_init!("/usr/share/locale");
+
+    relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
+    
+    relm4::set_global_css(&css::get_css());
+
+    let result = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(Syncify::new());
 
     match result {
         Ok(syncify) => {

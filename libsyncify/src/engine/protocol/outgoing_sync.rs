@@ -50,7 +50,7 @@ pub struct OutgoingSync {
 
 impl OutgoingSync {
     pub fn new(sender: EventSender, dir: SharedDirectory, node_id: NodeId, proto: SyncifyProtocol) -> Self {
-        sender.send(SyncEvent::Outgoing(node_id).wrap(dir.uuid));
+        sender.send(SyncEvent::OutgoingStarted(node_id).wrap(dir.uuid));
         Self {
             state: OutgoingState::Connecting,
             sender,
@@ -181,11 +181,13 @@ impl FiniteStateMachine for OutgoingSync {
 
             OutgoingState::Finish => {
                 debug!("Outgoing: Finished");
+                self.sender.send(SyncEvent::OutgoingStopped(self.node_id).wrap(self.dir.uuid));
                 Ok(OutgoingState::Finish)
             }
 
             OutgoingState::Failure(error) => {
                 warn!("Outgoing: Failure ({:?})", error);
+                self.sender.send(SyncEvent::OutgoingStopped(self.node_id).wrap(self.dir.uuid));
                 Ok(OutgoingState::Failure(*error))
             }
         }

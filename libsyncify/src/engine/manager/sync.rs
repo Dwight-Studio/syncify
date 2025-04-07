@@ -51,9 +51,7 @@ impl SyncManager {
 
         let mut incoming_sync = IncomingSync::new(self.sender.clone(), conn, hash);
 
-        if incoming_sync.step_until_finished(FSM_TIMEOUT).await {
-            incoming_sync.step().await;
-        } else {
+        if !incoming_sync.step_until_finished(FSM_TIMEOUT).await {
             warn!("Timeout while processing sync event: RequestSync");
         }
     }
@@ -96,9 +94,7 @@ impl SyncManager {
     }
 
     async fn start_sync(mut outgoing_sync: OutgoingSync) {
-        if outgoing_sync.step_until_finished(FSM_TIMEOUT).await {
-            outgoing_sync.step().await;
-        } else {
+        if !outgoing_sync.step_until_finished(FSM_TIMEOUT).await {
             warn!("Timeout while requesting sync");
         }
     }

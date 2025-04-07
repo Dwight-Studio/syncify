@@ -20,20 +20,24 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::thread::sleep;
+use std::time::Duration;
 use crate::icon_names;
 use crate::widget::create::CreateDialog;
 use crate::widget::details::Details;
-use crate::widget::overview::Overview;
-use libsyncify::Syncify;
+use crate::widget::overview::{Overview, OverviewMsg};
+use libsyncify::{Syncify, SyncifyError};
 use log::warn;
 use relm4::adw::Toast;
 use relm4::adw::prelude::*;
 use relm4::loading_widgets::LoadingWidgets;
 use relm4::prelude::*;
-use relm4::{AsyncComponentSender, adw, gtk, view};
+use relm4::{AsyncComponentSender, adw, gtk, view, Sender};
+use relm4::factory::AsyncFactoryVecDequeGuard;
+use relm4::gtk::Widget;
 use tr::tr;
 use uuid::Uuid;
-use libsyncify::event::{DirectoryEvent, SyncifyEvent};
+use libsyncify::event::{DirectoryEvent, SyncEvent, SyncifyEvent};
 
 pub struct App {
     syncify: Syncify,
@@ -113,11 +117,19 @@ impl AsyncComponent for App {
         }
     }
 
-    async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
+    async fn init(mut init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
+        init.start_sync().await.unwrap();
+
         // Overview
-        let overview_dirs = AsyncFactoryVecDeque::builder()
+        let mut overview_dirs = AsyncFactoryVecDeque::builder()
             .launch_default()
             .forward(sender.input_sender(), std::convert::identity);
+
+        let mut guard = overview_dirs.guard();
+        for dir in init.get_all_shared_directories().await {
+            guard.push_back(dir);
+        }
+        drop(guard);
 
         let model = Self {
             syncify: init,
@@ -147,6 +159,22 @@ impl AsyncComponent for App {
         });
 
         AsyncComponentParts { model, widgets }
+    }
+
+    fn init_loading_widgets(root: Self::Root) -> Option<LoadingWidgets> {
+        view! {
+            #[local]
+            root {
+                #[name(loading)]
+                adw::StatusPage {
+                    set_title: &tr!("Loading Syncify..."),
+
+                    #[wrap(Some)]
+                    set_paintable = &adw::SpinnerPaintable::new(Some(&loading)),
+                }
+            }
+        }
+        Some(LoadingWidgets::new(root, loading))
     }
 
     async fn update_with_view(
@@ -221,10 +249,43 @@ impl AsyncComponent for App {
                                 }
                             }
                         }
-                        DirectoryEvent::Sync(_) => {}
+                        DirectoryEvent::Sync(event) => match *event {
+                            SyncEvent::IncomingStarted(_) | SyncEvent::OutgoingStarted(_) => {
+                                Self::send_overview(&mut od_guard, uuid, OverviewMsg::SyncStarted);
+                            }
+                            SyncEvent::IncomingStopped(_) | SyncEvent::OutgoingStopped(_) => {
+                                Self::send_overview(&mut od_guard, uuid, OverviewMsg::SyncStopped);
+                            }
+                            SyncEvent::Conflict(_, _) => {}
+                            SyncEvent::Unverified(_) => {}
+                            SyncEvent::Local(state) | SyncEvent::Remote(state) => {
+                                Self::send_overview(&mut od_guard, uuid, OverviewMsg::Mutation(state.head().mutation()));
+                            }
+                        }
                         DirectoryEvent::Peer(_) => {}
                     }
                     SyncifyEvent::Download(_) => {}
+                }
+            }
+        }
+    }
+
+    fn shutdown(&mut self, widgets: &mut Self::Widgets, output: Sender<Self::Output>) {
+        let handle = relm4::spawn(self.syncify.clone().stop_sync());
+
+        while !handle.is_finished() {
+            sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+impl App {
+    fn send_overview(od_guard: &mut AsyncFactoryVecDequeGuard<Overview>, uuid: Uuid, msg: OverviewMsg) {
+        for i in 0..od_guard.len() {
+            if let Some(dir) = od_guard.get(i) {
+                if dir.is(uuid) {
+                    od_guard.send(i, msg);
+                    break;
                 }
             }
         }

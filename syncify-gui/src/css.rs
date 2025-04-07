@@ -21,39 +21,27 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-fn main() {
-    relm4_icons_build::bundle_icons(
-        // Name of the file that will be generated at `OUT_DIR`
-        "icon_names.rs",
-        // Optional app ID
-        Some("fr.dwightstudio.syncify"),
-        // Optional unique identifier (to prevent theming)
-        Some("syncify-"),
-        // Custom base resource path:
-        // * defaults to `/com/example/myapp` in this case if not specified explicitly
-        // * or `/org/relm4` if app ID was not specified either
-        None::<&str>,
-        // Directory with custom icons (if any)
-        // Some("rsc/icons"),
-        None::<&str>,
-        // List of icons to include
-        [
-            "plus-large",
-            "menu-large",
-            "sentiment-dissatisfied",
-            "right-large",
-            "folder-open",
-            "folder-visiting",
-            "history-undo",
-            "package-x-generic",
-            "people",
-            "settings",
-            "connected-squares-x",
-            "update",
-            "check-round-outline",
-            "cross-large-circle-outline",
-            "clipboard",
-            "paper",
-        ],
-    );
+pub fn get_css() -> String {
+    r#"
+    .status-icon {
+        padding: 10px;
+        border-radius: 50%;
+    }
+    
+    .status-icon.success {
+        background-color: alpha(var(--success-bg-color), 0.3);
+    }
+    
+    .status-icon.warning {
+        background-color: alpha(var(--warning-bg-color), 0.3);
+    }
+    
+    .status-icon.accent {
+        background-color: alpha(var(--accent-bg-color), 0.3);
+    }
+    
+    .status-icon.destructive {
+        background-color: alpha(var(--destructive-bg-color), 0.3);
+    }"#
+    .to_string()
 }

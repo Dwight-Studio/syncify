@@ -44,7 +44,7 @@ pub struct IncomingSync {
 
 impl IncomingSync {
     pub fn new(sender: EventSender, connection: SyncifyStream, hash: blake3::Hash) -> Self {
-        sender.send(SyncEvent::Incoming(connection.node_id()).wrap(connection.dir.uuid));
+        sender.send(SyncEvent::IncomingStarted(connection.node_id()).wrap(connection.dir.uuid));
         Self {
             state: IncomingState::ReceivingRequest,
             sender,
@@ -151,11 +151,13 @@ impl FiniteStateMachine for IncomingSync {
 
             IncomingState::Finish => {
                 debug!("Incoming: Finished");
+                self.sender.send(SyncEvent::IncomingStopped(self.connection.node_id()).wrap(self.connection.dir.uuid));
                 Ok(IncomingState::Finish)
             }
 
             IncomingState::Failure(error) => {
                 warn!("Incoming: Failure ({:?})", error);
+                self.sender.send(SyncEvent::IncomingStopped(self.connection.node_id()).wrap(self.connection.dir.uuid));
                 Ok(IncomingState::Failure(*error))
             }
         }

@@ -48,6 +48,8 @@ use walkdir::WalkDir;
 pub const MAX_LOADED_DELTAS: u32 = 2048;
 pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
 
+// TODO: Add state compression
+
 /// Tree containing the synchronisation information for a [`SharedDirectory`].
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct State {

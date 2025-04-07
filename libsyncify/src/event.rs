@@ -123,10 +123,14 @@ impl DirectoryEvent {
 /// [`SharedDirectory`] synchronization related events.
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
-    /// A request for synchronization has been received.
-    Incoming(NodeId),
-    /// A request for synchronization has been sent.
-    Outgoing(NodeId),
+    /// An incoming synchronisation process started.
+    IncomingStarted(NodeId),
+    /// An incoming synchronisation process stopped.
+    IncomingStopped(NodeId),
+    /// An outgoing synchronisation process started.
+    OutgoingStarted(NodeId),
+    /// An outgoing synchronisation process stopped.
+    OutgoingStopped(NodeId),
     /// Conflict detected during synchronization with a peer.
     Conflict(NodeId, ConflictEvent),
     /// Unverified changes detected during synchronization with a peer.
