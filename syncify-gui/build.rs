@@ -51,6 +51,7 @@ fn main() {
             "update",
             "check-round-outline",
             "cross-large-circle-outline",
+            "clipboard",
         ],
     );
 }

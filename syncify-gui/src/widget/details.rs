@@ -103,4 +103,8 @@ impl AsyncComponent for Details {
 
         AsyncComponentParts { model, widgets }
     }
+
+    async fn update_with_view(&mut self, widgets: &mut Self::Widgets, message: Self::Input, sender: AsyncComponentSender<Self>, root: &Self::Root) {
+
+    }
 }

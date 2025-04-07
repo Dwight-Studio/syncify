@@ -31,23 +31,23 @@ use relm4::adw::prelude::*;
 use relm4::loading_widgets::LoadingWidgets;
 use relm4::prelude::*;
 use relm4::{AsyncComponentSender, adw, gtk, view};
-use std::collections::HashMap;
 use tr::tr;
 use uuid::Uuid;
+use libsyncify::event::{DirectoryEvent, SyncifyEvent};
 
 pub struct App {
     syncify: Syncify,
-    create_dialog: AsyncController<CreateDialog>,
     overview_dirs: AsyncFactoryVecDeque<Overview>,
-    details_dirs: HashMap<Uuid, AsyncController<Details>>,
+    create_dialog: Option<AsyncController<CreateDialog>>,
+    current_details: Option<Uuid>,
+    details: Option<AsyncController<Details>>,
 }
 
 #[derive(Debug)]
 pub enum AppMsg {
     OpenCreateDialog,
-    Add(Uuid),
-    Open(Uuid),
-    Remove(Uuid),
+    OpenDetails(Uuid),
+    Event(SyncifyEvent),
 }
 
 //noinspection RsSortImplTraitMembers
@@ -114,38 +114,17 @@ impl AsyncComponent for App {
     }
 
     async fn init(init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
-        // Create dialog
-        let create_dialog = CreateDialog::builder()
-            .launch(init.clone())
-            .forward(sender.input_sender(), std::convert::identity);
-
         // Overview
-        let mut overview_dirs = AsyncFactoryVecDeque::builder()
+        let overview_dirs = AsyncFactoryVecDeque::builder()
             .launch_default()
             .forward(sender.input_sender(), std::convert::identity);
 
-        // Details
-        let mut details_dirs = HashMap::new();
-
-        {
-            let mut guard = overview_dirs.guard();
-
-            for dir in init.get_all_shared_directories().await {
-                guard.push_back(dir.clone());
-                details_dirs.insert(
-                    dir.uuid(),
-                    Details::builder()
-                        .launch(dir.clone())
-                        .forward(sender.input_sender(), std::convert::identity),
-                );
-            }
-        }
-
         let model = Self {
             syncify: init,
-            create_dialog,
             overview_dirs,
-            details_dirs,
+            create_dialog: None,
+            current_details: None,
+            details: None,
         };
 
         let dirs_box = model.overview_dirs.widget();
@@ -158,24 +137,16 @@ impl AsyncComponent for App {
             .flags(adw::glib::BindingFlags::SYNC_CREATE)
             .build();
 
-        AsyncComponentParts { model, widgets }
-    }
+        // Receive Syncify Events
+        let mut event_receiver = model.syncify.subscribe();
+        let message_sender = sender.clone();
+        relm4::spawn(async move {
+           while let Ok(event) = event_receiver.recv().await {
+               message_sender.input(AppMsg::Event(event));
+           }
+        });
 
-    fn init_loading_widgets(root: Self::Root) -> Option<LoadingWidgets> {
-        view! {
-            #[local]
-            root {
-                #[name(spinner)]
-                gtk::Spinner {
-                    start: (),
-                    set_hexpand: true,
-                    set_halign: gtk::Align::Center,
-                    // Reserve vertical space
-                    //set_height_request: 34,
-                }
-            }
-        }
-        Some(LoadingWidgets::new(root, spinner))
+        AsyncComponentParts { model, widgets }
     }
 
     async fn update_with_view(
@@ -188,49 +159,72 @@ impl AsyncComponent for App {
         let mut od_guard = self.overview_dirs.guard();
         match message {
             AppMsg::OpenCreateDialog => {
-                self.create_dialog.widget().present(Some(&widgets.main_window));
+                let dialog = CreateDialog::builder()
+                    .launch(self.syncify.clone())
+                    .forward(sender.input_sender(), std::convert::identity);
+                dialog.widget().present(Some(&widgets.main_window));
+
+                self.create_dialog = Some(dialog);
             }
 
-            AppMsg::Open(uuid) => {
+            AppMsg::OpenDetails(uuid) => {
                 if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
-                    let controller = Details::builder()
+                    // Create component
+                    let details = Details::builder()
                         .launch(dir.clone())
                         .forward(sender.input_sender(), std::convert::identity);
-                    widgets.nav_view.push(controller.widget())
+                    widgets.nav_view.push(details.widget());
+                    self.details = Some(details);
+
+                    self.current_details = Some(uuid);
                 }
             }
 
-            AppMsg::Add(uuid) => {
-                if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
-                    widgets.toast.add_toast(
-                        Toast::builder()
-                            .title(tr!("Directory '{}' has been added", dir.name()))
-                            .timeout(5)
-                            .build(),
-                    );
-                    od_guard.push_back(dir);
-                } else {
-                    warn!("Cannot add directory: Not found");
-                }
-
-                self.create_dialog.widget().close();
-            }
-
-            AppMsg::Remove(uuid) => {
-                // Remove overview
-                for i in 0..od_guard.len() {
-                    if let Some(dir) = od_guard.get(i) {
-                        if dir.is(uuid) {
-                            widgets.toast.add_toast(
-                                Toast::builder()
-                                    .title(tr!("Directory '{}' has been removed", dir.name()))
-                                    .timeout(5)
-                                    .build(),
-                            );
-                            od_guard.remove(i);
-                            break;
+            AppMsg::Event(event) => {
+                match event {
+                    SyncifyEvent::Engine(_) => {}
+                    SyncifyEvent::Directory(uuid, event) => match event {
+                        DirectoryEvent::Created | DirectoryEvent::Joined => {
+                            if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
+                                widgets.toast.add_toast(
+                                    Toast::builder()
+                                        .title(tr!("Directory '{}' has been added", dir.name()))
+                                        .timeout(5)
+                                        .build(),
+                                );
+                                od_guard.push_back(dir);
+                            } else {
+                                warn!("Cannot add directory: Not found");
+                            }
                         }
+                        DirectoryEvent::Removed => {
+                            // Close details if the uuid is the same
+                            if let Some(details) = self.current_details {
+                                if details == uuid {
+                                    widgets.nav_view.pop_to_tag("main");
+                                }
+                            }
+
+                            // Remove overview
+                            for i in 0..od_guard.len() {
+                                if let Some(dir) = od_guard.get(i) {
+                                    if dir.is(uuid) {
+                                        widgets.toast.add_toast(
+                                            Toast::builder()
+                                                .title(tr!("Directory '{}' has been removed", dir.name()))
+                                                .timeout(5)
+                                                .build(),
+                                        );
+                                        od_guard.remove(i);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        DirectoryEvent::Sync(_) => {}
+                        DirectoryEvent::Peer(_) => {}
                     }
+                    SyncifyEvent::Download(_) => {}
                 }
             }
         }

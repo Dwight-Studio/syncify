@@ -25,10 +25,11 @@ use crate::icon_names;
 use libsyncify::store::link::Link;
 use libsyncify::{SharedDirectory, Syncify, SyncifyError};
 use relm4::adw::prelude::*;
-use relm4::gtk::Align;
+use relm4::gtk::{Align, InputPurpose};
 use relm4::prelude::*;
 use std::path::PathBuf;
 use std::str::FromStr;
+use relm4::adw::gdk;
 use tr::tr;
 
 pub struct CreateDialog {
@@ -40,7 +41,8 @@ pub struct CreateDialog {
 pub enum CreateDialogMsg {
     OpenFileDialog,
     Toggle,
-    SelectJoin,
+    Modified,
+    Paste,
     Create,
 }
 
@@ -55,17 +57,19 @@ impl AsyncComponent for CreateDialog {
     view! {
         adw::Dialog::builder()
             .title(&tr!("Add a Shared Directory"))
-            .content_width(400)
-            .content_height(400)
+            .follows_content_size(true)
             .build()
         {
             #[wrap(Some)]
             set_child = &adw::ToolbarView {
+                set_hexpand: true,
+
                 add_top_bar = &adw::HeaderBar,
 
                 adw::Clamp{
-                    set_maximum_size: 400,
-                    set_tightening_threshold: 300,
+                    set_maximum_size: 500,
+                    set_tightening_threshold: 400,
+                    set_margin_all: 30,
 
                     gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
@@ -110,14 +114,13 @@ impl AsyncComponent for CreateDialog {
                                 add_prefix = &gtk::CheckButton {
                                     set_active: true,
 
-                                    connect_toggled => CreateDialogMsg::Toggle
+                                    connect_toggled => CreateDialogMsg::Toggle,
                                 },
 
                                 set_activatable_widget: Some(&radio_1)
                             },
 
-                            #[name = "expander"]
-                            adw::ExpanderRow {
+                            adw::ActionRow {
                                 set_title: &tr!("Join an existing Shared Directory"),
                                 set_activatable: true,
 
@@ -127,13 +130,25 @@ impl AsyncComponent for CreateDialog {
                                     set_group: Some(&radio_1),
                                 },
 
-                                connect_expanded_notify => CreateDialogMsg::SelectJoin,
-
-                                #[name = "link"]
-                                add_row = &adw::EntryRow {
-                                    set_title: &tr!("Access link"),
-                                }
+                                set_activatable_widget: Some(&radio_2)
                             },
+
+                            #[name = "link"]
+                            adw::EntryRow {
+                                set_title: &tr!("Access link"),
+                                set_sensitive: false,
+                                set_input_purpose: InputPurpose::Url,
+
+                                connect_changed => CreateDialogMsg::Modified,
+
+                                add_suffix = &gtk::Button {
+                                    add_css_class: "flat",
+                                    set_valign: Align::Center,
+                                    set_icon_name: icon_names::CLIPBOARD,
+
+                                    connect_clicked => CreateDialogMsg::Paste,
+                                }
+                            }
                         },
 
                         #[name = "btn"]
@@ -179,7 +194,6 @@ impl AsyncComponent for CreateDialog {
                 if let Ok(dir) = file_dialog.select_folder_future(root.toplevel_window().as_ref()).await {
                     self.path = dir.path();
                     widgets.dir_row.remove_css_class("error");
-                    widgets.btn.set_sensitive(true);
                 }
 
                 if let Some(path) = &self.path {
@@ -187,45 +201,82 @@ impl AsyncComponent for CreateDialog {
                         .open_label
                         .set_text(&path.file_name().unwrap().to_string_lossy())
                 }
+
+                self.update_btn(widgets);
             }
 
             CreateDialogMsg::Toggle => {
-                if widgets.radio_1.is_active() {
-                    widgets.expander.set_expanded(false);
+                if widgets.radio_2.is_active() {
+                    widgets.link.set_sensitive(true);
+                } else {
+                    widgets.link.set_sensitive(false);
                 }
+
+                self.update_btn(widgets);
             }
 
-            CreateDialogMsg::SelectJoin => widgets.radio_2.set_active(true),
+            CreateDialogMsg::Modified => {
+                self.update_btn(widgets);
+            }
 
             CreateDialogMsg::Create => {
                 if let Some(path) = &self.path {
-                    if path.is_dir() && path.metadata().map(|m| !m.permissions().readonly()).is_ok_and(|b| b) {
-                        if widgets.radio_1.is_active() {
-                            match self.syncify.create_shared_directory(path.clone()).await {
-                                Ok(dir) => {
-                                    self.close(dir, widgets, sender);
-                                }
-                                Err(e) => {
-                                    self.error(e, root.widget_ref());
+                    if widgets.radio_1.is_active() {
+                        match self.syncify.create_shared_directory(path.clone()).await {
+                            Ok(_) => {
+                                root.close();
+                            }
+                            Err(e) => {
+                                match &e {
+                                    SyncifyError::InvalidPath(_)
+                                    | SyncifyError::PathEncoding(_)
+                                    | SyncifyError::ReadOnly
+                                    | SyncifyError::AlreadyShared
+                                    | SyncifyError::DirectoryNotEmpty
+                                    | SyncifyError::NotADirectory => {
+                                        widgets.dir_row.add_css_class("error")
+                                    }
+                                    _ => {
+                                        self.error(e, root.widget_ref());
+                                    }
                                 }
                             }
-                        } else if let Ok(link) = Link::from_str(widgets.link.text().as_str()) {
-                            match self.syncify.join_shared_directory(link, path.clone()).await {
-                                Ok(dir) => {
-                                    self.close(dir, widgets, sender);
-                                }
-                                Err(e) => {
-                                    self.error(e, root.widget_ref());
+                        }
+                    } else if let Ok(link) = Link::from_str(widgets.link.text().as_str()) {
+                        match self.syncify.join_shared_directory(link, path.clone()).await {
+                            Ok(_) => {
+                                root.close();
+                            }
+                            Err(e) => {
+                                match &e {
+                                    SyncifyError::InvalidPath(_)
+                                    | SyncifyError::PathEncoding(_)
+                                    | SyncifyError::ReadOnly
+                                    | SyncifyError::AlreadyShared
+                                    | SyncifyError::DirectoryNotEmpty
+                                    | SyncifyError::NotADirectory => {
+                                        widgets.dir_row.add_css_class("error")
+                                    }
+                                    _ => {
+                                        self.error(e, root.widget_ref());
+                                    }
                                 }
                             }
-                        } else {
-                            widgets.expander.add_css_class("error");
                         }
                     } else {
-                        widgets.dir_row.add_css_class("error")
+                        widgets.link.add_css_class("error");
                     }
                 } else {
                     widgets.dir_row.add_css_class("error")
+                }
+            }
+
+            CreateDialogMsg::Paste => {
+                if let Some(gdk) = gdk::Display::default() {
+                    let result = gdk.clipboard().read_text_future().await;
+                    if let Ok(Some(text)) = result {
+                        widgets.link.set_text(text.as_str());
+                    }
                 }
             }
         }
@@ -233,20 +284,6 @@ impl AsyncComponent for CreateDialog {
 }
 
 impl CreateDialog {
-    fn close(
-        &mut self,
-        dir: SharedDirectory,
-        widgets: &mut <CreateDialog as AsyncComponent>::Widgets,
-        sender: AsyncComponentSender<Self>,
-    ) {
-        sender.output(AppMsg::Add(dir.uuid())).expect("failed to send output");
-        widgets.btn.set_sensitive(false);
-        widgets.open_label.set_text(&tr!("Open"));
-        widgets.dir_row.remove_css_class("error");
-        widgets.expander.remove_css_class("error");
-        self.path = None;
-    }
-
     fn error(&self, e: SyncifyError, root: &gtk::Widget) {
         let dialog = adw::AlertDialog::builder()
             .heading(tr!("Error"))
@@ -256,5 +293,17 @@ impl CreateDialog {
 
         dialog.add_response("close", &tr!("Close"));
         dialog.present(Some(root));
+    }
+
+    fn update_btn(&mut self, widgets: &mut CreateDialogWidgets) {
+        if self.path.is_some() {
+            if widgets.radio_2.is_active() {
+                widgets.btn.set_sensitive(!widgets.link.text().is_empty());
+            } else {
+                widgets.btn.set_sensitive(true);
+            }
+        } else {
+            widgets.btn.set_sensitive(false);
+        }
     }
 }

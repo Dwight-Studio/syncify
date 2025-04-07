@@ -98,7 +98,7 @@ impl Downloader {
         store: Arc<RwLock<StoreManager>>,
         sender: EventSender,
         mut jobs: HashMap<Hash, StoreLock<DownloadJob>>,
-        downloader: DownloaderHandle,
+        _downloader: DownloaderHandle,
         proto: SyncifyProtocol,
     ) {
         // Creating the provision directory

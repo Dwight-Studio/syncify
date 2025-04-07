@@ -23,8 +23,7 @@
 use crate::app::App;
 use crate::error::Error;
 use libsyncify::util::setup_logger;
-use libsyncify::{Syncify, SyncifyError};
-use log::error;
+use libsyncify::Syncify;
 use relm4::RelmApp;
 use tr::tr_init;
 

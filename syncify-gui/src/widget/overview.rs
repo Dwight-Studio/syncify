@@ -58,7 +58,7 @@ impl AsyncFactoryComponent for Overview {
                 },
 
                 connect_activated[sender] => move |_| {
-                    sender.output(AppMsg::Open(uuid)).expect("failed to send output");
+                    sender.output(AppMsg::OpenDetails(uuid)).expect("failed to send output");
                 }
             },
 

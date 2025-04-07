@@ -177,10 +177,16 @@ impl FileSystemManager {
     /// Apply remotely generated [`Mutation`]s to a [`SharedDirectory`].
     pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
         let old_hash = self.dir.state.read().await.hash();
-
+        
+        // Files to cancel
+        let mut files_to_cancel = Vec::new();
+        let tree = self.dir.local_tree.read().await.clone();
+        
         for mutation in mutations {
             match &mutation {
-                Mutation::Modify { .. } => {
+                Mutation::Modify { file_path, .. } => {
+                    files_to_cancel.push(file_path.clone());
+                    
                     // Creating a new job
                     self.downloader
                         .send(DownloaderEvent::Accept(DownloadJob::new(
@@ -192,13 +198,13 @@ impl FileSystemManager {
                         .await;
                 }
                 Mutation::Move { from, to, .. } => {
-                    let from = self.dir.path.join(from);
-                    let to = self.dir.path.join(to);
+                    let from_path = self.dir.path.join(from);
+                    let to_path = self.dir.path.join(to);
 
-                    match tokio::fs::rename(&from, &to).await {
+                    match tokio::fs::rename(&from_path, &to_path).await {
                         Ok(_) => {
                             // Remove parent (will fail if not empty)
-                            let mut parent_opt = from.parent();
+                            let mut parent_opt = from_path.parent();
                             while let Some(parent) = parent_opt {
                                 if parent != self.dir.path() {
                                     let _ = tokio::fs::remove_dir(parent).await;
@@ -208,11 +214,14 @@ impl FileSystemManager {
 
                                 parent_opt = parent.parent();
                             }
+                            
+                            files_to_cancel.push(from.clone());
+                            files_to_cancel.push(to.clone());
 
                             self.update_local_tree(mutation).await
                         }
                         Err(e) => {
-                            error!("Cannot move file: '{}' to '{}' ({e})", from.display(), to.display());
+                            error!("Cannot move file: '{}' to '{}' ({e})", from_path.display(), to_path.display());
                         }
                     }
                 }
@@ -232,15 +241,25 @@ impl FileSystemManager {
 
                                 parent_opt = parent.parent();
                             }
+                            
+                            files_to_cancel.push(file_path.clone());
 
                             self.update_local_tree(mutation).await
                         }
                         Err(e) => {
                             error!("Cannot remove file '{}' ({e})", path.display());
+                            self.update_local_tree(mutation).await
                         }
                     }
                 }
                 _ => continue,
+            }
+        }
+
+        // Cancel the download of every delete/overwritten file
+        for file in files_to_cancel {
+            if let Some(file) = tree.get(&file) {
+                self.downloader.send(DownloaderEvent::Cancel(file.hash())).await
             }
         }
 
@@ -314,26 +333,6 @@ impl FileSystemManager {
 
     /// Update the local hash tree.
     pub(crate) async fn update_local_tree(&self, mutation: Mutation) {
-        // Cancel the download of every delete/overwritten file
-        let mut files_to_cancel = Vec::new();
-        match &mutation {
-            Mutation::Modify { file_path: path, .. } | Mutation::Remove { file_path: path, .. } => {
-                files_to_cancel.push(path);
-            }
-            Mutation::Move { from, to, .. } => {
-                files_to_cancel.push(from);
-                files_to_cancel.push(to);
-            }
-            _ => (),
-        }
-
-        let tree = self.dir.local_tree.read().await;
-        for file in files_to_cancel {
-            if let Some(file) = tree.get(file) {
-                self.downloader.send(DownloaderEvent::Cancel(file.hash())).await
-            }
-        }
-        drop(tree);
 
         match self.dir.local_tree.write().apply(&mutation).await {
             Ok(_) => {
