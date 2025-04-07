@@ -272,7 +272,7 @@ impl Syncify {
         // Check if the dir exists
         match abs_path.try_exists() {
             Ok(exists) => {
-                if !exists {
+                if exists {
                     // Check if abs_path is a directory
                     if !abs_path.is_dir() {
                         return Err(NotADirectory);
