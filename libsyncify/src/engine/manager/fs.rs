@@ -182,6 +182,8 @@ impl FileSystemManager {
         let mut files_to_cancel = Vec::new();
         let tree = self.dir.local_tree.read().await.clone();
 
+        // TODO: Delete provision when a file is deleted
+        
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify { file_path, .. } => {
