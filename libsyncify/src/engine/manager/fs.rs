@@ -182,7 +182,7 @@ impl FileSystemManager {
             match &mutation {
                 Mutation::Modify { file_path, .. } => {
                     self.downloader.send(DownloaderEvent::Cancel(file_path.clone(), self.dir.uuid)).await;
-                    
+
                     // Creating a new job
                     self.downloader
                         .send(DownloaderEvent::Accept(DownloadJob::new(
