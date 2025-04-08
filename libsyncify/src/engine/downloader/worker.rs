@@ -28,7 +28,6 @@ use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol};
 use async_channel::Receiver;
 use blake3::Hash;
 use iroh_base::NodeId;
-use log::debug;
 use std::io::Read;
 use tokio::sync::mpsc::Sender;
 
@@ -62,7 +61,6 @@ impl DownloadWorker {
                         if connection.send(&packet).await.is_err() {
                             let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
                                 index: rcv.index,
-                                need_provision: false,
                             })).await;
                             continue;
                         }
@@ -81,7 +79,6 @@ impl DownloadWorker {
                                         if decoder.read_to_end(&mut decoded).is_err() {
                                             let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
                                                 index: rcv.index,
-                                                need_provision: false,
                                             })).await;
                                         } else {
                                             // If the writer channel is closed, it means that we cancelled
@@ -102,7 +99,6 @@ impl DownloadWorker {
                             Err(_) => {
                                 let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
                                     index: rcv.index,
-                                    need_provision: false,
                                 })).await;
                             }
                         }
@@ -110,7 +106,6 @@ impl DownloadWorker {
                 } else {
                     let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
                         index: rcv.index,
-                        need_provision: true,
                     })).await;
                 }
             }

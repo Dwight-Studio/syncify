@@ -138,6 +138,12 @@ impl FileSystemManager {
             match self.dir.state.write().mutate(mutation.clone(), write_key).await {
                 Ok(_) => match self.dir.local_tree.write().apply(mutation).await {
                     Ok(_) => {
+                        match mutation {
+                            Mutation::Remove { file_hash, .. } => {
+                                self.downloader.send(DownloaderEvent::RemovedFile(*file_hash)).await;
+                            }
+                            _ => {/*I don't care*/}
+                        }
                         debug!("Applied in {}: {mutation}", self.dir.uuid());
                     }
                     Err(e) => {
@@ -155,7 +161,7 @@ impl FileSystemManager {
                 }
             }
         }
-
+        
         // Notify
         self.sender.send(
             SyncEvent::Local(

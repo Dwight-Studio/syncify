@@ -243,7 +243,7 @@ impl AsyncComponent for Overview {
                         widgets.mutation.set_title(&tr!("{} moved", from.split("/").last().unwrap()));
                         widgets.mutation.set_subtitle(&tr!("Change saved {} ago", util::human_readable_elapsed(timestamp)));
                     }
-                    Mutation::Remove { file_path, timestamp } => {
+                    Mutation::Remove { file_path, timestamp, .. } => {
                         widgets.mutation.set_title(&tr!("{} removed", file_path.split("/").last().unwrap()));
                         widgets.mutation.set_subtitle(&tr!("Change saved {} ago", util::human_readable_elapsed(timestamp)));
                     }

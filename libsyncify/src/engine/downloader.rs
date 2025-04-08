@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{RwLock, mpsc};
@@ -167,7 +168,7 @@ impl Downloader {
                         jobs.insert(file_hash, job.clone());
 
                         // Start downloading it
-                        Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job, downloader.clone()).await;
+                        Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job, downloader.clone(), provisions_dir.clone()).await;
                     }
                 }
 
@@ -204,7 +205,7 @@ impl Downloader {
                         if matches!(job.1.read().await.state(), JobState::Ongoing | JobState::Pending) {
                             if let Some(dir) = store.read().await.get_shared_dir(&job_dir_uuid) {
                                 info!("Resuming download of '{job_hash}' for {job_dir_uuid}");
-                                Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job.1.clone(), downloader.clone()).await;
+                                Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job.1.clone(), downloader.clone(), provisions_dir.clone()).await;
                             }
                         }
                     }
@@ -225,7 +226,7 @@ impl Downloader {
 
                         if let Some(job) = jobs.get(provision.hash()) {
                             if matches!(job.read().await.state, JobState::Pending) {
-                                Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job.clone(), downloader.clone())
+                                Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job.clone(), downloader.clone(), provisions_dir.clone())
                                     .await;
                             }
                         } else {
@@ -294,6 +295,17 @@ impl Downloader {
                     }
                 }
 
+                DownloaderEvent::RemovedFile(hash) => {
+                    let prov_file = provisions_dir.join(hash.to_string());
+
+                    if prov_file.exists() {
+                        debug!("Removing provision for '{hash}'");
+                        if let Err(err) = std::fs::remove_file(prov_file) {
+                            error!("Cannot remove provision cache file '{hash}' ({err})")
+                        }
+                    }
+                }
+
                 DownloaderEvent::SupplyBlob {
                     mut conn,
                     file_hash,
@@ -309,7 +321,7 @@ impl Downloader {
                             );
                             let mut chunk = Vec::new();
                             if let Err(err) = extractor.read_to_end(&mut chunk) {
-                                error!("Cannot get slice of '{file_hash}' ({})", err.to_string());
+                                error!("Cannot get slice of '{file_hash}' ({})", err);
                                 return;
                             }
 
@@ -344,7 +356,10 @@ impl Downloader {
         dir: SharedDirectory,
         job: StoreLock<DownloadJob>,
         downloader: DownloaderHandle,
+        provisions_dir: PathBuf,
     ) {
+        Self::garbage_collect(dir.clone(), provisions_dir).await;
+
         let job_opt = job.read().await;
 
         if let Some(mut prov) = dir.remote_provisions.read().await.get(job_opt.hash()).cloned() {
@@ -356,6 +371,21 @@ impl Downloader {
                 tokio::spawn(async move { download_writer.run().await });
                 file_writer_map.insert(*job_opt.hash(), writer_tx.clone());
 
+                if !job_opt.failed_chunks.is_empty() {
+                    for chunk_index in &job_opt.failed_chunks {
+                        if let Err(err) = workers
+                            .send(DownloadChunk {
+                                index: *chunk_index,
+                                hash: *job_opt.hash(),
+                                writer_tx: writer_tx.clone(),
+                                dir: dir.clone(),
+                            })
+                            .await
+                        {
+                            error!("Cannot send message to worker ({err})");
+                        }
+                    }
+                }
                 for chunk_index in job_opt.chunk_done..*job_opt.size() {
                     if let Err(err) = workers
                         .send(DownloadChunk {
@@ -383,8 +413,16 @@ impl Downloader {
         }
     }
 
-    fn _garbage_collect() {
-        // TODO: Delete expired provisions
+    async fn garbage_collect(dir: SharedDirectory, provisions_dir: PathBuf) {
+        for provision in dir.local_provisions.read().await.iter() {
+            if provision.1.is_expired() {
+                if let Err(err) = std::fs::remove_file(provisions_dir.join(provision.0.to_string())) {
+                    error!("Cannot remove provision file '{}' ({err})", provision.0);
+                } else if let Err(err) = dir.local_provisions.write().remove(provision.1).await {
+                    error!("Cannot remove provision '{}' ({err})", provision.0);
+                }
+            }
+        }
         // TODO: Delete non expired provisions when the PROVISION_CACHE_MAX_SIZE (defined in gossip) is exceeded
     }
 }
@@ -432,6 +470,7 @@ pub enum DownloaderEvent {
     },
     RemoteProvisionUpdate(Uuid, RemoteProvision),
     LocalProvisionUpdate(Uuid, LocalProvision),
+    RemovedFile(Hash),
 
     // Actor
     Shutdown,

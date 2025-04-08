@@ -35,6 +35,7 @@ use redb::TableDefinition;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Weak};
+use blake3::Hash;
 use tokio::sync::{RwLock, RwLockReadGuard, TryLockError};
 use uuid::Uuid;
 
@@ -351,7 +352,7 @@ impl StoreGuard<LocalProvisionsMap> {
     }
 
     /// Remove a [`LocalProvision`].
-    pub async fn remove(&self, provision: LocalProvision) -> Result<(), StoreError> {
+    pub async fn remove(&self, provision: &LocalProvision) -> Result<(), StoreError> {
         let mut map = self.inner.write().await;
         map.insert(provision.hash(), provision.clone());
 
@@ -365,6 +366,31 @@ impl StoreGuard<LocalProvisionsMap> {
                 .remove(self.id.as_bytes(), provision)
                 .map_err(StoreError::Storage)?;
         }
+
+        transaction.commit().map_err(StoreError::Commit)
+    }
+    
+    pub async fn retain<F>(&self, mut func: F) -> Result<(), StoreError>
+    where 
+        F: FnMut(&Hash, &mut LocalProvision) -> bool,
+    {
+        let mut map = self.inner.write().await;
+
+        let transaction = self.store.write().await.get_write_transaction()?;
+        {
+            let mut local_provision_table = transaction
+                .open_multimap_table(LOCAL_PROVISIONS_TABLE)
+                .map_err(StoreError::Table)?;
+
+            for item in map.iter_mut() {
+                if !func(item.0, item.1) {
+                    local_provision_table
+                        .remove(self.id.as_bytes(), item.1)
+                        .map_err(StoreError::Storage)?;
+                }
+            }
+        }
+        map.retain(func);
 
         transaction.commit().map_err(StoreError::Commit)
     }
@@ -494,7 +520,7 @@ impl StoreGuard<DownloadJob> {
         let mut job = self.inner.write().await;
 
         // Handling the job update
-        self.inner.write().await.last_chunk += 1;
+        job.last_chunk += 1;
         job.chunk_done();
 
         let progress = job.progress;
