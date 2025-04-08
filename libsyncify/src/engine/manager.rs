@@ -48,6 +48,7 @@ pub mod sync;
 
 /// Size of the [`ManagerEvent`] buffer for [`Manager`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
+
 /// Interval between each filesystem polling.
 pub const WATCHER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 

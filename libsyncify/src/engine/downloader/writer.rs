@@ -22,7 +22,7 @@
  */
 use crate::engine::downloader::{DownloaderHandle, CHUNK_SIZE};
 use crate::engine::job::{DownloadJob, JobState};
-use crate::engine::manager::ManagerEvent;
+use crate::engine::manager::{Manager, ManagerEvent};
 use crate::event::{DownloadEvent, EventSender};
 use crate::store::lock::StoreLock;
 use crate::{SharedDirectory, get_app_cache_dir};
@@ -33,6 +33,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::Receiver;
 
+/// Size of the [`WriterChunk`] buffer for [`DownloadWriter`].
 pub const WRITER_BUFFER_LENGTH: usize = 1024;
 
 pub struct DownloadedChunk {
@@ -80,10 +81,10 @@ impl DownloadWriter {
     pub async fn run(&mut self) {
         // Creating the downloads directory
         let downloads_dir = get_app_cache_dir().join("downloads");
-        let (file_hash, dir_uuid) = {
+        let (file_hash, dir_uuid, file_size) = {
             let j = self.job.read().await;
 
-            (*j.hash(), j.dir_uuid)
+            (*j.hash(), j.dir_uuid, *j.size())
         };
 
         match downloads_dir.try_exists() {
@@ -110,7 +111,7 @@ impl DownloadWriter {
             Ok(file) => {
                 self.job.write().set_ongoing().await;
                 self.event_sender
-                    .send(DownloadEvent::DownloadStarted { dir_uuid, file_hash }.wrap());
+                    .send(DownloadEvent::DownloadStarted { dir_uuid, file_hash, file_size }.wrap());
                 BufWriter::with_capacity(CHUNK_SIZE * 16, file)
             }
             Err(e) => {

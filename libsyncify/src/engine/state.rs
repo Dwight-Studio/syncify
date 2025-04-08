@@ -45,8 +45,12 @@ use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-pub const MAX_LOADED_DELTAS: u32 = 2048;
-pub const MAX_UNFLUSHED_DELTAS: u32 = MAX_LOADED_DELTAS * 32;
+/// Maximum number of [`Delta`]s loaded into memory by the store.
+pub const MAX_LOADED_DELTAS: u32 = 1024;
+
+/// Maximum number of [`Delta`]s loaded into memory at any time (the [`State`] is pruned if the
+/// number exceeds the threshold).
+pub const STATE_PRUNING_THRESHOLD: u32 = MAX_LOADED_DELTAS * 4;
 
 // TODO: Add state compression
 

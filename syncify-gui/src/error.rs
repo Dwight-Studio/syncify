@@ -20,7 +20,7 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::icon_names;
+use crate::rsc;
 use libsyncify::SyncifyError;
 use relm4::adw::prelude::*;
 use relm4::gtk::Align;
@@ -56,7 +56,7 @@ impl SimpleComponent for Error {
                 adw::StatusPage {
                     set_title: &tr!("Error"),
                     set_description: Some(&tr!("Syncify encountered an error during launch:")),
-                    set_icon_name: Some(icon_names::SENTIMENT_DISSATISFIED),
+                    set_icon_name: Some(rsc::SENTIMENT_DISSATISFIED),
 
                     gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,

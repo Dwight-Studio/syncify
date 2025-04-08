@@ -77,6 +77,7 @@ pub enum SharedDirPermission {
     Write,
 }
 
+/// The app name.
 pub const APP_NAME: &str = "Syncify";
 
 /// Entry point of the library.
@@ -193,7 +194,8 @@ impl Syncify {
                 dir.uuid(),
                 dir.path().display()
             );
-            self.sender.send(DirectoryEvent::Removed.wrap(dir.uuid()));
+            let uuid = dir.uuid();
+            self.sender.send(DirectoryEvent::Removed(dir).wrap(uuid));
 
             Ok(())
         } else {
@@ -208,7 +210,9 @@ impl Syncify {
 
     /// Get all existing shared directories
     pub async fn get_all_shared_directories(&self) -> Vec<SharedDirectory> {
-        self.store.read().await.get_all_dirs()
+        let mut dirs = self.store.read().await.get_all_dirs();
+        dirs.sort_by_key(|d| d.uuid());
+        dirs
     }
 
     /// Join a shared directory

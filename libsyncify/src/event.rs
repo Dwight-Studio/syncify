@@ -26,6 +26,7 @@ use blake3::Hash;
 use iroh_base::NodeId;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+use crate::SharedDirectory;
 
 /// Size of the [`SyncifyEvent`] buffer.
 pub const EVENT_BUFFER_SIZE: usize = 1024;
@@ -106,7 +107,7 @@ pub enum DirectoryEvent {
     /// A [`SharedDirectory`] has been joined.
     Joined,
     /// A [`SharedDirectory`] has been removed.
-    Removed,
+    Removed(SharedDirectory),
     /// A directory has received synchronisation information.
     Sync(Box<SyncEvent>),
     /// A directory has received peer status update.
@@ -187,7 +188,7 @@ pub enum DownloadEvent {
     /// A file is no longer being upload to another peer.
     UploadStopped { file_hash: Hash, peer_node_id: NodeId }, //TODO
     /// A file (for a specific directory) is now being downloaded from another peer.
-    DownloadStarted { dir_uuid: Uuid, file_hash: Hash },
+    DownloadStarted { dir_uuid: Uuid, file_hash: Hash, file_size: u64 },
     /// The download of a file (for a specific directory) has progressed.
     /// More specifically, a chunk of the file has been successfully download from another peer.
     DownloadProgressed {
@@ -198,7 +199,7 @@ pub enum DownloadEvent {
         peer_node_id: NodeId,
     },
     /// The download of a file (for a specific directory) has failed.
-    DownloadCancelled { dir_uuid: Uuid, file_hash: Hash },
+    DownloadCancelled { dir_uuid: Uuid, file_hash: Hash, remaining: u64 },
     /// The download of a file (for a specific directory) has been completed.
     DownloadCompleted { dir_uuid: Uuid, file_hash: Hash },
 }

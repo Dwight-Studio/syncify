@@ -33,6 +33,7 @@ use std::ops::Deref;
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Duration after which the FSM is considered stuck.
 pub const FSM_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SyncManager {

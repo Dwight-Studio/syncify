@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::app::AppMsg;
-use crate::icon_names;
+use crate::rsc;
 use libsyncify::SharedDirectory;
 use relm4::adw::prelude::*;
 use relm4::prelude::*;
@@ -57,7 +57,7 @@ impl AsyncComponent for Details {
                         // Nothing
                     } -> {
                         set_title: Some(&tr!("Overview")),
-                        set_icon_name: Some(icon_names::FOLDER_VISITING),
+                        set_icon_name: Some(rsc::FOLDER_VISITING),
                     },
 
                     #[name="history"]
@@ -65,7 +65,7 @@ impl AsyncComponent for Details {
                         // Nothing
                     } -> {
                         set_title: Some(&tr!("History")),
-                        set_icon_name: Some(icon_names::HISTORY_UNDO),
+                        set_icon_name: Some(rsc::HISTORY_UNDO),
                     },
 
                     #[name="provision"]
@@ -73,7 +73,7 @@ impl AsyncComponent for Details {
                         // Nothing
                     } -> {
                         set_title: Some(&tr!("Provision")),
-                        set_icon_name: Some(icon_names::PACKAGE_X_GENERIC),
+                        set_icon_name: Some(rsc::PACKAGE_X_GENERIC),
                     },
 
                     #[name="peers"]
@@ -81,7 +81,7 @@ impl AsyncComponent for Details {
                         // Nothing
                     } -> {
                         set_title: Some(&tr!("Peers")),
-                        set_icon_name: Some(icon_names::PEOPLE),
+                        set_icon_name: Some(rsc::PEOPLE),
                     },
                 },
 

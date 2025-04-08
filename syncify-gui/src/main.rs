@@ -20,22 +20,23 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use relm4::adw::gio::{resources_register, Resource};
+use relm4::adw::glib;
 use crate::app::App;
 use crate::error::Error;
 use libsyncify::Syncify;
 use libsyncify::util::setup_logger;
-use relm4::RelmApp;
+use relm4::{gtk, RelmApp};
 use tr::tr_init;
 
 mod app;
-mod css;
 mod error;
 mod event_handler;
 mod util;
 mod widget;
 
-mod icon_names {
-    include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
+mod rsc {
+    include!(concat!(env!("OUT_DIR"), "/resources.rs"));
 }
 
 fn main() {
@@ -44,9 +45,20 @@ fn main() {
     // Initialize tr
     tr_init!("/usr/share/locale");
 
-    relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
-    
-    relm4::set_global_css(&css::get_css());
+    // Load the ressources
+    let bytes = glib::Bytes::from_static(rsc::GRESOURCE_BYTES);
+    let resource = Resource::from_data(&bytes).unwrap();
+    resources_register(&resource);
+
+    // Initialize GTK
+    gtk::init().unwrap();
+
+    // Add the stylesheet and the icons
+    let display = gtk::gdk::Display::default().unwrap();
+    let provider = gtk::CssProvider::new();
+    provider.load_from_resource(&format!{"{}/style.css", rsc::RESOURCE_PREFIX});
+    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    gtk::IconTheme::for_display(&display).add_resource_path(rsc::RESOURCE_PREFIX);
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()

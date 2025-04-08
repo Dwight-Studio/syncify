@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::app::AppMsg;
-use crate::icon_names;
+use crate::rsc;
 use libsyncify::store::link::Link;
 use libsyncify::{SharedDirectory, Syncify, SyncifyError};
 use relm4::adw::prelude::*;
@@ -91,7 +91,7 @@ impl AsyncComponent for CreateDialog {
                                         set_spacing: 6,
 
                                         gtk::Image {
-                                            set_icon_name: Some(icon_names::FOLDER_OPEN)
+                                            set_icon_name: Some(rsc::FOLDER_OPEN)
                                         },
 
                                         #[name = "open_label"]
@@ -144,7 +144,7 @@ impl AsyncComponent for CreateDialog {
                                 add_suffix = &gtk::Button {
                                     add_css_class: "flat",
                                     set_valign: Align::Center,
-                                    set_icon_name: icon_names::CLIPBOARD,
+                                    set_icon_name: rsc::CLIPBOARD,
 
                                     connect_clicked => CreateDialogMsg::Paste,
                                 }

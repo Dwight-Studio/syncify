@@ -20,28 +20,27 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+use std::collections::HashMap;
 use std::thread::sleep;
 use std::time::Duration;
-use crate::icon_names;
+use crate::rsc;
 use crate::widget::create::CreateDialog;
 use crate::widget::details::Details;
 use crate::widget::overview::{Overview, OverviewMsg};
-use libsyncify::{Syncify, SyncifyError};
-use log::warn;
+use libsyncify::{SharedDirectory, Syncify};
+use log::{debug, warn};
 use relm4::adw::Toast;
 use relm4::adw::prelude::*;
 use relm4::loading_widgets::LoadingWidgets;
 use relm4::prelude::*;
 use relm4::{AsyncComponentSender, adw, gtk, view, Sender};
-use relm4::factory::AsyncFactoryVecDequeGuard;
-use relm4::gtk::Widget;
 use tr::tr;
 use uuid::Uuid;
-use libsyncify::event::{DirectoryEvent, SyncEvent, SyncifyEvent};
+use libsyncify::event::{DirectoryEvent, DownloadEvent, SyncEvent, SyncifyEvent};
 
 pub struct App {
     syncify: Syncify,
-    overview_dirs: AsyncFactoryVecDeque<Overview>,
+    overview_controllers: HashMap<Uuid, AsyncController<Overview>>,
     create_dialog: Option<AsyncController<CreateDialog>>,
     current_details: Option<Uuid>,
     details: Option<AsyncController<Details>>,
@@ -85,13 +84,13 @@ impl AsyncComponent for App {
                             set_show_title: true,
 
                             pack_start = &gtk::Button {
-                                set_icon_name: icon_names::PLUS_LARGE,
+                                set_icon_name: rsc::PLUS_LARGE,
 
                                 connect_clicked => AppMsg::OpenCreateDialog,
                             },
 
                             pack_end = &gtk::Button {
-                                set_icon_name: icon_names::MENU_LARGE,
+                                set_icon_name: rsc::MENU_LARGE,
                             }
                         },
 
@@ -103,8 +102,8 @@ impl AsyncComponent for App {
 
                                 adw::StatusPage {
 
-                                    #[local_ref]
-                                    dirs_box -> gtk::Box {
+                                    #[name = "overview_box"]
+                                    gtk::Box {
                                         set_orientation: gtk::Orientation::Vertical,
                                         set_spacing: 20,
                                     }
@@ -120,27 +119,24 @@ impl AsyncComponent for App {
     async fn init(mut init: Self::Init, root: Self::Root, sender: AsyncComponentSender<Self>) -> AsyncComponentParts<Self> {
         init.start_sync().await.unwrap();
 
-        // Overview
-        let mut overview_dirs = AsyncFactoryVecDeque::builder()
-            .launch_default()
-            .forward(sender.input_sender(), std::convert::identity);
-
-        let mut guard = overview_dirs.guard();
-        for dir in init.get_all_shared_directories().await {
-            guard.push_back(dir);
-        }
-        drop(guard);
-
-        let model = Self {
+        let mut model = Self {
             syncify: init,
-            overview_dirs,
+            overview_controllers: HashMap::new(),
             create_dialog: None,
             current_details: None,
             details: None,
         };
 
-        let dirs_box = model.overview_dirs.widget();
-        let widgets = view_output!();
+        let mut widgets = view_output!();
+        
+        if cfg!(debug_assertions) {
+            widgets.main_window.add_css_class("devel");
+        }
+        
+        // Populate overviews
+        for dir in model.syncify.get_all_shared_directories().await {
+            model.add_directory(&sender, &mut widgets, dir);
+        }
 
         // Property bindings
         widgets
@@ -184,7 +180,6 @@ impl AsyncComponent for App {
         sender: AsyncComponentSender<Self>,
         _root: &Self::Root,
     ) {
-        let mut od_guard = self.overview_dirs.guard();
         match message {
             AppMsg::OpenCreateDialog => {
                 let dialog = CreateDialog::builder()
@@ -214,18 +209,19 @@ impl AsyncComponent for App {
                     SyncifyEvent::Directory(uuid, event) => match event {
                         DirectoryEvent::Created | DirectoryEvent::Joined => {
                             if let Some(dir) = self.syncify.get_shared_directory(&uuid).await {
+                                let dir_name = dir.name();
+                                self.add_directory(&sender, widgets, dir);
                                 widgets.toast.add_toast(
                                     Toast::builder()
-                                        .title(tr!("Directory '{}' has been added", dir.name()))
+                                        .title(tr!("Directory '{}' has been added", dir_name))
                                         .timeout(5)
                                         .build(),
                                 );
-                                od_guard.push_back(dir);
                             } else {
                                 warn!("Cannot add directory: Not found");
                             }
                         }
-                        DirectoryEvent::Removed => {
+                        DirectoryEvent::Removed(dir) => {
                             // Close details if the uuid is the same
                             if let Some(details) = self.current_details {
                                 if details == uuid {
@@ -234,43 +230,66 @@ impl AsyncComponent for App {
                             }
 
                             // Remove overview
-                            for i in 0..od_guard.len() {
-                                if let Some(dir) = od_guard.get(i) {
-                                    if dir.is(uuid) {
-                                        widgets.toast.add_toast(
-                                            Toast::builder()
-                                                .title(tr!("Directory '{}' has been removed", dir.name()))
-                                                .timeout(5)
-                                                .build(),
-                                        );
-                                        od_guard.remove(i);
-                                        break;
-                                    }
-                                }
+                            if let Some(controller) = self.overview_controllers.get(&uuid) {
+                                widgets.overview_box.remove(controller.widget());
+                                self.overview_controllers.remove(&uuid);
                             }
+                            widgets.toast.add_toast(
+                                Toast::builder()
+                                    .title(tr!("Directory '{}' has been removed", dir.name()))
+                                    .timeout(5)
+                                    .build(),
+                            );
                         }
                         DirectoryEvent::Sync(event) => match *event {
                             SyncEvent::IncomingStarted(_) | SyncEvent::OutgoingStarted(_) => {
-                                Self::send_overview(&mut od_guard, uuid, OverviewMsg::SyncStarted);
+                                if let Some(controller) = self.overview_controllers.get(&uuid) {
+                                    controller.emit(OverviewMsg::SyncStarted);
+                                }
                             }
                             SyncEvent::IncomingStopped(_) | SyncEvent::OutgoingStopped(_) => {
-                                Self::send_overview(&mut od_guard, uuid, OverviewMsg::SyncStopped);
+                                if let Some(controller) = self.overview_controllers.get(&uuid) {
+                                    controller.emit(OverviewMsg::SyncStopped);
+                                }
                             }
                             SyncEvent::Conflict(_, _) => {}
                             SyncEvent::Unverified(_) => {}
                             SyncEvent::Local(state) | SyncEvent::Remote(state) => {
-                                Self::send_overview(&mut od_guard, uuid, OverviewMsg::Mutation(state.head().mutation()));
+                                if let Some(controller) = self.overview_controllers.get(&uuid) {
+                                    controller.emit(OverviewMsg::Mutation(state.head().mutation()));
+                                }
                             }
                         }
                         DirectoryEvent::Peer(_) => {}
                     }
-                    SyncifyEvent::Download(_) => {}
+                    SyncifyEvent::Download(event) => match event {
+                        DownloadEvent::LocalProvisionUpdate(_) => {}
+                        DownloadEvent::RemoteProvisionUpdate(_) => {}
+                        DownloadEvent::UploadStarted { .. } => {}
+                        DownloadEvent::UploadStopped { .. } => {}
+                        DownloadEvent::DownloadStarted { dir_uuid, file_size, .. } => {
+                            if let Some(controller) = self.overview_controllers.get(&dir_uuid) {
+                                controller.emit(OverviewMsg::StartDownload(file_size));
+                            }
+                        }
+                        DownloadEvent::DownloadProgressed { dir_uuid, .. } => {
+                            if let Some(controller) = self.overview_controllers.get(&dir_uuid) {
+                                controller.emit(OverviewMsg::ProgressDownload);
+                            }
+                        }
+                        DownloadEvent::DownloadCompleted { .. } => {}
+                        DownloadEvent::DownloadCancelled { dir_uuid, remaining, .. } => {
+                            if let Some(controller) = self.overview_controllers.get(&dir_uuid) {
+                                controller.emit(OverviewMsg::CancelDownload(remaining));
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    fn shutdown(&mut self, widgets: &mut Self::Widgets, output: Sender<Self::Output>) {
+    fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: Sender<Self::Output>) {
         let handle = relm4::spawn(self.syncify.clone().stop_sync());
 
         while !handle.is_finished() {
@@ -280,14 +299,23 @@ impl AsyncComponent for App {
 }
 
 impl App {
-    fn send_overview(od_guard: &mut AsyncFactoryVecDequeGuard<Overview>, uuid: Uuid, msg: OverviewMsg) {
-        for i in 0..od_guard.len() {
-            if let Some(dir) = od_guard.get(i) {
-                if dir.is(uuid) {
-                    od_guard.send(i, msg);
-                    break;
-                }
+    fn add_directory(&mut self, sender: &AsyncComponentSender<Self>,  widgets: &mut <App as AsyncComponent>::Widgets, dir: SharedDirectory) {
+        let uuid = dir.uuid();
+        let controller = Overview::builder()
+            .launch(dir)
+            .forward(sender.input_sender(), std::convert::identity);
+        
+        let mut after = None;
+        
+        for (key, val) in &self.overview_controllers {
+            if *key > uuid {
+                break
+            } else {
+                after = Some(val.widget())
             }
         }
+        debug!("Insert {after:?}");
+        controller.widget().insert_after(&widgets.overview_box, after);
+        self.overview_controllers.insert(uuid, controller);
     }
 }

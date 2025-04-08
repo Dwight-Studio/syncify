@@ -22,5 +22,5 @@ tr = "0.1.10"
 chrono = "0.4.40"
 
 [build-dependencies]
-#relm4-icons-build = "0.10.0-beta.2"
-relm4-icons-build = { git = "https://github.com/Dwight-Studio/relm4-icons.git" }
+grass = "0.13.4"
+gvdb = { version = "0.8.0", features = ["gresource"] }

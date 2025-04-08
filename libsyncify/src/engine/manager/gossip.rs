@@ -42,6 +42,7 @@ use thiserror::Error;
 
 /// Duration after which provision expires.
 pub const PROVISION_EXPIRATION: Duration = TimeDelta::hours(2);
+
 /// Maximum size of the provision cache (in chunks). When the local cache exceed this threshold, a
 /// more aggressive garbage collection method will method used. (Regardless of the expiration).
 pub const PROVISION_CACHE_MAX_SIZE: u64 = 1;

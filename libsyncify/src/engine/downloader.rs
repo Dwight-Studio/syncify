@@ -46,6 +46,7 @@ pub mod writer;
 
 /// Size of the [`DownloaderEvent`] buffer for [`Downloader`].
 pub const EVENT_BUFFER_SIZE: usize = 1024;
+
 /// Size of the chunk of file that are sent per packet.
 pub const CHUNK_SIZE: usize = 64 * 1024;
 

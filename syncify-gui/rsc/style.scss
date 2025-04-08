@@ -21,27 +21,45 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-pub fn get_css() -> String {
-    r#"
-    .status-icon {
-        padding: 10px;
-        border-radius: 50%;
+.status-icon {
+    padding: 10px;
+    border-radius: 50%;
+
+    &.success {
+        background-color: gtkalpha(var(--success-bg-color), 0.3);
     }
-    
-    .status-icon.success {
-        background-color: alpha(var(--success-bg-color), 0.3);
+
+    &.warning {
+        background-color: gtkalpha(var(--warning-bg-color), 0.3);
     }
-    
-    .status-icon.warning {
-        background-color: alpha(var(--warning-bg-color), 0.3);
+
+    &.accent {
+        background-color: gtkalpha(var(--accent-bg-color), 0.3);
     }
-    
-    .status-icon.accent {
-        background-color: alpha(var(--accent-bg-color), 0.3);
+
+    &.destructive {
+        background-color: gtkalpha(var(--destructive-bg-color), 0.3);
     }
-    
-    .status-icon.destructive {
-        background-color: alpha(var(--destructive-bg-color), 0.3);
-    }"#
-    .to_string()
+}
+
+.download-row {
+    > box {
+        > box.header {
+            margin-left: 12px;
+            margin-right: 12px;
+            border-spacing: 6px;
+            min-height: 50px;
+
+            > image.status-icon {
+                border-spacing: 6px;
+            }
+
+            > box.titles {
+                margin-top: 6px;
+                margin-bottom: 6px;
+                border-spacing: 3px;
+                padding: 0;
+            }
+        }
+    }
 }
