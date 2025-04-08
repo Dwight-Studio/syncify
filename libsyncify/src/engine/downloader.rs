@@ -21,7 +21,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 use crate::engine::downloader::worker::{DownloadChunk, DownloadWorker};
-use crate::engine::downloader::writer::{DownloadWriter, DownloadedChunk, WRITER_BUFFER_LENGTH};
+use crate::engine::downloader::writer::{DownloadWriter, WriterChunk, WRITER_BUFFER_LENGTH};
 use crate::engine::job::{DownloadJob, JobState, LocalProvision, RemoteProvision};
 use crate::engine::manager::ManagerEvent;
 use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol, SyncifyStream};
@@ -98,7 +98,7 @@ impl Downloader {
         store: Arc<RwLock<StoreManager>>,
         sender: EventSender,
         mut jobs: HashMap<Hash, StoreLock<DownloadJob>>,
-        _downloader: DownloaderHandle,
+        downloader: DownloaderHandle,
         proto: SyncifyProtocol,
     ) {
         // Creating the provision directory
@@ -119,15 +119,13 @@ impl Downloader {
         }
 
         // Initiate download tasks list
-        let mut file_writer_map: HashMap<Hash, Sender<DownloadedChunk>> = HashMap::new();
+        let mut file_writer_map: HashMap<Hash, Sender<WriterChunk>> = HashMap::new();
         let mut download_tasks: Vec<JoinHandle<()>> = Vec::with_capacity(MAX_DOWNLOAD_WORKER);
-        let cancel_list: Arc<RwLock<Vec<Hash>>> = Arc::new(RwLock::new(Vec::new()));
 
         let (workers, recv) = async_channel::unbounded();
         for _ in 0..MAX_DOWNLOAD_WORKER {
             let mut worker = DownloadWorker {
                 rx: recv.clone(),
-                cancel_list: cancel_list.clone(),
                 proto: proto.clone(),
             };
             download_tasks.push(tokio::spawn(async move { worker.run().await }));
@@ -168,39 +166,47 @@ impl Downloader {
                         jobs.insert(file_hash, job.clone());
 
                         // Start downloading it
-                        Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job).await;
+                        Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job, downloader.clone()).await;
                     }
                 }
 
-                DownloaderEvent::Cancel(hash) => {
-                    if let Some(job) = jobs.remove(&hash) {
-                        let j = job.read().await;
+                DownloaderEvent::Cancel(file_path, uuid) => {
+                    for job in &jobs {
+                        let (job_file_path, job_file_uuid, job_file_hash) = {
+                            let j = job.1.read().await;
 
-                        info!("Cancelling download of '{hash}'");
-                        sender.send(
-                            DownloadEvent::DownloadCompleted {
-                                dir_uuid: j.dir_uuid,
-                                file_hash: *j.hash(),
-                            }
-                            .wrap(),
-                        );
-                        drop(j);
+                            (j.path().to_string(), j.dir_uuid, *j.hash())
+                        };
+                        
+                        if file_path == job_file_path && uuid == job_file_uuid && !matches!(job.1.read().await.state, JobState::Cancelled) {
+                            info!("Cancelling download of '{file_path}'");
+                            sender.send(
+                                DownloadEvent::DownloadCompleted {
+                                    dir_uuid: job_file_uuid,
+                                    file_hash: job_file_hash,
+                                }
+                                    .wrap(),
+                            );
 
-                        job.write().cancel().await;
+                            job.1.write().cancel().await;
+                        }
                     }
                 }
 
                 DownloaderEvent::Resume => {
-                    /*Self::download_next(
-                        &store,
-                        &sender,
-                        &downloads_dir,
-                        &jobs,
-                        &downloader,
-                        &mut download_tasks,
-                        &proto,
-                    )
-                    .await;*/
+                    for job in &jobs {
+                        let (job_dir_uuid, job_hash) = {
+                            let j = job.1.read().await;
+
+                            (j.dir_uuid, *j.hash())
+                        };
+                        if matches!(job.1.read().await.state(), JobState::Ongoing | JobState::Pending) {
+                            if let Some(dir) = store.read().await.get_shared_dir(&job_dir_uuid) {
+                                info!("Resuming download of '{job_hash}' for {job_dir_uuid}");
+                                Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job.1.clone(), downloader.clone()).await;
+                            }
+                        }
+                    }
                 }
 
                 // Provision
@@ -218,7 +224,7 @@ impl Downloader {
 
                         if let Some(job) = jobs.get(provision.hash()) {
                             if matches!(job.read().await.state, JobState::Pending) {
-                                Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job.clone())
+                                Self::start_download(&sender, &mut file_writer_map, workers.clone(), dir, job.clone(), downloader.clone())
                                     .await;
                             }
                         } else {
@@ -332,10 +338,11 @@ impl Downloader {
 
     async fn start_download(
         sender: &EventSender,
-        file_writer_map: &mut HashMap<Hash, Sender<DownloadedChunk>>,
+        file_writer_map: &mut HashMap<Hash, Sender<WriterChunk>>,
         workers: async_channel::Sender<DownloadChunk>,
         dir: SharedDirectory,
         job: StoreLock<DownloadJob>,
+        downloader: DownloaderHandle,
     ) {
         let job_opt = job.read().await;
 
@@ -343,12 +350,12 @@ impl Downloader {
             prov.retain(|_, provision| !provision.is_expired());
             if !prov.is_empty() {
                 let (writer_tx, writer_rx) = mpsc::channel(WRITER_BUFFER_LENGTH);
-                let mut download_writer = DownloadWriter::new(writer_rx, job.clone(), sender.clone(), dir.clone());
+                let mut download_writer = DownloadWriter::new(writer_rx, job.clone(), sender.clone(), dir.clone(), downloader);
 
                 tokio::spawn(async move { download_writer.run().await });
                 file_writer_map.insert(*job_opt.hash(), writer_tx.clone());
 
-                for chunk_index in 0..*job_opt.size() {
+                for chunk_index in job_opt.chunk_done..*job_opt.size() {
                     if let Err(err) = workers
                         .send(DownloadChunk {
                             index: chunk_index,
@@ -413,7 +420,7 @@ impl DownloaderHandle {
 pub enum DownloaderEvent {
     // Jobs
     Accept(DownloadJob),
-    Cancel(Hash),
+    Cancel(String, Uuid),
     Resume,
 
     // Provision

@@ -20,15 +20,15 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::downloader::CHUNK_SIZE;
-use crate::engine::job::DownloadJob;
+use crate::engine::downloader::{DownloaderHandle, CHUNK_SIZE};
+use crate::engine::job::{DownloadJob, JobState};
 use crate::engine::manager::ManagerEvent;
 use crate::event::{DownloadEvent, EventSender};
 use crate::store::lock::StoreLock;
 use crate::{SharedDirectory, get_app_cache_dir};
 use iroh_base::NodeId;
-use log::{debug, error, info};
-use std::io::SeekFrom;
+use log::{error, info};
+use std::io::{SeekFrom, Write};
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::Receiver;
@@ -41,26 +41,39 @@ pub struct DownloadedChunk {
     pub(crate) node_id: NodeId,
 }
 
+pub struct FailedChunk {
+    pub(crate) index: u64,
+    pub(crate) need_provision: bool,
+}
+
+pub enum WriterChunk {
+    DownloadedChunk(DownloadedChunk),
+    FailedChunk(FailedChunk),
+}
+
 #[derive(Debug)]
 pub struct DownloadWriter {
-    pub(crate) rx: Receiver<DownloadedChunk>,
+    pub(crate) rx: Receiver<WriterChunk>,
     pub(crate) job: StoreLock<DownloadJob>,
     pub(crate) event_sender: EventSender,
     pub(crate) dir: SharedDirectory,
+    pub(crate) downloader: DownloaderHandle,
 }
 
 impl DownloadWriter {
     pub fn new(
-        rx: Receiver<DownloadedChunk>,
+        rx: Receiver<WriterChunk>,
         job: StoreLock<DownloadJob>,
         event_sender: EventSender,
         dir: SharedDirectory,
+        downloader: DownloaderHandle,
     ) -> Self {
         Self {
             rx,
             job,
             event_sender,
             dir,
+            downloader
         }
     }
 
@@ -95,7 +108,6 @@ impl DownloadWriter {
             .await
         {
             Ok(file) => {
-                info!("Resuming download of '{}'", file_hash);
                 self.job.write().set_ongoing().await;
                 self.event_sender
                     .send(DownloadEvent::DownloadStarted { dir_uuid, file_hash }.wrap());
@@ -106,47 +118,79 @@ impl DownloadWriter {
                 return;
             }
         };
+        
+        let mut needed_provision = false;
 
         while let Some(rcv) = self.rx.recv().await {
-            if let Err(err) = file.seek(SeekFrom::Start(rcv.index * CHUNK_SIZE as u64)).await {
-                error!("Cannot seek into the cache file: {err}");
-            }
-            if let Err(err) = file.write_all(&rcv.data).await {
-                error!("Cannot write to the cache file: {err}");
-            }
-
-            let (progress, is_done) = self.job.write().finish_download_chunk().await;
-            debug!("Downloading {file_hash}... {:.1}%", progress * 100.0);
-            self.event_sender.send(
-                DownloadEvent::DownloadProgressed {
-                    dir_uuid,
-                    file_hash,
-                    progress,
-                    download_chunk_index: rcv.index,
-                    peer_node_id: rcv.node_id,
-                }
-                .wrap(),
-            );
-
-            if is_done {
-                info!("Received file {}", file_hash);
-                self.event_sender
-                    .send(DownloadEvent::DownloadCompleted { dir_uuid, file_hash }.wrap());
-
-                if let Err(e) = file.flush().await {
-                    error!("Cannot flush cache file: {e}");
-                }
-
-                self.job.write().finish_download().await;
-
-                self.dir
-                    .handle()
-                    .await
-                    .send(ManagerEvent::DownloadFinished(self.job.clone()))
-                    .await;
-
+            if matches!(self.job.read().await.state, JobState::Cancelled) {
                 break;
             }
+            
+            match rcv {
+                WriterChunk::DownloadedChunk(chunk) => {
+                    if let Err(err) = file.seek(SeekFrom::Start(chunk.index * CHUNK_SIZE as u64)).await {
+                        error!("Cannot seek into the cache file: {err}");
+                    }
+                    if let Err(err) = file.write_all(&chunk.data).await {
+                        error!("Cannot write to the cache file: {err}");
+                    }
+
+                    let (progress, is_done, all_chunk_tried) = self.job.write().finish_download_chunk().await;
+                    print!("Downloading {file_hash}... {:.1}%\r", progress * 100.0);
+                    std::io::stdout().flush().unwrap();
+                    self.event_sender.send(
+                        DownloadEvent::DownloadProgressed {
+                            dir_uuid,
+                            file_hash,
+                            progress,
+                            download_chunk_index: chunk.index,
+                            peer_node_id: chunk.node_id,
+                        }
+                            .wrap(),
+                    );
+
+                    if is_done {
+                        info!("Received file {}", file_hash);
+                        self.event_sender
+                            .send(DownloadEvent::DownloadCompleted { dir_uuid, file_hash }.wrap());
+
+                        if let Err(e) = file.flush().await {
+                            error!("Cannot flush cache file: {e}");
+                        }
+
+                        self.job.write().finish_download().await;
+
+                        self.dir
+                            .handle()
+                            .await
+                            .send(ManagerEvent::DownloadFinished(self.job.clone()))
+                            .await;
+
+                        break;
+                    } else if all_chunk_tried {
+                        self.manage_failed_chunks(needed_provision).await;
+                    }
+                }
+                WriterChunk::FailedChunk(chunk) => {
+                    let all_chunk_tried = self.job.write().add_failed_chunk(chunk.index).await;
+                    
+                    if chunk.need_provision {
+                        needed_provision = true;
+                    }
+                    
+                    if all_chunk_tried {
+                        self.manage_failed_chunks(needed_provision).await;
+                    }
+                }
+            }
+        }
+    }
+    
+    async fn manage_failed_chunks(&self, needed_provision: bool) {
+        if needed_provision {
+            // TODO: Do something with the failed chunks (one or more chunks need provision)
+        } else {
+            // TODO: Do something with the failed chunks
         }
     }
 }

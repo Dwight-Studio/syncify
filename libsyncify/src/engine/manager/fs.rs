@@ -178,15 +178,11 @@ impl FileSystemManager {
     pub async fn apply_remote_mutations(&mut self, mutations: Vec<Mutation>) {
         let old_hash = self.dir.state.read().await.hash();
 
-        // Files to cancel
-        let mut files_to_cancel = Vec::new();
-        let tree = self.dir.local_tree.read().await.clone();
-
         for mutation in mutations {
             match &mutation {
                 Mutation::Modify { file_path, .. } => {
-                    files_to_cancel.push(file_path.clone());
-
+                    self.downloader.send(DownloaderEvent::Cancel(file_path.clone(), self.dir.uuid)).await;
+                    
                     // Creating a new job
                     self.downloader
                         .send(DownloaderEvent::Accept(DownloadJob::new(
@@ -215,8 +211,8 @@ impl FileSystemManager {
                                 parent_opt = parent.parent();
                             }
 
-                            files_to_cancel.push(from.clone());
-                            files_to_cancel.push(to.clone());
+                            self.downloader.send(DownloaderEvent::Cancel(from.clone(), self.dir.uuid)).await;
+                            self.downloader.send(DownloaderEvent::Cancel(to.clone(), self.dir.uuid)).await;
 
                             self.update_local_tree(mutation).await
                         }
@@ -241,25 +237,19 @@ impl FileSystemManager {
 
                                 parent_opt = parent.parent();
                             }
-                            
-                            files_to_cancel.push(file_path.clone());
+
+                            self.downloader.send(DownloaderEvent::Cancel(file_path.clone(), self.dir.uuid)).await;
 
                             self.update_local_tree(mutation).await
                         }
                         Err(e) => {
                             error!("Cannot remove file '{}' ({e})", path.display());
+                            self.downloader.send(DownloaderEvent::Cancel(file_path.clone(), self.dir.uuid)).await;
                             self.update_local_tree(mutation).await
                         }
                     }
                 }
                 _ => continue,
-            }
-        }
-
-        // Cancel the download of every delete/overwritten file
-        for file in files_to_cancel {
-            if let Some(file) = tree.get(&file) {
-                self.downloader.send(DownloaderEvent::Cancel(file.hash())).await
             }
         }
 

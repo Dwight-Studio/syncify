@@ -469,8 +469,13 @@ impl StoreGuard<DownloadJob> {
     }
 
     /// Add a chunk to the failed chunk list.
-    pub async fn add_failed_chunk(&self, index: u64) {
-        self.inner.write().await.failed_chunks.push(index);
+    pub async fn add_failed_chunk(&self, index: u64) -> bool {
+        let mut job = self.inner.write().await;
+        
+        job.last_chunk += 1;
+        job.failed_chunks.push(index);
+
+        job.last_chunk == *job.size()
     }
 
     /// Set the job state to [`JobState::Ongoing`]
@@ -480,24 +485,21 @@ impl StoreGuard<DownloadJob> {
         job.state = JobState::Ongoing;
     }
 
-    /// Add one to the last chunk counter.
-    pub async fn start_download_chunk(&self) {
-        self.inner.write().await.last_chunk += 1;
-    }
-
     /// Flush [`DownloadJob`] in the database.
     ///
     /// # Return
     ///
     /// Returns the progress of the [`DownloadJob`]
-    pub async fn finish_download_chunk(&self) -> (f32, bool) {
+    pub async fn finish_download_chunk(&self) -> (f32, bool, bool) {
         let mut job = self.inner.write().await;
 
         // Handling the job update
+        self.inner.write().await.last_chunk += 1;
         job.chunk_done();
 
         let progress = job.progress;
         let is_done = job.is_done();
+        let all_chunk_tried = job.last_chunk == *job.size();
         if job.chunk_done % FLUSH_JOB_FREQUENCY as u64 == 0 {
             drop(job);
             if let Err(e) = self.flush().await {
@@ -505,7 +507,7 @@ impl StoreGuard<DownloadJob> {
             }
         }
 
-        (progress, is_done)
+        (progress, is_done, all_chunk_tried)
     }
 
     /// Flush the file buffer, and update the [`DownloadJob`] in the database.

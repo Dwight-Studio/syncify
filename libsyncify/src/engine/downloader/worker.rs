@@ -22,7 +22,7 @@
  */
 use crate::SharedDirectory;
 use crate::engine::downloader::CHUNK_SIZE;
-use crate::engine::downloader::writer::DownloadedChunk;
+use crate::engine::downloader::writer::{DownloadedChunk, FailedChunk, WriterChunk};
 use crate::engine::job::RemoteProvision;
 use crate::engine::protocol::{BlobsPacket, SyncifyPacket, SyncifyProtocol};
 use async_channel::Receiver;
@@ -30,27 +30,24 @@ use blake3::Hash;
 use iroh_base::NodeId;
 use log::debug;
 use std::io::Read;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 
 pub struct DownloadChunk {
     pub(crate) index: u64,
     pub(crate) hash: Hash,
-    pub(crate) writer_tx: Sender<DownloadedChunk>,
+    pub(crate) writer_tx: Sender<WriterChunk>,
     pub(crate) dir: SharedDirectory,
 }
 
 pub struct DownloadWorker {
     pub(crate) rx: Receiver<DownloadChunk>,
-    pub(crate) cancel_list: Arc<RwLock<Vec<Hash>>>,
     pub(crate) proto: SyncifyProtocol,
 }
 
 impl DownloadWorker {
     pub async fn run(&mut self) {
         while let Ok(rcv) = self.rx.recv().await {
-            if self.cancel_list.read().await.contains(&rcv.hash) {
+            if rcv.writer_tx.is_closed() {
                 continue;
             }
             if let Some(node_list) = rcv.dir.remote_provisions.read().await.get(&rcv.hash) {
@@ -63,8 +60,10 @@ impl DownloadWorker {
                             chunk_index: rcv.index,
                         });
                         if connection.send(&packet).await.is_err() {
-                            debug!("Not implemented: failed to send BlobRequest");
-                            // TODO: Requeue the chunk because we failed to send the BlobRequest packet
+                            let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
+                                index: rcv.index,
+                                need_provision: false,
+                            })).await;
                             continue;
                         }
                         match connection.recv().await {
@@ -80,34 +79,39 @@ impl DownloadWorker {
                                         );
 
                                         if decoder.read_to_end(&mut decoded).is_err() {
-                                            debug!("Not implemented: cannot decode");
-                                            // TODO: Requeue the chunk because we failed to decode
-                                        } else if let Err(err) = rcv
+                                            let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
+                                                index: rcv.index,
+                                                need_provision: false,
+                                            })).await;
+                                        } else {
+                                            // If the writer channel is closed, it means that we cancelled
+                                            // the download, don't do anything
+                                            let _ = rcv
                                             .writer_tx
-                                            .send(DownloadedChunk {
+                                            .send(WriterChunk::DownloadedChunk(DownloadedChunk {
                                                 index: rcv.index,
                                                 data: decoded,
                                                 node_id: *node.0,
-                                            })
-                                            .await
-                                        {
-                                            debug!("Not implemented: cannot send message to the writer ({err})");
-                                            // TODO: Requeue the chunk
+                                            }))
+                                            .await;
                                         }
                                     }
                                     _ => unreachable!(), // Will never happen
                                 }
                             }
-                            Err(err) => {
-                                debug!("Not implemented: failed to receive packet ({err})");
-                                // TODO: Requeue the chunk because we failed to receive the Blob packet
+                            Err(_) => {
+                                let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
+                                    index: rcv.index,
+                                    need_provision: false,
+                                })).await;
                             }
                         }
                     }
                 } else {
-                    debug!("Not implemented: remote provision expired");
-                    // TODO: RemoteProvision expired, requeue the chunk, check if another Node have
-                    //  the file and it is not expired, else broadcast provision request
+                    let _ = rcv.writer_tx.send(WriterChunk::FailedChunk(FailedChunk {
+                        index: rcv.index,
+                        need_provision: true,
+                    })).await;
                 }
             }
         }
