@@ -224,7 +224,7 @@ impl GossipManager {
     pub async fn request_provision(&self, hash: Hash) {
         info!("Requesting provision of '{hash}' for {}", self.dir.uuid);
         if let Ok(msg) = self.create_message(Payload::ProvisionRequest { hash }) {
-            if self.topic.broadcast(msg).await.is_err() {
+            if self.topic.broadcast_neighbors(msg).await.is_err() {
                 warn!("Cannot broadcast ProvisionRequest message!");
             }
         } else {
@@ -239,7 +239,7 @@ impl GossipManager {
             node_id: *self.proto.node_id().as_bytes(),
             expire: provision.expiration(),
         }) {
-            if self.topic.broadcast(resp_msg).await.is_err() {
+            if self.topic.broadcast_neighbors(resp_msg).await.is_err() {
                 warn!("Cannot broadcast Provision message!");
             }
         } else {
@@ -280,7 +280,7 @@ impl GossipManager {
         let new_head = self.dir.state.read().await.hash().clone();
 
         if let Ok(msg) = self.create_message(Payload::Update { node_id, new_head }) {
-            if self.topic.broadcast(msg).await.is_err() {
+            if self.topic.broadcast_neighbors(msg).await.is_err() {
                 warn!("Cannot broadcast Update message!");
             }
         } else {

@@ -358,7 +358,7 @@ impl Downloader {
         downloader: DownloaderHandle,
         provisions_dir: PathBuf,
     ) {
-        Self::garbage_collect(dir.clone(), provisions_dir).await;
+        Self::garbage_collect(&dir, provisions_dir).await;
 
         let job_opt = job.read().await;
 
@@ -413,7 +413,7 @@ impl Downloader {
         }
     }
 
-    async fn garbage_collect(dir: SharedDirectory, provisions_dir: PathBuf) {
+    async fn garbage_collect(dir: &SharedDirectory, provisions_dir: PathBuf) {
         for provision in dir.local_provisions.read().await.iter() {
             if provision.1.is_expired() {
                 if let Err(err) = std::fs::remove_file(provisions_dir.join(provision.0.to_string())) {
@@ -423,7 +423,7 @@ impl Downloader {
                 }
             }
         }
-        // TODO: Delete non expired provisions when the PROVISION_CACHE_MAX_SIZE (defined in gossip) is exceeded
+        // TODO: Delete non expired provisions when the PROVISION_CACHE_MAX_SIZE (defined in gossip) is exceeded?
     }
 }
 
