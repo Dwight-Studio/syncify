@@ -290,6 +290,9 @@ impl Syncify {
                     if md.permissions().readonly() {
                         return Err(ReadOnly);
                     }
+                    if md.is_symlink() {
+                        return Err(NotADirectory);
+                    }
                 } else {
                     // Create the dir and its parent
                     tokio::fs::create_dir_all(&get_app_config_dir())
