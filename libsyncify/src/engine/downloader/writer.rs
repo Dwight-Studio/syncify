@@ -20,9 +20,9 @@
  *     You should have received a copy of the GNU General Public License
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-use crate::engine::downloader::{DownloaderHandle, CHUNK_SIZE};
+use crate::engine::downloader::{DownloaderEvent, DownloaderHandle, CHUNK_SIZE};
 use crate::engine::job::{DownloadJob, JobState};
-use crate::engine::manager::{Manager, ManagerEvent};
+use crate::engine::manager::ManagerEvent;
 use crate::event::{DownloadEvent, EventSender};
 use crate::store::lock::StoreLock;
 use crate::{SharedDirectory, get_app_cache_dir};
@@ -44,7 +44,6 @@ pub struct DownloadedChunk {
 
 pub struct FailedChunk {
     pub(crate) index: u64,
-    pub(crate) need_provision: bool,
 }
 
 pub enum WriterChunk {
@@ -120,8 +119,6 @@ impl DownloadWriter {
             }
         };
         
-        let mut needed_provision = false;
-
         while let Some(rcv) = self.rx.recv().await {
             if matches!(self.job.read().await.state, JobState::Cancelled) {
                 break;
@@ -169,29 +166,19 @@ impl DownloadWriter {
 
                         break;
                     } else if all_chunk_tried {
-                        self.manage_failed_chunks(needed_provision).await;
+                        self.downloader.send(DownloaderEvent::Resume).await;
+                        break;
                     }
                 }
                 WriterChunk::FailedChunk(chunk) => {
                     let all_chunk_tried = self.job.write().add_failed_chunk(chunk.index).await;
                     
-                    if chunk.need_provision {
-                        needed_provision = true;
-                    }
-                    
                     if all_chunk_tried {
-                        self.manage_failed_chunks(needed_provision).await;
+                        self.downloader.send(DownloaderEvent::Resume).await;
+                        break;
                     }
                 }
             }
-        }
-    }
-    
-    async fn manage_failed_chunks(&self, needed_provision: bool) {
-        if needed_provision {
-            // TODO: Do something with the failed chunks (one or more chunks need provision)
-        } else {
-            // TODO: Do something with the failed chunks
         }
     }
 }

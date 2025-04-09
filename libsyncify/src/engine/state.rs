@@ -548,6 +548,8 @@ pub enum Mutation {
     },
     Remove {
         file_path: String,
+        #[rkyv(with = crate::util::HashDef)]
+        file_hash: Hash,
         /// Timestamp is dated from when the mutation was detected.
         #[rkyv(with = crate::util::DateTimeDef)]
         timestamp: DateTime<Utc>,
@@ -866,7 +868,7 @@ impl HashTree {
     }
 
     /// Generate a vec of all the files in the tree.
-    pub fn flatten(&self) -> Vec<String> {
+    pub fn flatten(&self) -> Vec<(String, Hash)> {
         match self {
             Void | File { .. } => Vec::new(),
             Directory { content, .. } => {
@@ -881,10 +883,10 @@ impl HashTree {
         }
     }
 
-    fn flatten_recursive(&self, prefix: String) -> Vec<String> {
+    fn flatten_recursive(&self, prefix: String) -> Vec<(String, Hash)> {
         match self {
             Void => Vec::new(),
-            File { name, .. } => vec![prefix + name.as_str()],
+            File { name, hash, .. } => vec![(prefix + name.as_str(), *hash)],
             Directory { name, content, .. } => {
                 let new_prefix = prefix + name.as_str() + "/";
                 let mut rtn = Vec::new();
@@ -1042,7 +1044,7 @@ impl HashTree {
 
     /// Generate all [`Mutation`] detected from comparing current [`HashTree`] and disk.
     pub fn mutations_from_disk(&self, dir: &SharedDirectory) -> Vec<Mutation> {
-        let mut current_files = self.flatten();
+        let mut missing_files = self.flatten();
         let mut rtn = Vec::new();
 
         let files_iter = WalkDir::new(dir.path())
@@ -1062,7 +1064,7 @@ impl HashTree {
                         if let Some(relative_path) = FileSystemManager::relative(dir, file.path()) {
                             if let Some(relative_path_str) = relative_path.to_str() {
                                 // Remove the file from the current file
-                                current_files.retain(|e| e != relative_path_str);
+                                missing_files.retain(|e| e.0 != relative_path_str);
 
                                 let mut hasher = blake3::Hasher::new();
 
@@ -1121,9 +1123,10 @@ impl HashTree {
         }
 
         // Add all file that were removed
-        for missing in current_files {
+        for missing in missing_files {
             rtn.push(Mutation::Remove {
-                file_path: missing,
+                file_path: missing.0,
+                file_hash: missing.1,
                 timestamp: Utc::now(),
             })
         }
