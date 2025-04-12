@@ -119,7 +119,7 @@ impl State {
                 }
             }
 
-            if pool.len() != 0 {
+            if !pool.is_empty() {
                 Some(State {
                     head: Hash::from_bytes(head_hash),
                     pool,
@@ -196,14 +196,18 @@ impl State {
         Ok(())
     }
 
-    /// Accept a new [`Delta`] in the state.
-    pub fn accept(&mut self, delta: Delta) -> bool {
+    /// Accept a new [`Delta`] in the state and update its timestamp.
+    pub fn accept(&mut self, mut delta: Delta) -> bool {
         if let Some(parent) = delta.parent {
             if parent == self.head {
-                self.head = delta.hash();
-                self.pool.insert(*delta.hash().as_bytes(), Arc::new(delta));
+                if delta.update_timestamp(Utc::now()).is_ok() {
+                    self.head = delta.hash();
+                    self.pool.insert(*delta.hash().as_bytes(), Arc::new(delta));
 
-                true
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             }
@@ -491,6 +495,15 @@ impl Delta {
     pub fn hash_tree(&self) -> &HashTree {
         &self.hash_tree
     }
+    
+    /// Update the timestamp of the [`Delta`], its [`Mutation`] and its [`HashTree`].
+    pub fn update_timestamp(&mut self, timestamp: DateTime<Utc>) -> Result<(), StateError> {
+        self.timestamp = timestamp;
+        self.mutation.update_timestamp(timestamp);
+        self.hash_tree = self.hash_tree.apply(&self.mutation)?;
+        
+        Ok(())
+    }
 }
 
 /// Mutation action of a [`Delta`].
@@ -544,6 +557,29 @@ impl Display for Mutation {
             Mutation::Modify { file_path, .. } => write!(f, "Modified file \"{}\"", file_path),
             Mutation::Move { from, to, .. } => write!(f, "Moved file \"{from}\" to \"{to}\""),
             Mutation::Remove { file_path, .. } => write!(f, "Removed file \"{}\"", file_path),
+        }
+    }
+}
+
+impl Mutation {
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        match self {
+            Mutation::Init { timestamp, .. } => *timestamp,
+            Mutation::Merge { timestamp, .. } => *timestamp,
+            Mutation::Modify { timestamp, .. } => *timestamp,
+            Mutation::Move { timestamp, .. } => *timestamp,
+            Mutation::Remove { timestamp, .. } => *timestamp,
+        }
+    }
+    
+    /// Update the mutation timestamp.
+    pub fn update_timestamp(&mut self, n_timestamp: DateTime<Utc>) {
+        match self {
+            Mutation::Init { timestamp, .. } => *timestamp = n_timestamp,
+            Mutation::Merge { timestamp, .. } => *timestamp = n_timestamp,
+            Mutation::Modify { timestamp, .. } => *timestamp = n_timestamp,
+            Mutation::Move { timestamp, .. } => *timestamp = n_timestamp,
+            Mutation::Remove { timestamp, .. } => *timestamp = n_timestamp,
         }
     }
 }
