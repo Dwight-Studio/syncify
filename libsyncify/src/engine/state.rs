@@ -52,7 +52,7 @@ pub const MAX_LOADED_DELTAS: u32 = 1024;
 /// number exceeds the threshold).
 pub const STATE_PRUNING_THRESHOLD: u32 = MAX_LOADED_DELTAS * 4;
 
-// TODO: Add state compression
+// TODO: Change Delta hash computation
 
 /// Tree containing the synchronisation information for a [`SharedDirectory`].
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
@@ -70,13 +70,11 @@ impl State {
     pub fn new(uuid: Uuid) -> Self {
         let timestamp = Utc::now();
         let mut pool = HashMap::new();
-        let hash = blake3::hash(uuid.as_bytes());
 
         pool.insert(
-            *hash.as_bytes(),
+            [0; 32],
             Arc::new(Delta {
                 parent: None,
-                hash,
                 signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
                 timestamp,
                 mutation: Mutation::Init { timestamp: Utc::now() },
@@ -89,7 +87,7 @@ impl State {
         );
 
         Self {
-            head: hash,
+            head: Hash::from_bytes([0; 32]),
             pool,
             timestamp,
         }
@@ -155,7 +153,7 @@ impl State {
         let head = self.head();
         if let Some(parent_hash) = head.parent {
             self.get(&parent_hash).map(|parent| Self {
-                head: parent.hash,
+                head: parent.hash(),
                 pool: self.pool.clone(),
                 timestamp: self.timestamp,
             })
@@ -166,7 +164,7 @@ impl State {
 
     /// Get head's hash.
     pub fn hash(&self) -> Hash {
-        self.head().hash
+        self.head().hash()
     }
 
     /// Get [`State`]'s files hash tree.
@@ -178,24 +176,10 @@ impl State {
     pub fn mutate(&mut self, mutation: Mutation, write_key: &WriteKey) -> Result<(), StateError> {
         let mut delta = Delta {
             parent: Some(self.head.clone()),
-            hash: Hash::from_bytes([0; 32]),
             signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
             timestamp: Utc::now(),
             mutation: mutation.clone(),
             hash_tree: self.head().hash_tree.apply(&mutation)?,
-        };
-
-        // Compute hash
-        delta.hash = {
-            let mut data = Vec::new();
-
-            // Parent
-            data.extend(self.head.as_bytes());
-
-            // Tree
-            data.extend(delta.hash_tree.hash().as_bytes());
-
-            blake3::hash(data.leak())
         };
 
         // Compute signature
@@ -206,8 +190,8 @@ impl State {
         };
 
         // Modify head and insert into pool
-        self.head = delta.hash;
-        self.pool.insert(*delta.hash.as_bytes(), Arc::new(delta));
+        self.head = delta.hash();
+        self.pool.insert(*delta.hash().as_bytes(), Arc::new(delta));
 
         Ok(())
     }
@@ -216,8 +200,8 @@ impl State {
     pub fn accept(&mut self, delta: Delta) -> bool {
         if let Some(parent) = delta.parent {
             if parent == self.head {
-                self.head = delta.hash;
-                self.pool.insert(*delta.hash.as_bytes(), Arc::new(delta));
+                self.head = delta.hash();
+                self.pool.insert(*delta.hash().as_bytes(), Arc::new(delta));
 
                 true
             } else {
@@ -272,7 +256,7 @@ impl State {
             let mut head = self.head();
 
             for _ in 0..MAX_LOADED_DELTAS {
-                new_pool.insert(head.hash, head.clone());
+                new_pool.insert(head.hash(), head.clone());
 
                 if let Some(parent_hash) = head.parent {
                     if let Some(parent) = self.get(&parent_hash) {
@@ -287,7 +271,7 @@ impl State {
 
             let mut new_head = head.as_ref().clone();
             new_head.parent = None;
-            new_pool.insert(new_head.hash, Arc::new(new_head));
+            new_pool.insert(new_head.hash(), Arc::new(new_head));
 
             true
         } else {
@@ -309,11 +293,11 @@ impl State {
 
         for _ in 0..max_depth {
             // Check if we reached the root
-            if head.hash == root {
+            if head.hash() == root {
                 let mut delta = head.as_ref().clone();
                 delta.parent = None;
 
-                pool.insert(*head.hash.as_bytes(), Arc::new(delta));
+                pool.insert(*head.hash().as_bytes(), Arc::new(delta));
 
                 return Some(State {
                     head: self.head,
@@ -321,7 +305,7 @@ impl State {
                     timestamp: self.timestamp,
                 });
             } else {
-                pool.insert(*head.hash.as_bytes(), head.clone());
+                pool.insert(*head.hash().as_bytes(), head.clone());
 
                 if let Some(parent_hash) = head.parent {
                     if let Some(parent) = self.get(&parent_hash) {
@@ -350,9 +334,9 @@ impl Display for State {
             writeln!(f, "{prefix}")?;
 
             if head.parent.is_some() {
-                writeln!(f, "├─ {}", head.hash)?;
+                writeln!(f, "├─ {}", head.hash())?;
             } else {
-                writeln!(f, "└─ {}", head.hash)?;
+                writeln!(f, "└─ {}", head.hash())?;
                 prefix = " ";
             }
 
@@ -395,8 +379,6 @@ impl Iterator for StateIterator {
 pub struct Delta {
     #[rkyv(with = crate::util::OptionHashDef)]
     parent: Option<Hash>,
-    #[rkyv(with = crate::util::HashDef)]
-    hash: Hash,
     #[rkyv(with = crate::util::SignatureDef)]
     signature: Signature,
     /// Timestamp is dated from when the mutation was applied.
@@ -423,7 +405,6 @@ impl Value for Delta {
             error!("Failed to deserialize Delta: {e}");
             Delta {
                 parent: None,
-                hash: Hash::from_bytes([0u8; 32]),
                 signature: Signature::from_bytes(&SignatureBytes::from_bytes(&[0u8; 64])),
                 timestamp: Default::default(),
                 mutation: Mutation::Init {
@@ -463,13 +444,10 @@ impl Delta {
             let mut data = Vec::new();
 
             // Hash
-            data.extend(self.hash.as_bytes());
+            data.extend(self.hash().as_bytes());
 
             // Parent
             data.extend(parent.as_bytes());
-
-            // Tree
-            data.extend(self.hash_tree.hash().as_bytes());
 
             Some(data)
         } else {
@@ -492,7 +470,7 @@ impl Delta {
 
     /// Get the hash.
     pub fn hash(&self) -> Hash {
-        self.hash
+        self.hash_tree.hash()
     }
 
     /// Get the hash of the parent (if present).
