@@ -227,8 +227,7 @@ impl Commands {
                     }
                     utils::print_success("Syncify has been reset!")
                 } else {
-                    //TODO: Make this message a bit more clearer (Error: Cancelled?)
-                    utils::print_success("Your shared directories are left untouched!");
+                    utils::print_error("Canceled, your shared directories are left untouched!");
                 }
             }
         }

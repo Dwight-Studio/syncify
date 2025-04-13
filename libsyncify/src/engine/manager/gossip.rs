@@ -175,6 +175,16 @@ impl GossipManager {
             Payload::ProvisionRequest { hash } => {
                 debug!("Received provision request for file '{hash}' for {}", self.dir.uuid);
 
+                if let Some(provision) = self.dir.local_provisions.read().await.get(&hash) {
+                    if !provision.is_expired() {
+                        self.dir.handle()
+                            .await
+                            .send(ManagerEvent::ConfirmLocalProvision(provision.clone()))
+                            .await;
+                        return;
+                    }
+                } 
+                
                 if let Some((HashTree::File { size, .. }, file_path)) = self.dir.local_tree.read().await.search(&hash) {
                     self.downloader
                         .send(DownloaderEvent::LocalProvisionUpdate(

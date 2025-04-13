@@ -243,6 +243,9 @@ impl Downloader {
                     debug!("Updating local provision for {dir_uuid}");
 
                     let dir_opt = store.read().await.get_shared_dir(&dir_uuid);
+                    let provision_cache_file = provisions_dir.join(provision.hash().to_string());
+                    
+                    
                     if let Some(dir) = dir_opt {
                         let mut encoder = {
                             match File::options()
@@ -250,7 +253,7 @@ impl Downloader {
                                 .write(true)
                                 .create(true)
                                 .truncate(true)
-                                .open(provisions_dir.join(provision.hash().to_string()))
+                                .open(provision_cache_file)
                             {
                                 Ok(encode_file) => bao::encode::Encoder::new(encode_file),
                                 Err(err) => {
@@ -438,7 +441,7 @@ impl Deref for Downloader {
 /// Handle to a [`Downloader`].
 #[derive(Debug, Clone)]
 pub struct DownloaderHandle {
-    tx: mpsc::Sender<DownloaderEvent>,
+    tx: Sender<DownloaderEvent>,
 }
 
 impl DownloaderHandle {
